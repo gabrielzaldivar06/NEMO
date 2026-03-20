@@ -763,7 +763,7 @@ class AIMemoryDatabase(DatabaseManager):
             expected_columns = [
                 'memory_id', 'timestamp_created', 'timestamp_updated', 'source_conversation_id',
                 'source_message_ids', 'memory_type', 'content', 'importance_level', 'tags',
-                'embedding', 'created_at'
+                'embedding', 'created_at', 'access_count', 'last_accessed_at'
             ]
             cur = conn.execute("PRAGMA table_info(curated_memories)")
             current_columns = [row[1] for row in cur.fetchall()]
@@ -789,7 +789,9 @@ class AIMemoryDatabase(DatabaseManager):
                         importance_level INTEGER DEFAULT 5,
                         tags TEXT,
                         embedding BLOB,
-                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        access_count INTEGER DEFAULT 0,
+                        last_accessed_at TEXT
                     )
                 """)
                 for row in old_rows:
@@ -815,9 +817,18 @@ class AIMemoryDatabase(DatabaseManager):
                         importance_level INTEGER DEFAULT 5,
                         tags TEXT,
                         embedding BLOB,
-                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        access_count INTEGER DEFAULT 0,
+                        last_accessed_at TEXT
                     )
                 """)
+                # Sprint 9 — add access_count / last_accessed_at if missing (live migration)
+                cur2 = conn.execute("PRAGMA table_info(curated_memories)")
+                live_cols = [r[1] for r in cur2.fetchall()]
+                if 'access_count' not in live_cols:
+                    conn.execute("ALTER TABLE curated_memories ADD COLUMN access_count INTEGER DEFAULT 0")
+                if 'last_accessed_at' not in live_cols:
+                    conn.execute("ALTER TABLE curated_memories ADD COLUMN last_accessed_at TEXT")
             conn.commit()
 
     async def create_memory(self, content: str, memory_type: str = None, 
@@ -905,7 +916,7 @@ class AIMemoryDatabase(DatabaseManager):
             }
     
     def initialize_tables(self):
-        """Create tables if they don't exist"""
+        """Create tables if they don't exist, and add new columns via live migration."""
         with self.get_connection() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS curated_memories (
@@ -919,9 +930,18 @@ class AIMemoryDatabase(DatabaseManager):
                     importance_level INTEGER DEFAULT 5,
                     tags TEXT,
                     embedding BLOB,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    access_count INTEGER DEFAULT 0,
+                    last_accessed_at TEXT
                 )
             """)
+            # Sprint 9 T2 — live-migration for databases created before this sprint
+            cur = conn.execute("PRAGMA table_info(curated_memories)")
+            existing_cols = [r[1] for r in cur.fetchall()]
+            if 'access_count' not in existing_cols:
+                conn.execute("ALTER TABLE curated_memories ADD COLUMN access_count INTEGER DEFAULT 0")
+            if 'last_accessed_at' not in existing_cols:
+                conn.execute("ALTER TABLE curated_memories ADD COLUMN last_accessed_at TEXT")
             conn.commit()
     
     async def create_memory(self, content: str, memory_type: str = None, 
@@ -2728,7 +2748,17 @@ class EmbeddingService:
         return []
 
     async def _generate_openai_compatible_embedding(self, text: str, config: Dict[str, Any], provider_name: str) -> List[float]:
-        """Generate embedding using an OpenAI-compatible /v1/embeddings endpoint."""
+        """Generate embedding using an OpenAI-compatible /v1/embeddings endpoint.
+
+        Passes ``add_special_tokens: true`` to llama-server / LM Studio so that
+        the tokenizer wraps each input with the model's BOS and EOS tokens
+        (Qwen3:  <|im_start|> … <|im_end|>).  Without this flag llama.cpp emits
+        a SEP/EOS warning and produces slightly open-ended vectors that are more
+        prone to colliding with semantically adjacent documents.
+
+        The flag is a llama.cpp extension to the OpenAI spec; pure OpenAI or
+        other providers silently ignore it, so it is safe to always include.
+        """
         base_url = config.get("base_url", "http://localhost:1234").rstrip("/")
         model = config.get("model", "qwen3-embedding-4b-q8_0.gguf")
         headers = {}
@@ -2739,9 +2769,14 @@ class EmbeddingService:
 
         self.embeddings_endpoint = f"{base_url}/v1/embeddings"
 
+        # add_special_tokens: true → tokenizer adds BOS + EOS around each input.
+        # Default True for local providers; can be overridden per-provider in
+        # embedding_config.json via  "add_special_tokens": false.
+        add_special_tokens = config.get("add_special_tokens", True)
+
         try:
             async with aiohttp.ClientSession() as session:
-                payload = {"model": model, "input": text}
+                payload = {"model": model, "input": text, "add_special_tokens": add_special_tokens}
                 async with session.post(self.embeddings_endpoint, json=payload, headers=headers) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -3737,14 +3772,17 @@ class PersistentAIMemorySystem:
         return 1.0
 
     def _apply_temporal_decay(self, results: List[Dict], half_life_days: float = 60.0) -> List[Dict]:
-        """Feature #5 — Temporal Relevance Decay.
+        """Feature #5 — Temporal Relevance Decay + Sprint 9 T4 Recency Bonus.
 
         Applies a gentle exponential decay: score *= e^(-lambda * age_days)
         where lambda = ln(2) / half_life_days.  Half-life default 60 days means
         a 60-day-old memory retains 50 % of its recency bonus, a year-old memory
         retains ~11 %.  The decay is bounded to [0.80, 1.0] so old memories stay
-        retrievable and the penalty is never catastrophic — retrieval correctness
-        always dominates raw score.
+        retrievable.
+
+        Sprint 9 T4 — Recency Bonus: memories created in the last 3 days receive a
+        +2 % boost (× 1.02).  This gives the system a notion of "now" — not just
+        "how old" — and surfaces fresh information for queries about current state.
         """
         import math
         lam = math.log(2) / half_life_days
@@ -3760,8 +3798,13 @@ class PersistentAIMemorySystem:
                 if mem_dt.tzinfo is None:
                     mem_dt = mem_dt.replace(tzinfo=timezone.utc)
                 age_days = max(0.0, (now - mem_dt).total_seconds() / 86400.0)
-                decay = max(0.80, math.exp(-lam * age_days))
-                r["similarity_score"] = r["similarity_score"] * decay
+                if age_days < 3:
+                    # T4: Recency bonus — fresher than 3 days
+                    multiplier = 1.02
+                else:
+                    decay = max(0.80, math.exp(-lam * age_days))
+                    multiplier = decay
+                r["similarity_score"] = r["similarity_score"] * multiplier
             except (ValueError, TypeError):
                 pass
         return results
@@ -3894,7 +3937,7 @@ class PersistentAIMemorySystem:
             # skip the expensive cross-encoder — the ordering is unambiguous.
             # Gap threshold 0.07 is calibrated to production score distributions.
             # ------------------------------------------------------------------
-            _GAP_BYPASS_THRESHOLD = 0.07
+            _GAP_BYPASS_THRESHOLD = 0.05  # Sprint 10: lowered from 0.07 → bypass more, cut P95
             if len(all_results) >= 2:
                 second_raw = all_results[1].get("_raw_similarity", all_results[1]["similarity_score"])
                 score_gap = top_raw - second_raw
@@ -3941,6 +3984,29 @@ class PersistentAIMemorySystem:
                 self._search_cache.pop(oldest_key, None)
             cache_entry_key = (query[:120], *cache_key_params)
             self._search_cache[cache_entry_key] = (q_vec, payload, time.monotonic())
+
+        # Sprint 9 T2 — Fire-and-forget access_count increment for top results
+        # Increments access_count for every ai_memory result that surfaces in the
+        # final payload so the boost grows with real usage.  Runs as a background
+        # task to avoid blocking the caller.
+        top_results = payload.get("results", [])
+        memory_ids_to_bump = [
+            r["data"]["memory_id"]
+            for r in top_results
+            if r.get("type") == "ai_memory" and r.get("data", {}).get("memory_id")
+        ]
+        if memory_ids_to_bump:
+            ts_now = get_current_timestamp()
+            async def _bump_access(mids, ts):
+                for mid in mids:
+                    try:
+                        await self.ai_memory_db.execute_update(
+                            "UPDATE curated_memories SET access_count = COALESCE(access_count,0)+1, last_accessed_at=? WHERE memory_id=?",
+                            (ts, mid)
+                        )
+                    except Exception:
+                        pass
+            asyncio.ensure_future(_bump_access(memory_ids_to_bump, ts_now))
 
         return payload
 
@@ -4205,7 +4271,8 @@ class PersistentAIMemorySystem:
                             "importance_level": row["importance_level"],
                             "memory_type": row["memory_type"],
                             "timestamp_created": row["timestamp_created"],
-                            "tags": json.loads(row["tags"]) if row["tags"] else []
+                            "tags": json.loads(row["tags"]) if row["tags"] else [],
+                            "access_count": row["access_count"] if "access_count" in row.keys() else 0,
                         }
                     }
                     results.append(result)
@@ -4225,20 +4292,22 @@ class PersistentAIMemorySystem:
         # search_memories feature anchor).  The correction type retains its
         # existing +0.35 flat bonus on top of the composite boost.
         _TYPE_QUALITY_WEIGHT = {
-            "correction":    1.0,
-            "feature":       0.9,
-            "testing":       0.9,
-            "configuration": 0.9,
-            "operations":    0.8,
-            "ai_memory":     0.8,
-            "general":       0.7,
-            "mixed_context": 0.5,
-            "project_note":  0.4,
-            "ops_note":      0.3,
-            "support_note":  0.2,
-            "noise":         0.1,
+            "correction":       1.0,
+            "feature":          0.9,
+            "testing":          0.9,
+            "configuration":    0.9,
+            "integration":      0.9,  # Sprint 10: MCP entrypoints, service wiring
+            "project_decision": 0.9,  # Sprint 10: architectural/technology decisions
+            "operations":       0.8,
+            "ai_memory":        0.8,
+            "general":          0.7,
+            "mixed_context":    0.5,
+            "project_note":     0.4,
+            "ops_note":         0.3,
+            "support_note":     0.2,
+            "noise":            0.1,
         }
-        _BOOST_SCALE = 0.3  # max possible: 1.0 (correction) × 1.0 (imp=10) × 0.3 = 0.30
+        _BOOST_SCALE = 0.10  # Sprint 9: reduced so semantic cosine dominates; max boost = 0.10
         for result in results:
             mt = result["data"].get("memory_type", "general")
             imp = result["data"]["importance_level"]
@@ -4249,6 +4318,15 @@ class PersistentAIMemorySystem:
             if result["data"].get("memory_type") == "correction":
                 result["similarity_score"] += 0.35
         
+        # Sprint 9 T2 — Access Count Feedback Boost
+        # Memories that have answered queries before earn a small boost that
+        # compounds with usage.  Floor is 0, ceiling is +0.04 at ~1000 accesses.
+        import math as _math
+        for result in results:
+            ac = result["data"].get("access_count", 0) or 0
+            if ac > 0:
+                result["similarity_score"] += min(0.04, _math.log1p(ac) * 0.02)
+
         results.sort(key=lambda x: x["similarity_score"], reverse=True)
 
         # Sprint 7: Importance-Preferent Near-Duplicate Suppression
@@ -4266,12 +4344,24 @@ class PersistentAIMemorySystem:
         # Contextual embeddings (numeric prefix format) preserve importance
         # distinctness while content near-dups still cluster at cosine > 0.88.
         _NEAR_DUP_THRESHOLD = 0.95
+        _WEAK_DUP_THRESHOLD = 0.80  # Sprint 10 rev: 0.85 too tight — imp(9) escaped suppression; ≥3 tags keeps precision
         pool = results[:50]  # anchors always land here after Sprint 6 boost
         survivors = []
+
+        def _meta_cluster(a_data, b_data):
+            """True when two memories share the same topic: same memory_type AND ≥3 common tags."""
+            if a_data.get("memory_type") != b_data.get("memory_type"):
+                return False
+            a_tags = set(a_data.get("tags") or [])
+            b_tags = set(b_data.get("tags") or [])
+            return len(a_tags & b_tags) >= 3  # Sprint 10: raised from ≥2 for precision
+
         for candidate in pool:
             c_emb = candidate.get("_embedding")
             c_imp = candidate["data"]["importance_level"]
+            c_ts  = candidate["data"].get("timestamp_created") or ""
             cluster_hit = -1
+            is_weak_dup = False
             if c_emb:
                 for i, sel in enumerate(survivors):
                     s_emb = sel.get("_embedding")
@@ -4279,13 +4369,43 @@ class PersistentAIMemorySystem:
                         cross = self._calculate_cosine_similarity(c_emb, s_emb)
                         if cross > _NEAR_DUP_THRESHOLD:
                             cluster_hit = i
+                            is_weak_dup = False
                             break
+                        elif (cross > _WEAK_DUP_THRESHOLD
+                              and cluster_hit == -1
+                              and _meta_cluster(candidate["data"], sel["data"])):
+                            cluster_hit = i
+                            is_weak_dup = True
+                            # Do NOT break — a strong dup may still be found further in the list
             if cluster_hit == -1:
                 survivors.append(candidate)
-            elif c_imp > survivors[cluster_hit]["data"]["importance_level"]:
-                # Higher-importance doc from same cluster displaces current representative
-                survivors[cluster_hit] = candidate
-            # else: candidate is dominated → silently dropped
+            elif is_weak_dup:
+                # Sprint 9 T5 — Metadata-Aware Weak Supersession
+                # Same type + same tags + semantically similar → the OLDER memory is the
+                # canonical representative of this topic cluster.  Inherit the cluster's
+                # top score so rank position is preserved after the final re-sort.
+                s_ts = survivors[cluster_hit]["data"].get("timestamp_created") or ""
+                if c_ts and s_ts and c_ts < s_ts:
+                    candidate["similarity_score"] = survivors[cluster_hit]["similarity_score"]
+                    survivors[cluster_hit] = candidate
+                # else: candidate is newer → silently dropped (existing is canonical)
+            else:
+                # Strong near-dup (cosine > 0.95) — Sprint 7 + T1 logic
+                s_imp = survivors[cluster_hit]["data"]["importance_level"]
+                s_ts  = survivors[cluster_hit]["data"].get("timestamp_created") or ""
+                imp_diff = abs(c_imp - s_imp)
+                if c_imp > s_imp:
+                    # Higher-importance doc from same cluster displaces current representative
+                    survivors[cluster_hit] = candidate
+                elif imp_diff <= 1:
+                    # Sprint 9 T1 — Creation-Order Tiebreaker
+                    # When importance is tied (≤1 point gap), the OLDER memory is the
+                    # canonical original; the newer one is the imposter/copy.
+                    # Lexicographic ISO string comparison works because our timestamps are
+                    # zero-padded UTC (e.g. "2026-03-20T10:00:00+00:00").
+                    if c_ts and s_ts and c_ts < s_ts:
+                        survivors[cluster_hit] = candidate
+                # else: candidate importance is clearly lower → silently dropped
 
         survivors.sort(key=lambda x: x["similarity_score"], reverse=True)
         for r in survivors:
@@ -4784,6 +4904,7 @@ class PersistentAIMemorySystem:
         memory_type: str | None,
         importance_level: int | None,
         tags: list | None,
+        created_at: str | None = None,
     ) -> str:
         """Build enriched text for embedding via Contextual Retrieval (Sprint 5).
 
@@ -4812,7 +4933,26 @@ class PersistentAIMemorySystem:
         imp_str = str(importance_level) if importance_level is not None else "5"
         tag_list = tags if tags else []
         tag_str = ",".join(str(t).lower().strip() for t in tag_list[:5])
-        prefix = f"{type_str} | importancia:{imp_str} | [{tag_str}]: "
+        # Sprint 9 T3 — Epoch Token (Sprint 10: opt-in for memories older than 7 days).
+        # Encoding the ISO year-week creates divergent vectors for memories from different
+        # project phases.  For fresh memories (< 7 days), it adds noise with zero benefit
+        # because they all share the same week token → omit to preserve semantic clarity.
+        epoch_str = None
+        if created_at:
+            try:
+                _ts = created_at.replace("Z", "+00:00")
+                _dt = datetime.fromisoformat(_ts)
+                if _dt.tzinfo is None:
+                    _dt = _dt.replace(tzinfo=timezone.utc)
+                age_days = (datetime.now(timezone.utc) - _dt).total_seconds() / 86400.0
+                if age_days >= 7:
+                    epoch_str = _dt.strftime("%Y-W%V")
+            except (ValueError, AttributeError):
+                pass
+        if epoch_str:
+            prefix = f"{type_str} | importancia:{imp_str} | epoca:{epoch_str} | [{tag_str}]: "
+        else:
+            prefix = f"{type_str} | importancia:{imp_str} | [{tag_str}]: "
         return prefix + content
 
     async def _add_embedding_to_memory(self, memory_id: str, content: str):
@@ -4826,7 +4966,7 @@ class PersistentAIMemorySystem:
         try:
             # Fetch metadata for contextual enrichment
             rows = await self.ai_memory_db.execute_query(
-                "SELECT memory_type, importance_level, tags FROM curated_memories WHERE memory_id = ?",
+                "SELECT memory_type, importance_level, tags, timestamp_created FROM curated_memories WHERE memory_id = ?",
                 (memory_id,)
             )
             if rows:
@@ -4838,6 +4978,7 @@ class PersistentAIMemorySystem:
                     row["memory_type"],
                     row["importance_level"],
                     tags,
+                    created_at=row["timestamp_created"],
                 )
             else:
                 contextual_text = content
