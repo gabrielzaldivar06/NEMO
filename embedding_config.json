@@ -44,9 +44,9 @@
   "reranking_configuration": {
     "primary": {
       "enabled": true,
-      "provider": "llama_cpp",
-      "model": "bge-reranker-v2-m3-Q4_K_M.gguf",
-      "base_url": "http://localhost:8080",
+      "provider": "lm_studio",
+      "model": "text-embedding-bge-reranker-v2-m3",
+      "base_url": "http://localhost:1234",
       "rerank_path": "/v1/rerank",
       "candidate_count": 15,
       "final_top_n": 5,
@@ -54,7 +54,8 @@
       "unavailable_retry_seconds": 60,
       "confidence_bypass_threshold": 0.92,
       "model_path": "C:/Users/gabri/.lmstudio/models/gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf",
-      "description": "BGE-reranker-v2-m3 encoder cross-encoder: XLM-RoBERTa based, compatible with llama-server --pooling rank"
+      "lms_load_cmd": "lms load text-embedding-bge-reranker-v2-m3 -y",
+      "description": "BGE-reranker-v2-m3 via LM Studio API en localhost:1234/v1/rerank"
     },
     "fallback": {
       "enabled": false,
@@ -73,7 +74,7 @@
       "4. Run start_qwen_embedding_server.ps1 or .bat to start either llama.cpp or LM Studio",
       "5. For Ollama: pull nomic-embed-text if you want a fallback provider",
       "6. For LM Studio: the loaded model identifier is qwen3-embed-4b",
-      "7. For reranking: the real llama.cpp endpoint is configured as http://localhost:8080/v1/rerank",
+      "7. Para reranking: cargar con 'lms load text-embedding-bge-reranker-v2-m3 -y' — endpoint: http://localhost:1234/v1/rerank",
       "8. For OpenAI: add your API key",
       "9. Restart the memory system to apply changes"
     ],

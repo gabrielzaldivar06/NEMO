@@ -1,0 +1,50 @@
+{
+  "name": "nemo-memory",
+  "displayName": "NEMO — Memory Observer",
+  "description": "Neural Engine Memory Observer — estado del sistema de memoria IA en tiempo real",
+  "version": "1.0.0",
+  "publisher": "local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "nemo-container",
+          "title": "NEMO Memory Observer",
+          "icon": "media/nemo.svg"
+        }
+      ]
+    },
+    "views": {
+      "nemo-container": [
+        {
+          "id": "nemo.statusView",
+          "name": "Estado del Sistema",
+          "icon": "media/nemo.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "nemo.refresh",
+        "title": "NEMO: Actualizar Estado",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "nemo.refresh",
+          "when": "view == nemo.statusView",
+          "group": "navigation"
+        }
+      ]
+    }
+  }
+}
