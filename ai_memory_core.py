@@ -64,20 +64,23 @@ import os
 import re
 import time
 import socket
+import difflib
 from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timezone, timedelta, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 # Get local timezone
-def get_local_timezone() -> ZoneInfo:
+def get_local_timezone() -> tzinfo:
     """Get local timezone based on system settings"""
     try:
         import time
         return ZoneInfo(time.tzname[0])
-    except:
-        # Fallback to a common timezone if detection fails
-        return ZoneInfo("America/Chicago")  # Central Time fallback
+    except Exception:
+        local_tz = datetime.now().astimezone().tzinfo
+        if local_tz is not None:
+            return local_tz
+        return timezone.utc
     
 def get_current_timestamp() -> str:
     """Get current timestamp in local timezone ISO format"""
@@ -118,6 +121,29 @@ logger = logging.getLogger(__name__)
 # Only show important messages and errors
 logger.setLevel(logging.WARNING)
 
+SEARCH_STOPWORDS = {
+    "a", "al", "and", "como", "con", "cual", "cuál", "de", "del", "el",
+    "en", "for", "how", "la", "las", "los", "para", "por", "q", "que",
+    "qué", "se", "si", "the", "to", "usa", "using", "y",
+}
+
+SEARCH_TOKEN_ALIASES = {
+    "embeddings": "embedding",
+    "fallbak": "fallback",
+    "helth": "health",
+    "llamacpp": "llama_cpp",
+    "lmstudio": "lm_studio",
+    "poweshell": "powershell",
+    "qewn": "qwen",
+    "semantca": "semantic",
+    "sessoin": "session",
+    "sevrer": "server",
+    "sutdio": "studio",
+    "v1embeddings": "v1_embeddings",
+    "winodws": "windows",
+    "worksapce": "workspace",
+}
+
 
 class DatabaseManager:
     """Base database manager for common operations"""
@@ -137,24 +163,38 @@ class DatabaseManager:
         conn.execute("PRAGMA foreign_keys = ON")  # Enable foreign key constraints
         return conn
     
-    async def execute_query(self, query: str, params: Tuple = ()) -> List[sqlite3.Row]:
-        """Execute a SELECT query and return results"""
-        with self.get_connection() as conn:
+    def _execute_query_sync(self, query: str, params: Tuple) -> List[sqlite3.Row]:
+        """Synchronous SELECT — run via asyncio.to_thread to avoid blocking the event loop."""
+        conn = self.get_connection()
+        try:
             cursor = conn.execute(query, params)
             return cursor.fetchall()
-    
+        finally:
+            conn.close()
+
+    async def execute_query(self, query: str, params: Tuple = ()) -> List[sqlite3.Row]:
+        """Execute a SELECT query without blocking the async event loop."""
+        return await asyncio.to_thread(self._execute_query_sync, query, params)
+
+    def _execute_update_sync(self, query: str, params: Tuple) -> int:
+        """Synchronous INSERT/UPDATE/DELETE — run via asyncio.to_thread."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.execute(query, params)
+            conn.commit()
+            return cursor.rowcount
+        except sqlite3.Error as e:
+            conn.rollback()
+            logger.error(f"Database error: {e}")
+            logger.error(f"Query: {query}")
+            logger.error(f"Params: {params}")
+            raise
+        finally:
+            conn.close()
+
     async def execute_update(self, query: str, params: Tuple = ()) -> int:
-        """Execute an INSERT/UPDATE/DELETE query and return number of affected rows"""
-        with self.get_connection() as conn:
-            try:
-                cursor = conn.execute(query, params)
-                conn.commit()
-                return cursor.rowcount
-            except sqlite3.Error as e:
-                logger.error(f"Database error: {e}")
-                logger.error(f"Query: {query}")
-                logger.error(f"Params: {params}")
-                raise
+        """Execute an INSERT/UPDATE/DELETE query without blocking the async event loop."""
+        return await asyncio.to_thread(self._execute_update_sync, query, params)
                 
     def parse_timestamp(self, timestamp: Union[str, int, float, None], fallback: Optional[datetime] = None) -> str:
         """Parse various timestamp formats into ISO format string.
@@ -887,10 +927,18 @@ class AIMemoryDatabase(DatabaseManager):
     async def create_memory(self, content: str, memory_type: str = None, 
                           importance_level: int = 5, tags: List[str] = None,
                           source_conversation_id: str = None) -> str:
-        """Create a new curated memory"""
+        """Create a new curated memory with duplicate detection"""
         
         memory_id = str(uuid.uuid4())
         timestamp = get_current_timestamp()
+
+        existing = await self.execute_query(
+            """SELECT memory_id FROM curated_memories
+               WHERE content = ? AND memory_type = ? AND source_conversation_id IS ?""",
+            (content, memory_type, source_conversation_id)
+        )
+        if existing:
+            return existing[0]["memory_id"]
         
         await self.execute_update(
             """INSERT INTO curated_memories 
@@ -2523,17 +2571,21 @@ class EmbeddingService:
             self.full_config = self._load_full_config()
             self.primary_config = self.full_config.get("primary", {})
             self.fallback_config = self.full_config.get("fallback", {})
+
+        self.embeddings_endpoint = self._build_embeddings_endpoint(self.primary_config)
             
         self.provider_availability = {
             "lm_studio": None,  # Will be tested on first use
             "ollama": None,
-            "openai": None
+            "openai": None,
+            "llama_cpp": None,
+            "custom": None,
         }
         
         # Log configuration
         print("Intelligent Embedding Service Configuration")
-        primary_provider = self.primary_config.get('provider', 'lm_studio')
-        primary_model = self.primary_config.get('model', 'text-embedding-nomic-embed-text-v1.5')
+        primary_provider = self.primary_config.get('provider', 'llama_cpp')
+        primary_model = self.primary_config.get('model', 'qwen3-embedding-4b-q8_0.gguf')
         fallback_provider = self.fallback_config.get('provider', 'ollama')
         fallback_model = self.fallback_config.get('model', 'nomic-embed-text')
         
@@ -2541,6 +2593,14 @@ class EmbeddingService:
         print(f"Fallback: {fallback_provider} ({fallback_model})")
         print(f"Preserving existing 768D embeddings, using best available for new ones")
         print("To customize, edit embedding_config.json in the project directory")
+
+    def _build_embeddings_endpoint(self, config: Dict[str, Any]) -> str:
+        """Build the effective embeddings endpoint for health checks and diagnostics."""
+        provider = config.get("provider", "llama_cpp")
+        base_url = config.get("base_url", "http://localhost:1234").rstrip("/")
+        if provider == "ollama":
+            return f"{base_url}/api/embeddings"
+        return f"{base_url}/v1/embeddings"
     
     @property
     def config(self) -> Dict[str, Any]:
@@ -2550,6 +2610,7 @@ class EmbeddingService:
             "model": self.primary_config.get("model"),
             "base_url": self.primary_config.get("base_url"),
             "api_key": self.primary_config.get("api_key"),
+            "embeddings_endpoint": self.embeddings_endpoint,
             "fallback_provider": self.fallback_config.get("provider"),
             "fallback_model": self.fallback_config.get("model"),
             "fallback_base_url": self.fallback_config.get("base_url"),
@@ -2570,10 +2631,10 @@ class EmbeddingService:
         # Return default configuration
         return {
             "primary": {
-                "provider": "lm_studio",
-                "model": "text-embedding-nomic-embed-text-v1.5",
+                "provider": "llama_cpp",
+                "model": "qwen3-embedding-4b-q8_0.gguf",
                 "base_url": "http://localhost:1234",
-                "description": "High-quality LM Studio embeddings for semantic search"
+                "description": "Local llama.cpp embeddings server using Qwen3-Embedding-4B-Q8_0-GGUF"
             },
             "fallback": {
                 "provider": "ollama",
@@ -2587,7 +2648,7 @@ class EmbeddingService:
     def create_with_user_config(cls) -> 'EmbeddingService':
         """Create embedding service with user configuration prompt"""
         try:
-            print("🔧 Embedding Service Configuration")
+            print("[Embedding Service Configuration]")
             print("Loading configuration from embedding_config.json...")
             return cls()  # Use config file
             
@@ -2599,17 +2660,18 @@ class EmbeddingService:
         """Generate embedding using intelligent provider selection with preservation strategy"""
         
         # Try primary provider first
-        primary_provider = self.primary_config.get("provider", "lm_studio")
+        primary_provider = self.primary_config.get("provider", "llama_cpp")
+        self.embeddings_endpoint = self._build_embeddings_endpoint(self.primary_config)
         
         try:
-            if primary_provider == "lm_studio":
+            if primary_provider in {"lm_studio", "llama_cpp", "custom"}:
                 result = await self._generate_lm_studio_embedding(text)
                 if result:
-                    self.provider_availability["lm_studio"] = True
+                    self.provider_availability[primary_provider] = True
                     return result
                 else:
-                    self.provider_availability["lm_studio"] = False
-                    logger.warning("LM Studio unavailable, trying fallback")
+                    self.provider_availability[primary_provider] = False
+                    logger.warning(f"{primary_provider} unavailable, trying fallback")
                     
             elif primary_provider == "ollama":
                 result = await self._generate_ollama_embedding(text)
@@ -2636,11 +2698,12 @@ class EmbeddingService:
         fallback_provider = self.fallback_config.get("provider")
         if fallback_provider and fallback_provider != primary_provider:
             try:
-                if fallback_provider == "lm_studio":
+                if fallback_provider in {"lm_studio", "llama_cpp", "custom"}:
+                    self.embeddings_endpoint = self._build_embeddings_endpoint(self.fallback_config)
                     result = await self._generate_lm_studio_embedding(text, fallback=True)
                     if result:
-                        self.provider_availability["lm_studio"] = True
-                        logger.info("Using LM Studio fallback for embedding")
+                        self.provider_availability[fallback_provider] = True
+                        logger.info(f"Using {fallback_provider} fallback for embedding")
                         return result
                         
                 elif fallback_provider == "ollama":
@@ -2663,6 +2726,41 @@ class EmbeddingService:
         # If both primary and fallback fail, log the issue
         logger.error("All embedding providers failed - semantic search will be unavailable")
         return []
+
+    async def _generate_openai_compatible_embedding(self, text: str, config: Dict[str, Any], provider_name: str) -> List[float]:
+        """Generate embedding using an OpenAI-compatible /v1/embeddings endpoint."""
+        base_url = config.get("base_url", "http://localhost:1234").rstrip("/")
+        model = config.get("model", "qwen3-embedding-4b-q8_0.gguf")
+        headers = {}
+
+        api_key = config.get("api_key")
+        if api_key and api_key not in {"", "lm_studio", "llama_cpp"}:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        self.embeddings_endpoint = f"{base_url}/v1/embeddings"
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                payload = {"model": model, "input": text}
+                async with session.post(self.embeddings_endpoint, json=payload, headers=headers) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data and "data" in data and len(data["data"]) > 0:
+                            embedding = data["data"][0].get("embedding")
+                            if embedding:
+                                return embedding
+                        logger.error(f"Invalid {provider_name} response format: {data}")
+                        return None
+
+                    error_text = await response.text()
+                    logger.error(f"{provider_name} API error {response.status}: {error_text}")
+                    return None
+        except asyncio.CancelledError as e:
+            logger.error(f"{provider_name} embedding error: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"{provider_name} embedding error: {e}")
+            return None
     
     async def _generate_ollama_embedding(self, text: str, fallback: bool = False) -> List[float]:
         """Generate embedding using Ollama"""
@@ -2673,47 +2771,35 @@ class EmbeddingService:
             
         base_url = config.get("base_url", "http://localhost:11434")
         model = config.get("model", "nomic-embed-text")
+        self.embeddings_endpoint = f"{base_url.rstrip('/')}/api/embeddings"
         
         async with aiohttp.ClientSession() as session:
-            payload = {"model": model, "prompt": text}
-            async with session.post(f"{base_url}/api/embeddings", json=payload) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get("embedding")
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Ollama API error {response.status}: {error_text}")
-                    return None
+            try:
+                payload = {"model": model, "prompt": text}
+                async with session.post(self.embeddings_endpoint, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data.get("embedding")
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Ollama API error {response.status}: {error_text}")
+                        return None
+            except asyncio.CancelledError as e:
+                logger.error(f"Ollama embedding error: {e}")
+                return None
+            except Exception as e:
+                logger.error(f"Ollama embedding error: {e}")
+                return None
     
     async def _generate_lm_studio_embedding(self, text: str, fallback: bool = False) -> List[float]:
-        """Generate embedding using LM Studio"""
+        """Generate embedding using any OpenAI-compatible local endpoint."""
         if fallback:
             config = self.fallback_config
         else:
-            config = self.primary_config if self.primary_config.get("provider") == "lm_studio" else self.fallback_config
-            
-        base_url = config.get("base_url", "http://localhost:1234")
-        model = config.get("model", "text-embedding-nomic-embed-text-v1.5")
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                payload = {"model": model, "input": text}
-                async with session.post(f"{base_url}/v1/embeddings", json=payload) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data and "data" in data and len(data["data"]) > 0:
-                            embedding = data["data"][0].get("embedding")
-                            if embedding:
-                                return embedding
-                        logger.error(f"Invalid LM Studio response format: {data}")
-                        return None
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"LM Studio API error {response.status}: {error_text}")
-                        return None
-        except Exception as e:
-            logger.error(f"LM Studio embedding error: {e}")
-            return None
+            config = self.primary_config if self.primary_config.get("provider") in {"lm_studio", "llama_cpp", "custom"} else self.fallback_config
+
+        provider_name = config.get("provider", "lm_studio")
+        return await self._generate_openai_compatible_embedding(text, config, provider_name)
     
     async def _generate_openai_embedding(self, text: str, fallback: bool = False) -> List[float]:
         """Generate embedding using OpenAI"""
@@ -2744,9 +2830,338 @@ class EmbeddingService:
                         error_text = await response.text()
                         logger.error(f"OpenAI API error {response.status}: {error_text}")
                         return None
+        except asyncio.CancelledError as e:
+            logger.error(f"OpenAI embedding error: {e}")
+            return None
         except Exception as e:
             logger.error(f"OpenAI embedding error: {e}")
             return None
+
+
+class RerankingService:
+    """Optional reranking service abstraction kept separate from first-stage retrieval."""
+
+    def __init__(self, config: Dict[str, Any] = None):
+        if config:
+            self.primary_config = config
+            self.fallback_config = config.get("fallback", {})
+            self.full_config = {"primary": config, "fallback": self.fallback_config}
+        else:
+            self.full_config = self._load_full_config()
+            self.primary_config = self.full_config.get("primary", {})
+            self.fallback_config = self.full_config.get("fallback", {})
+
+        self.rerank_endpoint = self._build_rerank_endpoint(self.primary_config)
+        self.provider_availability = {
+            "llama_cpp": None,
+            "custom": None,
+            "cohere": None,
+            "jina": None,
+        }
+        self.provider_retry_after = {}
+        self.last_reranking_latency_ms = 0.0
+        self.last_candidate_count = 0
+        self.last_reranking_applied = False
+        self._generative_reranker_detected = False
+
+        print("Reranking Service Configuration")
+        print(
+            f"Primary: {self.primary_config.get('provider', 'disabled')} "
+            f"({self.primary_config.get('model', 'none')})"
+        )
+        print(f"Enabled: {self.primary_config.get('enabled', False)}")
+
+    def _load_full_config(self) -> dict:
+        """Load complete reranking configuration from the shared JSON file."""
+        try:
+            config_path = Path(__file__).parent / "embedding_config.json"
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    config_data = json.load(f)
+                    return config_data.get("reranking_configuration", {})
+        except Exception as e:
+            logger.warning(f"Failed to load reranking config: {e}, using defaults")
+
+        return {
+            "primary": {
+                "enabled": False,
+                "provider": "llama_cpp",
+                "model": "Qwen.Qwen3-Reranker-4B.Q4_K_S.gguf",
+                "base_url": "http://localhost:8080",
+                "rerank_path": "/rerank",
+                "description": "Local GGUF reranker endpoint"
+            },
+            "fallback": {}
+        }
+
+    @classmethod
+    def create_with_user_config(cls) -> 'RerankingService':
+        """Create reranking service with config file defaults."""
+        return cls()
+
+    def _build_rerank_endpoint(self, config: Dict[str, Any]) -> str:
+        """Build the effective rerank endpoint for diagnostics and requests."""
+        custom_endpoint = config.get("rerank_endpoint")
+        if custom_endpoint:
+            return custom_endpoint.rstrip("/")
+
+        base_url = config.get("base_url", "http://localhost:8080").rstrip("/")
+        rerank_path = config.get("rerank_path", "/rerank")
+        if not rerank_path.startswith("/"):
+            rerank_path = f"/{rerank_path}"
+        return f"{base_url}{rerank_path}"
+
+    def is_enabled(self) -> bool:
+        """Whether reranking is enabled in config."""
+        return bool(self.primary_config.get("enabled", False))
+
+    def get_candidate_limit(self, default: int = 30) -> int:
+        """Return the configured bounded candidate count for production reranking."""
+        try:
+            value = int(self.primary_config.get("candidate_count", default))
+        except (TypeError, ValueError):
+            value = default
+        return max(1, value)
+
+    def get_final_result_count(self, default: int = 5) -> int:
+        """Return the configured final top-N after reranking."""
+        try:
+            value = int(self.primary_config.get("final_top_n", default))
+        except (TypeError, ValueError):
+            value = default
+        return max(1, value)
+
+    def get_timeout_seconds(self, default: float = 5.0) -> float:
+        """Return the configured reranking timeout for HTTP requests."""
+        try:
+            value = float(self.primary_config.get("timeout_seconds", default))
+        except (TypeError, ValueError):
+            value = default
+        return max(0.5, value)
+
+    def get_retry_cooldown_seconds(self, default: float = 30.0) -> float:
+        """Return cooldown applied after reranker endpoint failures."""
+        try:
+            value = float(self.primary_config.get("unavailable_retry_seconds", default))
+        except (TypeError, ValueError):
+            value = default
+        return max(1.0, value)
+
+    def get_confidence_bypass_threshold(self) -> float:
+        """Return the top-1 similarity score above which BGE reranking is skipped.
+
+        When the highest-scoring candidate after semantic + lexical hybrid rescoring
+        already exceeds this threshold, the result is considered high-confidence and
+        the cross-encoder HTTP call (~1500ms) is bypassed entirely.
+
+        Set to 1.1 in config to always rerank; set to 0.0 to disable the bypass.
+        Default 0.92 is conservative: only very clean, unambiguous queries skip BGE.
+        """
+        try:
+            value = float(self.primary_config.get("confidence_bypass_threshold", 0.92))
+        except (TypeError, ValueError):
+            value = 0.92
+        return max(0.0, min(1.5, value))
+
+    def _provider_is_in_cooldown(self, provider_name: str) -> bool:
+        """Check whether failed provider should be skipped temporarily."""
+        retry_after = self.provider_retry_after.get(provider_name, 0.0)
+        return retry_after > time.time()
+
+    def _mark_provider_unavailable(self, provider_name: str):
+        """Record provider failure and defer the next network retry."""
+        self.provider_availability[provider_name] = False
+        self.provider_retry_after[provider_name] = time.time() + self.get_retry_cooldown_seconds()
+
+    def _mark_provider_available(self, provider_name: str):
+        """Clear provider cooldown after a successful rerank request."""
+        self.provider_availability[provider_name] = True
+        self.provider_retry_after.pop(provider_name, None)
+
+    @property
+    def config(self) -> Dict[str, Any]:
+        """Expose current reranker configuration for diagnostics."""
+        return {
+            "enabled": self.primary_config.get("enabled", False),
+            "provider": self.primary_config.get("provider"),
+            "model": self.primary_config.get("model"),
+            "base_url": self.primary_config.get("base_url"),
+            "rerank_endpoint": self.rerank_endpoint,
+            "fallback_provider": self.fallback_config.get("provider"),
+            "fallback_model": self.fallback_config.get("model"),
+            "last_reranking_latency_ms": self.last_reranking_latency_ms,
+            "last_candidate_count": self.last_candidate_count,
+            "last_reranking_applied": self.last_reranking_applied,
+        }
+
+    def _build_headers(self, config: Dict[str, Any]) -> Dict[str, str]:
+        """Build auth headers for reranking providers when needed."""
+        headers = {"Content-Type": "application/json"}
+        api_key = config.get("api_key")
+        if api_key and api_key not in {"", "your-api-key-here", "lm_studio", "llama_cpp"}:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
+    def _normalize_rerank_response(self, payload: Dict[str, Any], documents: List[str]) -> List[Dict[str, Any]]:
+        """Normalize common rerank response shapes into a stable ranked list."""
+        candidates = payload.get("results") or payload.get("data") or payload.get("rankings") or []
+        if isinstance(payload, list):
+            candidates = payload
+
+        normalized_results = []
+        for fallback_index, item in enumerate(candidates):
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index", item.get("document_index", fallback_index))
+            if not isinstance(index, int) or index < 0 or index >= len(documents):
+                continue
+
+            score = item.get("relevance_score", item.get("score", item.get("relevance", 0.0)))
+            try:
+                score = float(score)
+            except (TypeError, ValueError):
+                score = 0.0
+
+            normalized_results.append(
+                {
+                    "index": index,
+                    "relevance_score": score,
+                    "document": documents[index],
+                }
+            )
+
+        normalized_results.sort(key=lambda item: item["relevance_score"], reverse=True)
+        return normalized_results
+
+    async def _rerank_with_http_endpoint(
+        self,
+        query: str,
+        documents: List[str],
+        config: Dict[str, Any],
+        provider_name: str,
+        top_n: int,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Rerank documents against a generic JSON endpoint."""
+        endpoint = self._build_rerank_endpoint(config)
+        headers = self._build_headers(config)
+        payload = {
+            "model": config.get("model"),
+            "query": query,
+            "documents": documents,
+            "top_n": top_n,
+        }
+
+        started = time.perf_counter()
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.get_timeout_seconds())
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(endpoint, json=payload, headers=headers) as response:
+                    self.last_reranking_latency_ms = (time.perf_counter() - started) * 1000
+                    self.last_candidate_count = len(documents)
+                    self.rerank_endpoint = endpoint
+
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"{provider_name} rerank API error {response.status}: {error_text}")
+                        return None
+
+                    raw_text = await response.text()
+                    import json as _json
+                    payload = _json.loads(raw_text)
+                    normalized_results = self._normalize_rerank_response(payload, documents)
+                    if normalized_results:
+                        return normalized_results[:top_n]
+
+                    logger.error(f"Invalid {provider_name} rerank response format: {payload}")
+                    return None
+        except asyncio.CancelledError as e:
+            logger.error(f"{provider_name} rerank request cancelled: {e}")
+            return None
+        except Exception as e:
+            import traceback as _tb
+            logger.error(f"{provider_name} rerank error [{type(e).__name__}]: {e}\n{_tb.format_exc()}")
+            return None
+
+    def _default_pass_through_ranking(self, documents: List[str], top_n: int) -> List[Dict[str, Any]]:
+        """Return original ordering when reranking is unavailable or disabled."""
+        self.last_reranking_applied = False
+        limited_documents = documents[:top_n]
+        return [
+            {"index": index, "relevance_score": 0.0, "document": document}
+            for index, document in enumerate(limited_documents)
+        ]
+
+    async def rerank_documents(self, query: str, documents: List[str], top_n: int = None) -> List[Dict[str, Any]]:
+        """Rerank a candidate list using the configured provider, with graceful fallback."""
+        if not documents:
+            return []
+
+        top_n = top_n or len(documents)
+        if not self.is_enabled():
+            return self._default_pass_through_ranking(documents, top_n)
+
+        primary_provider = self.primary_config.get("provider", "llama_cpp")
+        if self._generative_reranker_detected or self._provider_is_in_cooldown(primary_provider):
+            return self._default_pass_through_ranking(documents, top_n)
+        result = await self._rerank_with_http_endpoint(query, documents, self.primary_config, primary_provider, top_n)
+        if result:
+            max_score = max(r["relevance_score"] for r in result)
+            # BGE-style rerankers return logits in range ~[-12, 12] — max can be negative.
+            # Qwen3-generative rerankers via pooling=rank yield near-zero positive values
+            # like 6e-24. Detect by checking absolute max < 1e-10 (catches only truly
+            # near-zero positive floats, not meaningful negative logits).
+            abs_max = max(abs(r["relevance_score"]) for r in result)
+            if abs_max < 1e-10:
+                # Generative reranker (e.g. Qwen3) served via pooling=rank yields
+                # near-zero scores — ordering is not meaningful. Fall through to
+                # lexical hybrid without marking the provider unavailable.
+                self._generative_reranker_detected = True
+                logger.warning(
+                    f"{primary_provider} produced near-zero relevance scores "
+                    f"(abs_max={abs_max:.2e}). Reranker may be a generative model "
+                    f"incompatible with pooling=rank. Using lexical hybrid fallback "
+                    f"for this session."
+                )
+                return self._default_pass_through_ranking(documents, top_n)
+            self._mark_provider_available(primary_provider)
+            self.last_reranking_applied = True
+            return result
+
+        self._mark_provider_unavailable(primary_provider)
+        fallback_provider = self.fallback_config.get("provider")
+        if fallback_provider and self.fallback_config.get("enabled", False):
+            if self._provider_is_in_cooldown(fallback_provider):
+                return self._default_pass_through_ranking(documents, top_n)
+            result = await self._rerank_with_http_endpoint(query, documents, self.fallback_config, fallback_provider, top_n)
+            if result:
+                self._mark_provider_available(fallback_provider)
+                self.last_reranking_applied = True
+                return result
+            self._mark_provider_unavailable(fallback_provider)
+
+        return self._default_pass_through_ranking(documents, top_n)
+
+    async def smoke_test(self) -> Dict[str, Any]:
+        """Run a minimal reranking smoke test when enabled."""
+        if not self.is_enabled():
+            return {
+                "status": "disabled",
+                "enabled": False,
+                "endpoint": self.rerank_endpoint,
+            }
+
+        sample_documents = [
+            "Persistent memory configuration for embeddings and reranking.",
+            "Appointment reminder and schedule entry.",
+        ]
+        results = await self.rerank_documents("embedding reranker configuration", sample_documents, top_n=2)
+        return {
+            "status": "healthy" if results else "unhealthy",
+            "enabled": True,
+            "endpoint": self.rerank_endpoint,
+            "result_count": len(results),
+            "last_reranking_latency_ms": round(self.last_reranking_latency_ms, 2),
+        }
 
 
 class PersistentAIMemorySystem:
@@ -2767,14 +3182,15 @@ class PersistentAIMemorySystem:
             enable_file_monitoring = settings.enable_file_monitoring
         
         # Initialize all 5 databases using settings paths
-        self.conversations_db = ConversationDatabase()
-        self.ai_memory_db = AIMemoryDatabase()
-        self.schedule_db = ScheduleDatabase()
-        self.vscode_db = VSCodeProjectDatabase()
-        self.mcp_db = MCPToolCallDatabase()
+        self.conversations_db = ConversationDatabase(db_path=str(settings.conversations_db_path))
+        self.ai_memory_db = AIMemoryDatabase(db_path=str(settings.ai_memories_db_path))
+        self.schedule_db = ScheduleDatabase(db_path=str(settings.schedule_db_path))
+        self.vscode_db = VSCodeProjectDatabase(db_path=str(settings.vscode_db_path))
+        self.mcp_db = MCPToolCallDatabase(db_path=str(settings.mcp_db_path))
         
         # Initialize embedding service with user-configurable options
         self.embedding_service = EmbeddingService.create_with_user_config()
+        self.reranking_service = RerankingService.create_with_user_config()
         
         # Initialize file monitoring
         self.file_monitor = None
@@ -2869,18 +3285,65 @@ class PersistentAIMemorySystem:
     async def create_memory(self, content: str, memory_type: str = None,
                           importance_level: int = 5, tags: List[str] = None,
                           source_conversation_id: str = None) -> Dict:
-        """Create a curated AI memory with automatic embedding generation"""
-        
+        """Create a curated AI memory with semantic deduplication.
+
+        Generates the embedding before inserting so that semantically equivalent
+        memories (raw cosine similarity >= 0.92) are rejected at ingestion time,
+        preventing corpus pollution that degrades retrieval and reranking quality.
+        The embedding is stored synchronously since it is already available.
+        """
+        # Build contextual text — same enrichment used by _add_embedding_to_memory
+        # so that dedup comparison is apples-to-apples with stored embeddings.
+        contextual_text = self._build_contextual_embedding_text(
+            content, memory_type, importance_level, tags or []
+        )
+        # Generate embedding first — needed for both dedup check and immediate storage
+        embedding = await self.embedding_service.generate_embedding(contextual_text)
+
+        # Semantic deduplication: scan existing embeddings without importance boosting
+        if embedding:
+            new_vec = np.array(embedding, dtype=np.float32)
+            new_norm = float(np.linalg.norm(new_vec))
+            if new_norm > 0:
+                rows = await self.ai_memory_db.execute_query(
+                    "SELECT memory_id, content, embedding FROM curated_memories WHERE embedding IS NOT NULL"
+                )
+                best_sim = 0.0
+                best_match = None
+                for row in rows:
+                    stored_vec = np.frombuffer(row["embedding"], dtype=np.float32)
+                    stored_norm = float(np.linalg.norm(stored_vec))
+                    if stored_norm == 0:
+                        continue
+                    sim = float(np.dot(new_vec, stored_vec) / (new_norm * stored_norm))
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_match = row
+                if best_sim >= 0.92 and best_match:
+                    return {
+                        "status": "deduplicated",
+                        "memory_id": best_match["memory_id"],
+                        "similarity": round(best_sim, 4),
+                        "existing_content": best_match["content"][:120],
+                        "message": "A semantically equivalent memory already exists. No new entry was created."
+                    }
+
+        # No duplicate — insert then store the already-generated embedding immediately
         memory_id = await self.ai_memory_db.create_memory(
             content, memory_type, importance_level, tags, source_conversation_id
         )
-        
-        # Generate and store embedding asynchronously
-        asyncio.create_task(self._add_embedding_to_memory(memory_id, content))
-        
+
+        if embedding:
+            embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
+            await self.ai_memory_db.execute_update(
+                "UPDATE curated_memories SET embedding = ? WHERE memory_id = ?",
+                (embedding_blob, memory_id)
+            )
+
         return {
             "status": "success",
-            "memory_id": memory_id
+            "memory_id": memory_id,
+            "contextual_prefix": contextual_text[:80] if embedding else None,
         }
 
     # =============================================================================
@@ -3199,37 +3662,129 @@ class PersistentAIMemorySystem:
             return await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type)
         
         all_results = []
+        candidate_limit = max(limit * 4, 20)
+        reranking_candidate_limit = min(candidate_limit, self.reranking_service.get_candidate_limit(default=30))
+        reranking_final_top_n = min(limit, self.reranking_service.get_final_result_count(default=limit))
         
         # Search AI memories
         if database_filter in ["all", "ai_memories"]:
-            memory_results = await self._search_ai_memories(query_embedding, limit, min_importance, max_importance, memory_type)
+            memory_results = await self._search_ai_memories(query_embedding, candidate_limit, min_importance, max_importance, memory_type)
             all_results.extend(memory_results)
         
         # Search conversations
         if database_filter in ["all", "conversations"]:
-            conversation_results = await self._search_conversations(query_embedding, limit)
+            conversation_results = await self._search_conversations(query_embedding, candidate_limit)
             all_results.extend(conversation_results)
         
         # Search schedule items
         if database_filter in ["all", "schedule"]:
-            schedule_results = await self._search_schedule(query_embedding, limit)
+            schedule_results = await self._search_schedule(query_embedding, candidate_limit)
             all_results.extend(schedule_results)
         
         # Search project insights
         if database_filter in ["all", "projects"]:
-            project_results = await self._search_project_insights(query_embedding, limit)
+            project_results = await self._search_project_insights(query_embedding, candidate_limit)
             all_results.extend(project_results)
+
+        for result in all_results:
+            result["similarity_score"] = self._apply_lightweight_hybrid_rescoring(query, result)
         
         # Sort all results by similarity score and return top results
         all_results.sort(key=lambda x: x["similarity_score"], reverse=True)
+
+        reranking_applied = False
+        confidence_bypassed = False
+        if all_results:
+            top_score = all_results[0]["similarity_score"]
+            bypass_threshold = self.reranking_service.get_confidence_bypass_threshold()
+            # Skip the expensive cross-encoder call when the semantic result is already
+            # high-confidence. Top score above the threshold means the embedding model
+            # already found a clear match and BGE is unlikely to change the top result.
+            if self.reranking_service.is_enabled() and top_score >= bypass_threshold:
+                confidence_bypassed = True
+            else:
+                rerank_candidates = all_results[:reranking_candidate_limit]
+                reranked_prefix = await self.rerank_search_results(query, rerank_candidates, top_n=len(rerank_candidates))
+                reranking_applied = self.reranking_service.last_reranking_applied
+                if reranked_prefix:
+                    all_results = reranked_prefix + all_results[reranking_candidate_limit:]
         
         return {
             "status": "success",
             "query": query,
-            "results": all_results[:limit],
-            "count": len(all_results[:limit]),
-            "search_type": "semantic" if query_embedding else "text_based"
+            "results": all_results[:reranking_final_top_n],
+            "count": len(all_results[:reranking_final_top_n]),
+            "search_type": "semantic" if query_embedding else "text_based",
+            "candidate_count_before_reranking": min(len(all_results), reranking_candidate_limit),
+            "reranking_enabled": self.reranking_service.is_enabled(),
+            "reranking_applied": reranking_applied,
+            "confidence_bypassed": confidence_bypassed,
+            "reranking_latency_ms": round(self.reranking_service.last_reranking_latency_ms, 2),
         }
+
+    async def rerank_search_results(self, query: str, results: List[Dict[str, Any]], top_n: int = None) -> List[Dict[str, Any]]:
+        """Reranks candidates using Rank-Weighted Fusion (RWF): 70% semantic rank + 30% BGE rank.
+
+        Pure BGE reranking can hurt quality when near-duplicate documents share the same base
+        content as the canonical answer plus extra keywords that raise BGE scores artificially.
+        RWF prevents the cross-encoder from completely overriding a strong semantic ranking while
+        still letting BGE provide a meaningful signal where semantic retrieval is uncertain.
+
+        final_score(d) = 0.7 / semantic_rank(d) + 0.3 / bge_rank(d)
+        """
+        if not results:
+            return []
+
+        top_n = top_n or len(results)
+        candidate_texts = [self._build_searchable_text(result) for result in results]
+        bge_candidates = await self.reranking_service.rerank_documents(query, candidate_texts, top_n=len(results))
+
+        reranking_applied = self.reranking_service.last_reranking_applied
+
+        if not reranking_applied or not bge_candidates:
+            # Fall-through: pass-through in original semantic order
+            reranked_results = []
+            for i, result in enumerate(results[:top_n]):
+                r = dict(result)
+                r["reranker_score"] = 0.0
+                r["search_stage"] = "candidate"
+                reranked_results.append(r)
+            return reranked_results
+
+        # Build BGE rank lookup: original_index -> 1-based BGE rank
+        bge_rank_of = {}
+        for bge_pos, rc in enumerate(bge_candidates, start=1):
+            orig_idx = rc.get("index")
+            if orig_idx is not None and 0 <= orig_idx < len(results):
+                bge_rank_of[orig_idx] = bge_pos
+                bge_rank_of.setdefault(orig_idx, bge_pos)  # noqa: keep first assignment
+
+        n_candidates = len(results)
+        fallback_bge_rank = n_candidates + 1  # penalty rank for candidates not returned by BGE
+
+        # Compute Rank-Weighted Fusion score for every candidate
+        scored = []
+        for sem_rank_0, result in enumerate(results):
+            sem_rank = sem_rank_0 + 1  # 1-based
+            bge_rank = bge_rank_of.get(sem_rank_0, fallback_bge_rank)
+            rwf_score = 0.7 / sem_rank + 0.3 / bge_rank
+            scored.append((rwf_score, sem_rank_0, result))
+
+        scored.sort(key=lambda x: -x[0])
+
+        reranked_results = []
+        for rwf_score, orig_idx, result in scored[:top_n]:
+            r = dict(result)
+            bge_entry = next(
+                (rc for rc in bge_candidates if rc.get("index") == orig_idx),
+                None,
+            )
+            r["reranker_score"] = bge_entry["relevance_score"] if bge_entry else 0.0
+            r["rwf_score"] = round(rwf_score, 6)
+            r["search_stage"] = "reranked"
+            reranked_results.append(r)
+
+        return reranked_results
 
     # =============================================================================
     # SYSTEM HEALTH AND MONITORING
@@ -3242,7 +3797,8 @@ class PersistentAIMemorySystem:
             "timestamp": get_current_timestamp(),
             "databases": {},
             "file_monitoring": {},
-            "embedding_service": {}
+            "embedding_service": {},
+            "reranking_service": {}
         }
         
         try:
@@ -3347,11 +3903,29 @@ class PersistentAIMemorySystem:
                     "endpoint": self.embedding_service.embeddings_endpoint,
                     "error": str(e)
                 }
+
+            try:
+                rerank_health = await self.reranking_service.smoke_test()
+                rerank_health["provider"] = self.reranking_service.config.get("provider")
+                rerank_health["model"] = self.reranking_service.config.get("model")
+                health_data["reranking_service"] = rerank_health
+            except Exception as e:
+                health_data["reranking_service"] = {
+                    "status": "unhealthy",
+                    "enabled": self.reranking_service.is_enabled(),
+                    "endpoint": self.reranking_service.rerank_endpoint,
+                    "error": str(e)
+                }
             
             # Overall system status
             unhealthy_components = []
             if health_data["embedding_service"]["status"] == "unhealthy":
                 unhealthy_components.append("embedding_service")
+            if (
+                health_data["reranking_service"].get("enabled")
+                and health_data["reranking_service"].get("status") == "unhealthy"
+            ):
+                unhealthy_components.append("reranking_service")
             
             if unhealthy_components:
                 health_data["status"] = "degraded"
@@ -3412,10 +3986,44 @@ class PersistentAIMemorySystem:
                     }
                     results.append(result)
         
-        # Boost results based on importance level
+        # Sprint 6: Type-Quality Composite Boost
+        # --------------------------------------------------------------------
+        # Replaces the flat importance_level boost with a 2D composite:
+        #   quality_boost = type_weight  × (importance_level/10) × SCALE
+        #
+        # type_weight encodes how "information-dense" each memory type is:
+        #   - Anchor types (feature/testing/configuration): 0.9
+        #   - Noise / synthetic filler types: 0.1–0.2
+        #
+        # This creates a 4–7× gap between anchor memories and filler memories
+        # even when filler content has higher raw embedding similarity to the
+        # query (e.g., a generic "busqueda semantica" filler vs the specific
+        # search_memories feature anchor).  The correction type retains its
+        # existing +0.35 flat bonus on top of the composite boost.
+        _TYPE_QUALITY_WEIGHT = {
+            "correction":    1.0,
+            "feature":       0.9,
+            "testing":       0.9,
+            "configuration": 0.9,
+            "operations":    0.8,
+            "ai_memory":     0.8,
+            "general":       0.7,
+            "mixed_context": 0.5,
+            "project_note":  0.4,
+            "ops_note":      0.3,
+            "support_note":  0.2,
+            "noise":         0.1,
+        }
+        _BOOST_SCALE = 0.3  # max possible: 1.0 (correction) × 1.0 (imp=10) × 0.3 = 0.30
         for result in results:
-            importance_boost = result["data"]["importance_level"] / 10.0 * 0.1
-            result["similarity_score"] += importance_boost
+            mt = result["data"].get("memory_type", "general")
+            imp = result["data"]["importance_level"]
+            type_weight = _TYPE_QUALITY_WEIGHT.get(mt, 0.5)
+            quality_boost = type_weight * (imp / 10.0) * _BOOST_SCALE
+            result["similarity_score"] += quality_boost
+            # Self-Correction boost: corrections are always surfaced first when relevant.
+            if result["data"].get("memory_type") == "correction":
+                result["similarity_score"] += 0.35
         
         results.sort(key=lambda x: x["similarity_score"], reverse=True)
         return results[:limit]
@@ -3564,6 +4172,117 @@ class PersistentAIMemorySystem:
         results.sort(key=lambda x: x["similarity_score"], reverse=True)
         return results[:limit]
     
+    def _tokenize_search_text(self, text: str) -> List[str]:
+        """Tokenize text for lightweight lexical ranking signals."""
+        if not text:
+            return []
+        normalized = text.lower().replace("_", " ").replace("-", " ")
+        tokens = re.findall(r"[a-z0-9:/.]+", normalized)
+        return [
+            token for token in tokens
+            if token not in SEARCH_STOPWORDS and (len(token) >= 3 or any(char.isdigit() for char in token))
+        ]
+
+    def _normalize_search_token(self, token: str) -> str:
+        """Normalize technical aliases and typo variants to a canonical search token."""
+        if not token:
+            return ""
+        compact_token = re.sub(r"[^a-z0-9]+", "", token.lower())
+        alias_value = SEARCH_TOKEN_ALIASES.get(compact_token)
+        if alias_value:
+            return alias_value
+        return token.lower()
+
+    def _build_normalized_token_set(self, text: str) -> set[str]:
+        """Build normalized single-token and compound-token features for cheap hybrid matching."""
+        raw_tokens = self._tokenize_search_text(text)
+        if not raw_tokens:
+            return set()
+
+        normalized_tokens = {self._normalize_search_token(token) for token in raw_tokens}
+        normalized_tokens = {token for token in normalized_tokens if token}
+
+        for window_size in (2, 3):
+            for start_index in range(len(raw_tokens) - window_size + 1):
+                compound_token = "".join(raw_tokens[start_index:start_index + window_size])
+                normalized_compound = self._normalize_search_token(compound_token)
+                if normalized_compound:
+                    normalized_tokens.add(normalized_compound)
+
+        return normalized_tokens
+
+    def _build_searchable_text(self, result: Dict[str, Any]) -> str:
+        """Build a unified textual representation for hybrid rescoring."""
+        data = result.get("data", {})
+        text_parts = [
+            data.get("content", ""),
+            data.get("title", ""),
+            data.get("description", ""),
+            data.get("location", ""),
+            data.get("memory_type", ""),
+            data.get("insight_type", ""),
+            data.get("role", ""),
+        ]
+
+        tags = data.get("tags") or []
+        if isinstance(tags, list):
+            text_parts.extend(str(tag) for tag in tags)
+
+        related_files = data.get("related_files") or []
+        if isinstance(related_files, list):
+            text_parts.extend(str(path) for path in related_files)
+
+        return " ".join(part for part in text_parts if part)
+
+    def _calculate_lexical_match_score(self, query: str, result: Dict[str, Any]) -> float:
+        """Compute inexpensive lexical and fuzzy-match signals for reranking."""
+        searchable_text = self._build_searchable_text(result).lower()
+        if not searchable_text:
+            return 0.0
+
+        query_tokens = self._tokenize_search_text(query)
+        if not query_tokens:
+            return 0.0
+
+        normalized_query_tokens = self._build_normalized_token_set(query)
+        searchable_tokens = self._build_normalized_token_set(searchable_text)
+        exact_matches = sum(1 for token in normalized_query_tokens if token in searchable_tokens)
+        fuzzy_matches = 0
+        for token in normalized_query_tokens:
+            if token in searchable_tokens or len(token) < 5:
+                continue
+            if any(difflib.SequenceMatcher(None, token, candidate).ratio() >= 0.84 for candidate in searchable_tokens):
+                fuzzy_matches += 1
+
+        normalized_query_count = max(len(normalized_query_tokens), 1)
+        token_coverage = exact_matches / normalized_query_count
+        fuzzy_coverage = fuzzy_matches / normalized_query_count
+        phrase_boost = 0.18 if query.lower() in searchable_text else 0.0
+
+        identifier_tokens = {
+            token for token in normalized_query_tokens
+            if any(char.isdigit() for char in token) or any(char in token for char in (":", "/", ".")) or len(token) >= 10
+        }
+        identifier_overlap = len(identifier_tokens & searchable_tokens)
+        identifier_boost = min(identifier_overlap * 0.05, 0.15)
+
+        tags = result.get("data", {}).get("tags") or []
+        tag_tokens = set()
+        for tag in tags:
+            if not tag:
+                continue
+            tag_tokens.update(self._build_normalized_token_set(str(tag)))
+        tag_overlap = len(normalized_query_tokens & tag_tokens)
+        tag_boost = min(tag_overlap * 0.04, 0.12)
+
+        return min((token_coverage * 0.22) + (fuzzy_coverage * 0.12) + phrase_boost + identifier_boost + tag_boost, 0.55)
+
+    def _apply_lightweight_hybrid_rescoring(self, query: str, result: Dict[str, Any]) -> float:
+        """Blend semantic score with lightweight lexical signals without external dependencies."""
+        base_score = float(result.get("similarity_score", 0.0))
+        lexical_boost = self._calculate_lexical_match_score(query, result)
+        return base_score + lexical_boost
+
     def _calculate_cosine_similarity(self, embedding1: List[float], embedding2: List[float]) -> float:
         """Calculate cosine similarity between two embeddings"""
         
@@ -3794,10 +4513,71 @@ class PersistentAIMemorySystem:
         except Exception as e:
             logger.error(f"Error adding embedding to message {message_id}: {e}")
     
+    @staticmethod
+    def _build_contextual_embedding_text(
+        content: str,
+        memory_type: str | None,
+        importance_level: int | None,
+        tags: list | None,
+    ) -> str:
+        """Build enriched text for embedding via Contextual Retrieval (Sprint 5).
+
+        Prepends a short context prefix before the raw content so that
+        semantically similar memories with different roles, importance, or tags
+        produce discriminative vectors.  The prefix is never shown to the user.
+
+        Format:  "{type} | importancia:{level} | [{tag1},{tag2}]: {content}"
+
+        Rationale:
+        - memory_type  : anchors the vector in the correct thematic cluster
+          (testing vs configuration vs feature).
+        - importance_level : numeric identifier — "importancia:8" vs "importancia:6"
+          creates distinct token identities, discriminating anchors (8) from
+          near-duplicates (6) in embedding space.
+        - tags          : surface canonical identifiers before the prose; the
+          model sees "health_check, validation" before a typo-heavy sentence.
+
+        NOTE (Sprint 6 analysis): a natural-language prefix ("feature del sistema,
+        importancia alta") was tested and caused catastrophic regression (-36pp
+        Top-1).  Natural language shares too many tokens between anchor prefix
+        and near-dup prefix, collapsing the distinction.  The compact numeric
+        format below is intentionally kept.
+        """
+        type_str = (memory_type or "general").lower().strip()
+        imp_str = str(importance_level) if importance_level is not None else "5"
+        tag_list = tags if tags else []
+        tag_str = ",".join(str(t).lower().strip() for t in tag_list[:5])
+        prefix = f"{type_str} | importancia:{imp_str} | [{tag_str}]: "
+        return prefix + content
+
     async def _add_embedding_to_memory(self, memory_id: str, content: str):
-        """Add embedding to a memory (background task)"""
+        """Add contextually-enriched embedding to a memory.
+
+        Fetches the memory row to obtain metadata (memory_type, importance_level,
+        tags) and prepends a context prefix before embedding.  This implements
+        the Contextual Retrieval principle: enrich document representations
+        without changing the query path, producing more discriminative vectors.
+        """
         try:
-            embedding = await self.embedding_service.generate_embedding(content)
+            # Fetch metadata for contextual enrichment
+            rows = await self.ai_memory_db.execute_query(
+                "SELECT memory_type, importance_level, tags FROM curated_memories WHERE memory_id = ?",
+                (memory_id,)
+            )
+            if rows:
+                row = rows[0]
+                tags_raw = row["tags"]
+                tags = json.loads(tags_raw) if tags_raw else []
+                contextual_text = self._build_contextual_embedding_text(
+                    content,
+                    row["memory_type"],
+                    row["importance_level"],
+                    tags,
+                )
+            else:
+                contextual_text = content
+
+            embedding = await self.embedding_service.generate_embedding(contextual_text)
             if embedding:
                 embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
                 await self.ai_memory_db.execute_update(

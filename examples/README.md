@@ -28,6 +28,24 @@ This directory contains practical examples demonstrating how to use the Persiste
 - **Best for**: System optimization, capacity planning
 - **Key features**: Detailed performance analysis, bottleneck identification
 
+#### `benchmark_memory.py`
+- **Purpose**: Benchmark semantic memory quality with your active embedding provider
+- **Demonstrates**: Two benchmark profiles: a fast baseline with a smaller cleaner corpus and one representative query per anchor for quick model comparisons, and a large stress test with ambiguous queries, typo-heavy queries, near-duplicates, and Top-1/Recall/MRR/latency metrics
+- **Best for**: Quick regression checks with `--profile baseline`, and deeper ranking stress-tests with `--profile stress`
+- **Key features**: Uses a temporary data directory, processes embeddings in controlled batches, writes a JSON report, and reports per-category Top-1 accuracy in baseline mode
+
+Quick commands:
+```bash
+# Fast baseline for comparing embeddings or ranking tweaks
+python examples/benchmark_memory.py --profile baseline
+
+# Baseline with all query variants when you want more coverage
+python examples/benchmark_memory.py --profile baseline --query-mode all
+
+# Large noisy run for stress testing
+python examples/benchmark_memory.py --profile stress --keep-data --corpus-size 10000 --batch-size 200 --concurrency 16 --limit 10
+```
+
 ## Use Case Examples
 
 ### 🤖 AI Assistant Memory

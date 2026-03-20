@@ -93,11 +93,27 @@ The system works out-of-the-box with sensible defaults, but you can customize:
 If you have LM Studio running locally:
 ```python
 from ai_memory_core import PersistentAIMemorySystem
+from settings import get_settings
 
-memory = PersistentAIMemorySystem(
-    embedding_service_url="http://localhost:1234/v1/embeddings"
-)
+settings = get_settings()
+memory = PersistentAIMemorySystem(settings=settings)
 ```
+
+Configure LM Studio through `embedding_config.json` using:
+
+```json
+{
+   "embedding_configuration": {
+      "primary": {
+         "provider": "lm_studio",
+         "model": "text-embedding-nomic-embed-text-v1.5",
+         "base_url": "http://localhost:1234"
+      }
+   }
+}
+```
+
+The code appends `/v1/embeddings` internally, so the base URL should remain `http://localhost:1234`.
 
 ### Custom Database Location
 

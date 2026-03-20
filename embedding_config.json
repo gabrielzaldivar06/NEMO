@@ -2,9 +2,9 @@
   "embedding_configuration": {
     "primary": {
       "provider": "lm_studio",
-      "model": "text-embedding-nomic-embed-text-v1.5",
+      "model": "text-embedding-qwen3-embedding-4b",
       "base_url": "http://localhost:1234",
-      "description": "LM Studio with Nomic embeddings - high quality for semantic search"
+      "description": "LM Studio local server using the loaded Qwen3 Embedding 4B identifier"
     },
     "fallback": {
       "provider": "ollama",
@@ -13,19 +13,55 @@
       "description": "Ollama fallback - fast local embeddings"
     },
     "options": {
+      "lm_studio": {
+        "provider": "lm_studio",
+        "model": "text-embedding-nomic-embed-text-v1.5",
+        "base_url": "http://localhost:1234",
+        "description": "LM Studio embedding server using an OpenAI-compatible API"
+      },
+      "llama_cpp": {
+        "provider": "llama_cpp",
+        "model": "qwen3-embedding-4b-q8_0.gguf",
+        "base_url": "http://localhost:1234",
+        "description": "llama.cpp server started with --embeddings"
+      },
+      "lm_studio_qwen3": {
+        "provider": "lm_studio",
+        "model": "qwen3-embed-4b",
+        "base_url": "http://localhost:1234",
+        "description": "LM Studio CLI-loaded Qwen3 Embedding 4B model identifier"
+      },
       "openai": {
         "provider": "openai",
         "model": "text-embedding-3-small",
         "base_url": "https://api.openai.com/v1",
         "api_key": "your-openai-api-key-here",
         "description": "OpenAI embeddings (requires API key)"
-      },
-      "custom": {
-        "provider": "custom",
-        "model": "your-model-name",
-        "base_url": "http://your-server:port",
-        "description": "Custom embedding server"
       }
+    }
+  },
+  "reranking_configuration": {
+    "primary": {
+      "enabled": true,
+      "provider": "llama_cpp",
+      "model": "bge-reranker-v2-m3-Q4_K_M.gguf",
+      "base_url": "http://localhost:8080",
+      "rerank_path": "/v1/rerank",
+      "candidate_count": 30,
+      "final_top_n": 5,
+      "timeout_seconds": 20,
+      "unavailable_retry_seconds": 60,
+      "confidence_bypass_threshold": 0.92,
+      "model_path": "C:/Users/gabri/.lmstudio/models/gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf",
+      "description": "BGE-reranker-v2-m3 encoder cross-encoder: XLM-RoBERTa based, compatible with llama-server --pooling rank"
+    },
+    "fallback": {
+      "enabled": false,
+      "provider": "custom",
+      "model": "your-reranker-model",
+      "base_url": "http://localhost:8080",
+      "rerank_path": "/rerank",
+      "description": "Optional fallback reranking endpoint"
     }
   },
   "instructions": {
@@ -33,16 +69,19 @@
       "1. Edit this file to configure your preferred embedding providers",
       "2. Set 'primary' to your main embedding service",
       "3. Set 'fallback' to a backup service",
-      "4. For Ollama: Make sure qwen2.5:1.5b is pulled (ollama pull qwen2.5:1.5b)",
-      "5. For LM Studio: Load an embedding model",
-      "6. For OpenAI: Add your API key",
-      "7. Restart the memory system to apply changes"
+      "4. Run start_qwen_embedding_server.ps1 or .bat to start either llama.cpp or LM Studio",
+      "5. For Ollama: pull nomic-embed-text if you want a fallback provider",
+      "6. For LM Studio: the loaded model identifier is qwen3-embed-4b",
+      "7. For reranking: the real llama.cpp endpoint is configured as http://localhost:8080/v1/rerank",
+      "8. For OpenAI: add your API key",
+      "9. Restart the memory system to apply changes"
     ],
     "providers": {
-      "ollama": "Fastest and most efficient for local use",
-      "lm_studio": "Good balance of speed and quality", 
+      "llama_cpp": "Recommended local setup for Qwen3 GGUF embedding models",
+      "ollama": "Simple local fallback",
+      "lm_studio": "OpenAI-compatible local server if LM Studio recognizes your embedding model", 
       "openai": "High quality but requires internet and API costs",
-      "custom": "For custom embedding servers"
+      "custom": "Any HTTP reranking or embedding server with a compatible JSON contract"
     }
   }
 }

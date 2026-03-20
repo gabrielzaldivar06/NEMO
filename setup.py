@@ -18,7 +18,14 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/savantskie/persistent-ai-memory",
     packages=find_packages(),
-    py_modules=["ai_memory_core", "mcp_server"],
+    py_modules=[
+        "ai_memory_core",
+        "ai_memory_mcp_server",
+        "database_maintenance",
+        "settings",
+        "tag_manager",
+        "utils",
+    ],
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers", 
@@ -50,7 +57,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "pams-server=persistent_ai_memory.mcp_server:main",
+            "pams-server=ai_memory_mcp_server:cli",
         ],
     },
 )

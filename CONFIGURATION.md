@@ -102,55 +102,55 @@ export LLM_API_KEY="your-api-key"
 
 The **embedding_config.json** file configures which service provides vector embeddings for semantic search.
 
-**Location:** `~/.ai_memory/embedding_config.json`
+**Location:** project root as `embedding_config.json`
 
-**Minimal Example** (using Ollama):
+**Recommended Example** (local llama.cpp + Qwen3 GGUF):
 ```json
 {
-  "primary_provider": "ollama",
-  "embedding_cache_path": "~/.ai_memory/memory_embeddings.db",
-  "providers": {
-    "ollama": {
-      "api_url": "http://127.0.0.1:11434",
-      "model_name": "nomic-embed-text"
+  "embedding_configuration": {
+    "primary": {
+      "provider": "llama_cpp",
+      "model": "qwen3-embedding-4b-q8_0.gguf",
+      "base_url": "http://localhost:1234"
+    },
+    "fallback": {
+      "provider": "ollama",
+      "model": "nomic-embed-text",
+      "base_url": "http://127.0.0.1:11434"
     }
   }
 }
 ```
 
-**Production Example** (with fallback providers):
+**Alternative Example** (LM Studio if it recognizes your embedding model):
 ```json
 {
-  "primary_provider": "lm_studio",
-  "fallback_providers": ["ollama", "openai"],
-  "embedding_cache_path": "~/.ai_memory/memory_embeddings.db",
-  "providers": {
-    "lm_studio": {
-      "api_url": "http://localhost:1234/v1",
-      "api_key": "lm_studio"
+  "embedding_configuration": {
+    "primary": {
+      "provider": "lm_studio",
+      "model": "text-embedding-nomic-embed-text-v1.5",
+      "base_url": "http://localhost:1234",
+      "description": "High-quality LM Studio embeddings for semantic search"
     },
-    "ollama": {
-      "api_url": "http://127.0.0.1:11434",
-      "model_name": "nomic-embed-text"
-    },
-    "openai": {
-      "api_url": "https://api.openai.com/v1",
-      "api_key": "${OPENAI_API_KEY}"
+    "fallback": {
+      "provider": "ollama",
+      "model": "nomic-embed-text",
+      "base_url": "http://127.0.0.1:11434",
+      "description": "Fast local Ollama fallback embeddings"
     }
-  },
-  "embedding_dimension": 384,
-  "batch_size": 32,
-  "timeout_seconds": 30
+  }
 }
 ```
 
+Use the service base URL in this file, not the full embeddings endpoint. For `llama_cpp`, `lm_studio`, and `custom`, the client appends `/v1/embeddings` internally. For `ollama`, the client calls `/api/embeddings`.
+
 **Configuration Options:**
-- `primary_provider` - Main embedding provider to use
-- `fallback_providers` - (Optional) List of providers to use if primary fails
-- `embedding_cache_path` - Path to SQLite database storing computed embeddings
-- `embedding_dimension` - Size of embedding vectors (affects performance + accuracy)
-- `batch_size` - How many embeddings to compute at once
-- `timeout_seconds` - API request timeout
+- `embedding_configuration.primary.provider` - Main embedding provider to use
+- `embedding_configuration.primary.model` - Model name for the main provider
+- `embedding_configuration.primary.base_url` - Base URL for the main provider
+- `embedding_configuration.fallback.provider` - Backup provider if the primary fails
+- `embedding_configuration.fallback.model` - Model name for the fallback provider
+- `embedding_configuration.fallback.base_url` - Base URL for the fallback provider
 
 ### memory_config.json
 
@@ -263,7 +263,40 @@ The **memory_config.json** file (NEW in v1.1.0) provides default configuration f
 
 ## 🔌 Embedding Provider Setup
 
-### Ollama (Local, Fastest)
+### llama.cpp + Qwen3 GGUF (Recommended on Windows)
+
+This is the recommended setup for this repository if you downloaded:
+
+- `miloK1/Qwen3-Embedding-4B-Q8_0-GGUF`
+
+and you have the local file:
+
+- `C:\Users\<your-user>\.lmstudio\models\miloK1\Qwen3-Embedding-4B-Q8_0-GGUF\qwen3-embedding-4b-q8_0.gguf`
+
+**Start server:**
+```powershell
+llama-server -m "C:\Users\<your-user>\.lmstudio\models\miloK1\Qwen3-Embedding-4B-Q8_0-GGUF\qwen3-embedding-4b-q8_0.gguf" --embeddings -c 2048 --port 1234
+```
+
+**embedding_config.json:**
+```json
+{
+  "embedding_configuration": {
+    "primary": {
+      "provider": "llama_cpp",
+      "model": "qwen3-embedding-4b-q8_0.gguf",
+      "base_url": "http://localhost:1234"
+    },
+    "fallback": {
+      "provider": "ollama",
+      "model": "nomic-embed-text",
+      "base_url": "http://127.0.0.1:11434"
+    }
+  }
+}
+```
+
+### Ollama (Local Fallback)
 
 **Installation:**
 ```bash
@@ -289,37 +322,37 @@ ollama pull mxbai-embed-large
 **embedding_config.json:**
 ```json
 {
-  "primary_provider": "ollama",
-  "providers": {
-    "ollama": {
-      "api_url": "http://127.0.0.1:11434",
-      "model_name": "nomic-embed-text"
+  "embedding_configuration": {
+    "primary": {
+      "provider": "ollama",
+      "model": "nomic-embed-text",
+      "base_url": "http://127.0.0.1:11434"
     }
-  },
-  "embedding_cache_path": "~/.ai_memory/memory_embeddings.db"
+  }
 }
 ```
 
-### LM Studio (High-Quality Embeddings)
+### LM Studio (Optional Alternative)
 
 **Installation:**
 1. Download from https://lmstudio.ai
 2. Launch LM Studio
-3. Go to Server tab
-4. Select embedding model: "Nomic Embed Text" or "mxbai-embed-large"
-5. Start server on port 1234
+3. Load an embedding-capable model that LM Studio exposes through its local API
+4. Go to `Server`
+5. Start server on port `1234`
+
+If LM Studio does not list your GGUF embedding model, use `llama.cpp` instead.
 
 **embedding_config.json:**
 ```json
 {
-  "primary_provider": "lm_studio",
-  "providers": {
-    "lm_studio": {
-      "api_url": "http://localhost:1234/v1",
-      "api_key": "lm_studio"
+  "embedding_configuration": {
+    "primary": {
+      "provider": "lm_studio",
+      "model": "text-embedding-nomic-embed-text-v1.5",
+      "base_url": "http://localhost:1234"
     }
-  },
-  "embedding_cache_path": "~/.ai_memory/memory_embeddings.db"
+  }
 }
 ```
 
@@ -333,39 +366,35 @@ ollama pull mxbai-embed-large
 **embedding_config.json:**
 ```json
 {
-  "primary_provider": "openai",
-  "providers": {
-    "openai": {
-      "api_url": "https://api.openai.com/v1",
-      "api_key": "${OPENAI_API_KEY}",
-      "model_name": "text-embedding-3-small"
+  "embedding_configuration": {
+    "primary": {
+      "provider": "openai",
+      "model": "text-embedding-3-small",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "${OPENAI_API_KEY}"
     }
-  },
-  "embedding_cache_path": "~/.ai_memory/memory_embeddings.db"
+  }
 }
 ```
 
 ### Multi-Provider Setup (Recommended for Production)
 
-Use LM Studio as primary (high quality) with Ollama fallback (fast local):
+Use `llama.cpp` as primary with Ollama fallback:
 
 ```json
 {
-  "primary_provider": "lm_studio",
-  "fallback_providers": ["ollama"],
-  "providers": {
-    "lm_studio": {
-      "api_url": "http://localhost:1234/v1",
-      "api_key": "lm_studio"
+  "embedding_configuration": {
+    "primary": {
+      "provider": "llama_cpp",
+      "model": "qwen3-embedding-4b-q8_0.gguf",
+      "base_url": "http://localhost:1234"
     },
-    "ollama": {
-      "api_url": "http://127.0.0.1:11434",
-      "model_name": "nomic-embed-text"
+    "fallback": {
+      "provider": "ollama",
+      "model": "nomic-embed-text",
+      "base_url": "http://127.0.0.1:11434"
     }
-  },
-  "embedding_cache_path": "~/.ai_memory/memory_embeddings.db",
-  "timeout_seconds": 30,
-  "batch_size": 32
+  }
 }
 ```
 

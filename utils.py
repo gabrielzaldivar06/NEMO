@@ -1,20 +1,22 @@
 """Utility functions for the persistent AI memory system."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from zoneinfo import ZoneInfo
 from typing import Optional, Union
 import logging
 
 logger = logging.getLogger(__name__)
 
-def get_local_timezone() -> ZoneInfo:
+def get_local_timezone() -> tzinfo:
     """Get local timezone based on system settings"""
     try:
         import time
         return ZoneInfo(time.tzname[0])
-    except:
-        # Fallback to a common timezone if detection fails
-        return ZoneInfo("America/Chicago")  # Central Time fallback
+    except Exception:
+        local_tz = datetime.now().astimezone().tzinfo
+        if local_tz is not None:
+            return local_tz
+        return timezone.utc
 
 def parse_timestamp(timestamp: Union[str, int, float, None], fallback: Optional[datetime] = None) -> str:
     """

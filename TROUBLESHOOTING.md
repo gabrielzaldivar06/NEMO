@@ -184,7 +184,7 @@ curl http://localhost:1234/v1/models
 ```bash
 # Edit ~/.ai_memory/embedding_config.json
 # Verify URLs match your setup
-cat ~/.ai_memory/embedding_config.json | grep "api_url"
+cat ~/.ai_memory/embedding_config.json | grep "base_url"
 ```
 
 ---

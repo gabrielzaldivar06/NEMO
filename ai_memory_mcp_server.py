@@ -138,6 +138,37 @@ class AIMemoryMCPServer:
                 }
             ),
             Tool(
+                name="create_correction",
+                description=(
+                    "Record a correction: store a past mistake and the correct answer with maximum priority. "
+                    "Use this whenever the AI gave wrong information and you provided the right answer. "
+                    "Corrections are always surfaced before regular memories during retrieval."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "wrong_assumption": {
+                            "type": "string",
+                            "description": "What the AI said or assumed incorrectly"
+                        },
+                        "correct_answer": {
+                            "type": "string",
+                            "description": "The right information or the user's correction"
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Optional context: which topic, file, or system this correction applies to"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional tags to aid retrieval"
+                        }
+                    },
+                    "required": ["wrong_assumption", "correct_answer"]
+                }
+            ),
+            Tool(
                 name="update_memory",
                 description="Update an existing curated memory",
                 inputSchema={
@@ -597,6 +628,23 @@ class AIMemoryMCPServer:
                 result = await self.memory_system.store_conversation(**arguments)
             elif tool_name == "create_memory":
                 result = await self.memory_system.create_memory(**arguments)
+            elif tool_name == "create_correction":
+                wrong = arguments.get("wrong_assumption", "")
+                correct = arguments.get("correct_answer", "")
+                context = arguments.get("context", "")
+                tags = arguments.get("tags") or []
+                content_parts = [f"CORRECCIÓN — lo que estaba mal: {wrong}"]
+                content_parts.append(f"REALIDAD: {correct}")
+                if context:
+                    content_parts.append(f"Contexto: {context}")
+                correction_content = "\n".join(content_parts)
+                correction_tags = ["correction", "feedback"] + [t for t in tags if t not in ("correction", "feedback")]
+                result = await self.memory_system.create_memory(
+                    content=correction_content,
+                    memory_type="correction",
+                    importance_level=10,
+                    tags=correction_tags,
+                )
             elif tool_name == "update_memory":
                 result = await self.memory_system.update_memory(**arguments)
             elif tool_name == "create_appointment":
@@ -983,6 +1031,11 @@ async def main():
         raise
     finally:
         await mcp_server.cleanup()
+
+
+def cli():
+    """Synchronous console entry point."""
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
