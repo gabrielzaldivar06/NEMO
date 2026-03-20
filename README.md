@@ -1,61 +1,129 @@
-# Persistent AI Memory System v1.1.0
+<h1 align="center">NEMO</h1>
+<h3 align="center">Sistema de Memoria Persistente para IA</h3>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![Release](https://img.shields.io/badge/release-v1.1.0-green.svg)](https://github.com/savantskie/persistent-ai-memory)
+<p align="center">
+  <i>La IA que trabajó contigo ayer, lo recuerda hoy.</i>
+</p>
 
-> 🌟 **Community Call to Action**: Have you made improvements or additions to this system? Submit a pull request! Every contributor will be properly credited in the final product.
+<p align="center">
+  <a href="https://creativecommons.org/licenses/by-nc/4.0/"><img src="https://img.shields.io/badge/Licencia-CC%20BY--NC%204.0-lightgrey.svg" alt="Licencia: CC BY-NC 4.0"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
+  <img src="https://img.shields.io/badge/release-v1.1.0--Sprint10-green.svg" alt="Release">
+  <img src="https://img.shields.io/badge/herramientas_MCP-31-blueviolet.svg" alt="MCP Tools">
+</p>
+<p align="center">
+  <img src="https://img.shields.io/badge/precisión_Top--1-92%25-brightgreen.svg" alt="Top-1 Accuracy">
+  <img src="https://img.shields.io/badge/MRR-0.9583-brightgreen.svg" alt="MRR">
+  <img src="https://img.shields.io/badge/ejecución-100%25_local-orange.svg" alt="100% Local">
+  <img src="https://img.shields.io/badge/sin_nube-sin_claves-red.svg" alt="Sin Nube">
+</p>
 
-**GITHUB LINK** - https://github.com/savantskie/persistent-ai-memory.git
-
----
-
-## 🆕 What's New in v1.1.0 (February 23, 2026)
-
-**Path Independence & Configuration System Update**
-- ✅ **Complete path independence** - works on any system in any directory
-- ✅ **Configuration system** - `memory_config.json` and `embedding_config.json` for flexible deployments
-- ✅ **Tag management** - automatic tag extraction and normalization
-- ✅ **Improved health checks** - better diagnostics with helpful error messages
-- ✅ **Docker enhancements** - full container support with synced registries
-- ✅ **Documentation** - 5 comprehensive guides (config, testing, API, deployment, troubleshooting)
-
----
-
-## 📚 Documentation Guide
-
-**Choose your starting point:**
-
-| **I want to...** | **Read this** | **Time** |
-|---|---|---|
-| Get started quickly | [REDDIT_QUICKSTART.md](REDDIT_QUICKSTART.md) | 5 min |
-| Install the system | [INSTALL.md](INSTALL.md) | 10 min |
-| Understand configuration | [CONFIGURATION.md](CONFIGURATION.md) | 15 min |
-| Check system health | [TESTING.md](TESTING.md) | 10 min |
-| Use the API | [API.md](API.md) | 20 min |
-| Deploy to production | [DEPLOYMENT.md](DEPLOYMENT.md) | 15 min |
-| Fix a problem | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | varies |
-| See examples | [examples/README.md](examples/README.md) | 15 min |
+<p align="center">
+  <b>Memoria semántica de largo plazo para agentes de IA — 100% local, sin suscripciones, sin nube.</b><br>
+  Compatible con VS Code Copilot · LM Studio · Ollama · OpenWebUI · SillyTavern · Claude Desktop · cualquier cliente MCP
+</p>
 
 ---
 
-## 🚀 Quick Start (30 seconds)
+## ¿Por qué NEMO?
 
-### Installation
-```bash
-# Linux/macOS
-pip install git+https://github.com/savantskie/persistent-ai-memory.git
+> La mayoría de soluciones de "memoria para IA" guardan texto en una base vectorial y lo llaman suficiente.  
+> NEMO ejecuta un pipeline de recuperación de 11 fases de calidad de producción que rivaliza con búsqueda en la nube — completamente en tu máquina local.
 
-# Windows (same command, just use Command Prompt or PowerShell)
-pip install git+https://github.com/savantskie/persistent-ai-memory.git
+| Otras soluciones | NEMO |
+|-----------------|------|
+| Similitud coseno simple | Pipeline de 11 fases con reranking, decaimiento temporal y clasificación de intención |
+| Dependiente de la nube | 100% local — LM Studio + SQLite, sin internet |
+| Recuperación uniforme | Bypass adaptativo: enruta consultas al camino rápido O al reranker completo según confianza |
+| Olvida sesiones anteriores | Persistencia SQLite — las memorias sobreviven reinicios, cambios de agente y reinstalaciones |
+| Gestión manual de memoria | Deduplicación automática en escritura (coseno > 0.92) y supresión de near-dups en lectura |
+| Ranking fijo | Bucle de retroalimentación `access_count` — las memorias más recuperadas suben en relevancia |
+
+---
+
+## ¿Qué es NEMO?
+
+NEMO resuelve el problema fundamental de los LLMs: **la amnesia entre sesiones**. Cada vez que abres un chat nuevo, la IA olvida todo. NEMO construye una capa de memoria persistente y buscable semánticamente que cualquier agente puede consultar a través del [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+
+- Las memorias sobreviven cambios de agente, reinicios de VS Code y reinicios del sistema
+- La búsqueda usa embeddings vectoriales locales (Qwen3-4B) + reranking neuronal (BGE)
+- Todos los datos viven en `~/.ai_memory/` como SQLite — sin nube, sin rastreo
+
+```
+Benchmarks de producción (Sprint 10):
+  Precisión Top-1  →  92 %
+  MRR              →  0.9583
+  Latencia P95     →  2 095 ms  (pipeline completo de 11 fases)
 ```
 
-### First Validation
+---
+
+## Cómo Funciona
+
+NEMO expone **31 herramientas MCP** a través de un servidor Python stdio. Cuando un agente llama `search_memories`, NEMO ejecuta un pipeline de 11 fases:
+
+```
+Consulta
+  │
+  ├─ 1. Generar embedding (Qwen3-Embedding-4B, 3840D)
+  ├─ 2. Caché semántica de sesión (omitir si está en caché)
+  ├─ 3. Recuperación ANN coseno (top-50 candidatos)
+  ├─ 4. Hybrid rescoring (0.7 × semántico + 0.3 × BM25)
+  ├─ 5. Decaimiento temporal + bonus de recencia
+  ├─ 6. Clasificador de intención de consulta (factual / procedimental / contextual)
+  ├─ 7. Boosts de calidad (importancia, corrección +0.35, access count)
+  ├─ 8. Bypass adaptativo + gap router
+  ├─ 9. Reranking neuronal — BGE-reranker-v2-m3 (Rank-Weighted Fusion)
+  ├─ 10. Supresión de near-duplicados (coseno > 0.95 duro, > 0.80 suave)
+  └─ 11. Retroalimentación access count → retornar top-N
+```
+
+---
+
+## Características Principales
+
+| Característica | Detalle |
+|----------------|---------|
+| **Búsqueda semántica** | Qwen3-Embedding-4B (3840D) + reranker neuronal BGE |
+| **31 herramientas MCP** | Memoria, conversaciones, agenda, correcciones, reflexiones, salud |
+| **5 bases de datos SQLite** | conversations · ai_memories · schedule · mcp_tool_calls · vscode_project |
+| **Deduplicación semántica** | Umbral duro 0.92 · umbral suave 0.82 (sin memorias duplicadas) |
+| **Autoridad temporal** | Decaimiento temporal evita que memorias obsoletas aparezcan |
+| **Auto-correcciones** | `create_correction` da boost permanente +0.35 — los errores no se repiten |
+| **Importación multiplataforma** | LM Studio · Ollama · OpenWebUI · SillyTavern · Gemini CLI · VS Code |
+| **Agenda y recordatorios** | Calendario completo con recurrencia diaria/semanal/mensual/anual |
+| **Degradación elegante** | Cae a Ollama → búsqueda de texto si los embeddings no están disponibles |
+| **Panel lateral VS Code** | Panel de estado en vivo — muestra salud del stack, modelos cargados, tamaños de DB |
+| **Autostart en Windows** | Inicia LM Studio + carga modelos automáticamente al iniciar sesión |
+| **100% local** | Sin claves de API, sin nube, sin suscripciones |
+
+---
+
+## Inicio Rápido
+
+### 1. Requisitos
+
+- Python 3.10+
+- [LM Studio](https://lmstudio.ai/) con estos modelos cargados:
+  - `text-embedding-qwen3-embedding-4b` (embeddings principales)
+  - `text-embedding-bge-reranker-v2-m3` (reranker neuronal)
+- O [Ollama](https://ollama.com/) con `nomic-embed-text` como respaldo
+
+### 2. Instalación
+
+```bash
+git clone https://github.com/savantskie/persistent-ai-memory.git
+cd persistent-ai-memory
+pip install -r requirements.txt
+```
+
+### 3. Verificación
+
 ```bash
 python tests/test_health_check.py
 ```
 
-Expected output:
+Resultado esperado:
 ```
 [✓] Imported ai_memory_core
 [✓] Found embedding_config.json
@@ -63,166 +131,243 @@ Expected output:
 [✓] All health checks passed! System is ready to use.
 ```
 
----
+### 4. Conectar a VS Code Copilot
 
-## 💡 What This System Does
+Agregar a `%APPDATA%\Code\User\mcp.json` (Windows) o `~/.config/Code/User/mcp.json` (Linux/macOS):
 
-**Persistent AI Memory** provides:
-
-- 🧠 **Persistent Memory Storage** - SQLite databases for structured, searchable storage
-- 🔍 **Semantic Search** - Vector embeddings for intelligent memory retrieval
-- 💬 **Conversation Tracking** - Multi-platform conversation history capture
-- 🧮 **Tool Call Logging** - Track and analyze AI tool usage patterns
-- 🔄 **Self-Reflection** - AI insights into its own behavior and performance
-- 📱 **Multi-Platform** - Works with LM Studio, VS Code, OpenWebUI, custom applications
-- 🎯 **Easy Integration** - MCP server for any AI assistant compatible with Model Context Protocol
-
----
-
-## ⚙️ System Architecture
-
-### Five Specialized Databases
-```
-~/.ai_memory/
-├── conversations.db      # Chat messages and conversation history
-├── ai_memories.db       # Curated long-term memories
-├── schedule.db          # Appointments and reminders
-├── mcp_tool_calls.db    # Tool usage logs and reflections
-└── vscode_project.db    # Development session context
+```json
+{
+  "servers": {
+    "nemo": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["C:/ruta/a/persistent-ai-memory/ai_memory_mcp_server.py"],
+      "env": {}
+    }
+  }
+}
 ```
 
-### Configuration Files
+Reiniciar VS Code. NEMO estará disponible en Agent mode como servidor MCP `nemo`.
+
+---
+
+## Comportamiento Automático del Agente (VS Code)
+
+El archivo `.github/copilot-instructions.md` incluido indica a VS Code Copilot que use NEMO automáticamente:
+
+- **Inicio de sesión** → `search_memories` + `get_recent_context`
+- **Nuevo hecho duradero** → `create_memory` inmediatamente
+- **El usuario corrige a la IA** → `create_correction` (boost permanente de recall)
+- **Tarea o deadline mencionado** → `create_reminder`
+- **Fin de sesión larga** → `store_conversation` + `reflect_on_tool_usage`
+
+No hace falta pedirle al agente que use NEMO — ocurre solo en Agent mode.
+
+---
+
+## Las 31 Herramientas MCP
+
+<details>
+<summary><b>Memoria (5 herramientas)</b></summary>
+
+| Herramienta | Descripción |
+|-------------|-------------|
+| `create_memory` | Guardar una memoria de largo plazo con tipo, importancia y etiquetas |
+| `search_memories` | Búsqueda semántica de 11 fases en todas las memorias |
+| `get_recent_memories` | Obtener las N memorias más recientes sin búsqueda |
+| `update_memory` | Actualizar contenido, importancia o etiquetas de una memoria |
+| `delete_memory` | Eliminar permanentemente una memoria |
+</details>
+
+<details>
+<summary><b>Conversaciones (5 herramientas)</b></summary>
+
+| Herramienta | Descripción |
+|-------------|-------------|
+| `store_conversation` | Persistir una sesión de conversación completa |
+| `search_conversations` | Búsqueda semántica en el historial de conversaciones |
+| `get_conversation_history` | Obtener lista cronológica de conversaciones |
+| `get_recent_context` | Mostrar actividad de las últimas 24–72 h |
+| `import_conversations` | Importar desde LM Studio, OpenWebUI, SillyTavern, VS Code |
+</details>
+
+<details>
+<summary><b>Agenda (8 herramientas)</b></summary>
+
+| Herramienta | Descripción |
+|-------------|-------------|
+| `create_appointment` | Programar un evento con recurrencia opcional |
+| `get_upcoming_appointments` | Listar los próximos N días de citas |
+| `cancel_appointment` | Cancelar una cita programada |
+| `complete_appointment` | Marcar una cita como completada |
+| `create_reminder` | Crear un recordatorio con prioridad |
+| `get_active_reminders` | Listar todos los recordatorios pendientes |
+| `complete_reminder` | Marcar un recordatorio como hecho |
+| `reschedule_reminder` | Mover un recordatorio a una nueva fecha |
+</details>
+
+<details>
+<summary><b>Correcciones y Conocimiento (3 herramientas)</b></summary>
+
+| Herramienta | Descripción |
+|-------------|-------------|
+| `create_correction` | Registrar un error de la IA — boost permanente +0.35 de relevancia |
+| `create_memory` | Guardar memorias tipo factual / procedimental / insight / episódico |
+| `search_memories` | Consultar con filtro `memory_type` para recuperación específica |
+</details>
+
+<details>
+<summary><b>Reflexiones e Insights (4 herramientas)</b></summary>
+
+| Herramienta | Descripción |
+|-------------|-------------|
+| `reflect_on_tool_usage` | Generar insights de IA a partir de patrones de uso de herramientas |
+| `get_ai_insights` | Recuperar reflexiones almacenadas de la IA |
+| `store_ai_reflection` | Guardar una reflexión manualmente |
+| `get_tool_usage_summary` | Resumen estadístico del uso de herramientas MCP |
+</details>
+
+<details>
+<summary><b>Sistema y Utilidades (6 herramientas)</b></summary>
+
+| Herramienta | Descripción |
+|-------------|-------------|
+| `get_system_health` | Verificación completa: DBs, embeddings, reranker |
+| `get_current_time` | Hora actual con zona horaria |
+| `get_weather_open_meteo` | Clima vía Open-Meteo (sin clave de API) |
+| `brave_web_search` | Búsqueda web vía Brave Search API |
+| `brave_local_search` | Búsqueda de negocios y lugares locales |
+| `get_recent_context` | Actividad reciente unificada de todas las bases de datos |
+</details>
+
+---
+
+## Arquitectura
+
 ```
-~/.ai_memory/
-├── embedding_config.json   # Embedding provider setup
-└── memory_config.json      # Memory system defaults
+┌─────────────────────────────────────────────────────┐
+│        Cliente IA (VS Code Copilot, Claude…)         │
+└────────────────────────┬────────────────────────────┘
+                         │ MCP stdio
+┌────────────────────────▼────────────────────────────┐
+│       ai_memory_mcp_server.py  (31 herramientas)     │
+└────────────────────────┬────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────┐
+│            ai_memory_core.py  (~4900 líneas)         │
+│  ┌─────────────────┐  ┌──────────────────────────┐  │
+│  │ EmbeddingService│  │    RerankingService       │  │
+│  │ Qwen3-4B @:1234 │  │ BGE-reranker-v2-m3 @:1234│  │
+│  └─────────────────┘  └──────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────┐ │
+│  │         PersistentAIMemorySystem                 │ │
+│  │  búsqueda 11 fases · dedup semántico · intención │ │
+│  │  decaimiento temporal · RWF · supresión near-dup │ │
+│  └─────────────────────────────────────────────────┘ │
+└────────────────────────┬────────────────────────────┘
+                         │
+          ┌──────────────┼───────────────┐
+          ▼              ▼               ▼
+  conversations.db  ai_memories.db  schedule.db
+  vscode_project.db  mcp_tool_calls.db
+          (~/.ai_memory/)
 ```
 
 ---
 
-## 🎯 Core Features
+## Proveedores de Embeddings
 
-### Memory Operations
-- `store_memory()` - Save important information persistently
-- `search_memories()` - Find memories using semantic search
-- `list_recent_memories()` - Get recent memories without searching
+| Proveedor | Modelo | Dimensiones | Costo |
+|-----------|--------|-------------|-------|
+| **LM Studio** (recomendado) | Qwen3-Embedding-4B | 3840D | Gratis |
+| **LM Studio** (reranker) | BGE-reranker-v2-m3 | — | Gratis |
+| **Ollama** (respaldo) | nomic-embed-text | 768D | Gratis |
+| **OpenAI** (nube) | text-embedding-3-large | 3072D | $$$ |
 
-### Conversation Tracking
-- `store_conversation()` - Store user/assistant messages
-- `search_conversations()` - Search through conversation history
-- `get_conversation_history()` - Retrieve chronological conversations
-
-### Tool Integration
-- `log_tool_call()` - Record MCP tool invocations
-- `get_tool_call_history()` - Analyze tool usage patterns
-- `reflect_on_tool_usage()` - Get AI insights on tool patterns
-
-### System Health
-- `get_system_health()` - Check databases, embeddings, providers
-- `built-in health check` - `python tests/test_health_check.py`
+Configurar en `embedding_config.json`. El sistema cae graciosamente si LM Studio no está disponible.
 
 ---
 
-## 🔌 Embedding Providers
+## Documentación
 
-Choose your embedding service:
-
-| Provider | Speed | Quality | Cost |
-|----------|-------|---------|------|
-| **Ollama** (local) | ⚡⚡ | ⭐⭐⭐ | FREE |
-| **LM Studio** (local) | ⚡ | ⭐⭐⭐⭐ | FREE |
-| **OpenAI** (cloud) | ⚡⚡ | ⭐⭐⭐⭐⭐ | $$$ |
-
-See [CONFIGURATION.md](CONFIGURATION.md) for setup instructions for each provider.
-
----
-
-## 🔄 Three Ways to Use
-
-### 1. Standalone Functions
-Use memory capabilities directly in your Python code:
-```python
-from ai_memory_core import AIMemorySystem
-system = await AIMemorySystem.create()
-await system.store_memory("Important information")
-results = await system.search_memories("query")
-```
-
-### 2. OpenWebUI Plugin
-Deploy as an OpenWebUI filter to auto-inject memories into chat:
-- Automatically extracts memories from conversations
-- Injects relevant memories before responding
-- Configurable via OpenWebUI filter settings
-
-### 3. MCP Server
-Use with any MCP-compatible AI assistant (Claude, custom tools, etc.):
-```bash
-python -m ai_memory_mcp_server
-```
+| Documento | Descripción |
+|-----------|-------------|
+| [NEMO_TECHNICAL_REFERENCE.md](NEMO_TECHNICAL_REFERENCE.md) | Referencia técnica exhaustiva (17 secciones, esquemas, benchmarks) |
+| [INSTALL.md](INSTALL.md) | Guía de instalación completa |
+| [CONFIGURATION.md](CONFIGURATION.md) | Todas las opciones de configuración |
+| [API.md](API.md) | Referencia de la API Python |
+| [TESTING.md](TESTING.md) | Suite de pruebas y verificaciones de salud |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Problemas comunes y soluciones |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Guía de despliegue en producción |
+| [REDDIT_QUICKSTART.md](REDDIT_QUICKSTART.md) | Inicio rápido en 5 minutos |
 
 ---
 
-## 🛠️ Development & Examples
+## Tecnologías Utilizadas
 
-Ready-to-use examples:
-```bash
-python examples/basic_usage.py          # Store and search memories
-python examples/advanced_usage.py       # Conversation tracking and tool logging
-python examples/performance_tests.py    # Benchmark operations
-```
+NEMO se apoya en excelentes proyectos de código abierto y estándares abiertos:
 
-Full API reference: [API.md](API.md)
-
----
-
-## 📖 Learning Resources
-
-- **New to AI memory systems?** → [REDDIT_QUICKSTART.md](REDDIT_QUICKSTART.md)
-- **Troubleshooting issues?** → [TROUBLESHOOTING.md](TROUBLESHOOTING.md)  
-- **Need configuration help?** → [CONFIGURATION.md](CONFIGURATION.md)
-- **Want to deploy to production?** → [DEPLOYMENT.md](DEPLOYMENT.md)
-- **Need the full API?** → [API.md](API.md)
+| Tecnología | Rol | Enlace |
+|------------|-----|--------|
+| [Model Context Protocol](https://modelcontextprotocol.io/) | Capa de transporte — cómo los agentes llaman a NEMO | Anthropic / Estándar abierto |
+| [LM Studio](https://lmstudio.ai/) | Aloja modelos de embeddings y reranking localmente | lmstudio.ai |
+| [Qwen3-Embedding-4B](https://huggingface.co/Qwen/Qwen3-Embedding) | Modelo de embeddings principal (3840D) | Alibaba / HuggingFace |
+| [BGE-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3) | Reranker neuronal cross-encoder | BAAI / HuggingFace |
+| [Ollama](https://ollama.com/) | Proveedor de embeddings de respaldo (`nomic-embed-text`) | ollama.com |
+| [SQLite](https://www.sqlite.org/) | Todo el almacenamiento persistente — sin servidor, portable | sqlite.org |
+| [Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk) | Implementación del servidor MCP stdio | Anthropic |
+| [Open-Meteo](https://open-meteo.com/) | API de clima — sin clave requerida | open-meteo.com |
+| [Brave Search API](https://brave.com/search/api/) | Herramientas de búsqueda web y local | brave.com |
 
 ---
 
-## 🤝 Contributing
+## Contribuir
 
-We welcome contributions! See [CONTRIBUTORS.md](CONTRIBUTORS.md) for:
-- Development setup instructions
-- How to run tests
-- Code style guidelines
-- Contribution process
+¡Las contribuciones son bienvenidas! Ver [CONTRIBUTORS.md](CONTRIBUTORS.md) para configuración de desarrollo, estilo de código y el proceso de contribución.
 
 ---
 
-## 📄 License
+## Licencia
 
-MIT License - Feel free to use this in your own AI projects!
+Este proyecto está licenciado bajo **Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0)**.
 
-See [LICENSE](LICENSE) for details.
+- **Permitido:** uso personal, educativo, investigación, proyectos no comerciales, modificar y compartir con atribución.
+- **No permitido:** vender el software, incorporarlo en productos de pago, usarlo en servicios SaaS comerciales, ni cualquier uso que genere ingresos directa o indirectamente.
+- **Uso comercial:** contacta al autor para un acuerdo de licencia.
 
----
-
-## 🙏 Acknowledgments
-
-This project represents a unique collaboration:
-- **@savantskie** - Project vision, architecture, testing
-- **GitHub Copilot** - Core implementation and system design
-- **ChatGPT** - Architectural guidance and insights
-
-**Special thanks** to the AI and open-source communities for inspiration and support.
+Ver [LICENSE](LICENSE) · [Texto completo CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/legalcode)
 
 ---
 
-## 📞 Need Help?
+## Créditos
 
-1. **Start with**: [TESTING.md](TESTING.md) → Run health check
-2. **Then check**: [TROUBLESHOOTING.md](TROUBLESHOOTING.md) → Find your issue
-3. **Or visit**: [COMMUNITY.md](COMMUNITY.md) → Get help from community
-4. **Or open**: [GitHub Issues](https://github.com/savantskie/persistent-ai-memory/issues)
+NEMO es el resultado de una colaboración inusual — y creemos que vale la pena decirlo en voz alta.
+
+### Gabriel &nbsp;·&nbsp; [@savantskie](https://github.com/savantskie)
+
+Arquitecto del proyecto y fuerza motriz detrás de NEMO.
+
+### GitHub Copilot &nbsp;·&nbsp; Claude Sonnet (Anthropic)
+
+Socio principal de implementación en todos los sprints. Motor central de (`ai_memory_core.py`), diseñó el pipeline de recuperación de 11 fases, implementó la integración del reranker, el sistema de autoridad temporal, la deduplicación semántica y la extensión de VS Code — trabajando iterativamente con Gabriel desde la especificación hasta el código de producción.
+
+> NEMO es uno de los primeros proyectos de código abierto construido explícitamente como una **colaboración de pair-programming humano ↔ IA**,  
+> donde las propias limitaciones de memoria de la IA eran el problema que se resolvía.  
+> Consideramos ese hecho digno de documentar.
+
+### Comunidad Open Source
+
+El [ecosistema MCP](https://modelcontextprotocol.io/), [BAAI](https://huggingface.co/BAAI) por los modelos BGE, el [equipo Qwen de Alibaba](https://huggingface.co/Qwen) por Qwen3-Embedding, y el equipo de [LM Studio](https://lmstudio.ai/) por hacer accesible el serving local de modelos.
 
 ---
 
-**⭐ If this project helps you build better AI assistants, please give it a star!**
-
-Built with determination, debugged with patience, designed for the future of AI.
+<p align="center">
+  <b>⭐ Si NEMO hace más inteligente a tu asistente de IA, ¡dale una estrella!</b>
+</p>
+<p align="center">
+  Construido con determinación &nbsp;·&nbsp; Depurado con paciencia &nbsp;·&nbsp; Diseñado para el futuro de la IA
+</p>
+<p align="center">
+  <sub>Una colaboración humano-IA — porque las mejores herramientas las construyen quienes más las necesitan.</sub>
+</p>
