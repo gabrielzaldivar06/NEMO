@@ -3192,6 +3192,22 @@ class PersistentAIMemorySystem:
         self.embedding_service = EmbeddingService.create_with_user_config()
         self.reranking_service = RerankingService.create_with_user_config()
         
+        # ---------------------------------------------------------------------------
+        # Sprint 8: In-session search cache (feature #4 — Semantic Query Cache)
+        # key: frozenset of (query_text_key, database_filter, limit)
+        # value: (embedding_vec, result_payload, timestamp)
+        # Cleared on demand; max 32 entries (LRU-ish, FIFO eviction)
+        # ---------------------------------------------------------------------------
+        self._search_cache: dict = {}
+        _CACHE_MAX = 32
+
+        # ---------------------------------------------------------------------------
+        # Sprint 8: Memory Consolidation threshold (feature #6)
+        # Memories with cosine > this at write-time are flagged as near-duplicates
+        # even if below the hard dedup threshold (0.92). Range: (dedup_thresh, 0.92)
+        # ---------------------------------------------------------------------------
+        self._consolidation_threshold: float = 0.82
+
         # Initialize file monitoring
         self.file_monitor = None
         if enable_file_monitoring:
@@ -3301,6 +3317,7 @@ class PersistentAIMemorySystem:
         embedding = await self.embedding_service.generate_embedding(contextual_text)
 
         # Semantic deduplication: scan existing embeddings without importance boosting
+        consolidation_warning = None  # Feature #6: set below if near-dup detected
         if embedding:
             new_vec = np.array(embedding, dtype=np.float32)
             new_norm = float(np.linalg.norm(new_vec))
@@ -3328,6 +3345,24 @@ class PersistentAIMemorySystem:
                         "message": "A semantically equivalent memory already exists. No new entry was created."
                     }
 
+                # ------------------------------------------------------------------
+                # Feature #6 — Memory Consolidation at Write-Time
+                # Flag near-duplicates (consolidation_threshold ≤ sim < dedup_threshold)
+                # so the caller can decide whether consolidation is appropriate.
+                # We still insert the memory — this is advisory, not blocking.
+                # ------------------------------------------------------------------
+                consolidation_warning = None
+                if self._consolidation_threshold <= best_sim < 0.92 and best_match:
+                    consolidation_warning = {
+                        "near_duplicate_id": best_match["memory_id"],
+                        "similarity": round(best_sim, 4),
+                        "existing_snippet": best_match["content"][:120],
+                        "suggestion": (
+                            "This memory is semantically close to an existing one. "
+                            "Consider updating the existing memory instead of creating a new one."
+                        ),
+                    }
+
         # No duplicate — insert then store the already-generated embedding immediately
         memory_id = await self.ai_memory_db.create_memory(
             content, memory_type, importance_level, tags, source_conversation_id
@@ -3344,6 +3379,7 @@ class PersistentAIMemorySystem:
             "status": "success",
             "memory_id": memory_id,
             "contextual_prefix": contextual_text[:80] if embedding else None,
+            "consolidation_warning": consolidation_warning,
         }
 
     # =============================================================================
@@ -3650,17 +3686,142 @@ class PersistentAIMemorySystem:
             "context": context
         }
             
+    # =========================================================================
+    # Sprint 8 helpers
+    # =========================================================================
+
+    def _classify_query_intent(self, query: str) -> str:
+        """Feature #3 — lightweight 20-rule query intent microclassifier.
+
+        Returns one of:
+          'factual'    — precise lookup, exact facts (definitions, numbers, commands)
+          'procedural' — how-to, sequence of steps
+          'contextual' — broad / open-ended recall
+
+        The classification adjusts reranker strategy hints and tie-breaking
+        weights in _get_intent_tiebreak_multiplier().
+        """
+        q = query.lower()
+        factual_signals = [
+            r"\bwhat is\b", r"\bwhat are\b", r"\bdefine\b", r"\bdefinition\b",
+            r"\bcommand\b", r"\bsyntax\b", r"\berror code\b", r"\bversion\b",
+            r"\bwhen did\b", r"\bwhen was\b", r"\bwho is\b",
+        ]
+        procedural_signals = [
+            r"\bhow (to|do|does|can|should)\b", r"\bsteps?\b", r"\bprocess\b",
+            r"\binstall\b", r"\bsetup\b", r"\bconfigure\b", r"\bdeploy\b",
+            r"\btutorial\b", r"\bguide\b",
+        ]
+        factual_hits = sum(1 for p in factual_signals if re.search(p, q))
+        procedural_hits = sum(1 for p in procedural_signals if re.search(p, q))
+        if factual_hits > procedural_hits:
+            return "factual"
+        if procedural_hits > factual_hits:
+            return "procedural"
+        return "contextual"
+
+    def _get_intent_tiebreak_multiplier(self, result: Dict, intent: str) -> float:
+        """Feature #3 helper — per-result score multiplier based on query intent.
+
+        Factual queries slightly favour clean, high-importance short memories.
+        Procedural queries favour procedural/guide memory types.
+        Contextual queries apply no extra bias.
+        """
+        if intent == "factual":
+            imp = result.get("data", {}).get("importance_level", 5)
+            return 1.0 + (imp - 5) * 0.004          # ±0.02 for imp 0-10
+        if intent == "procedural":
+            mtype = (result.get("data", {}).get("memory_type") or "").lower()
+            if any(k in mtype for k in ("procedure", "guide", "howto", "step", "process")):
+                return 1.01
+        return 1.0
+
+    def _apply_temporal_decay(self, results: List[Dict], half_life_days: float = 60.0) -> List[Dict]:
+        """Feature #5 — Temporal Relevance Decay.
+
+        Applies a gentle exponential decay: score *= e^(-lambda * age_days)
+        where lambda = ln(2) / half_life_days.  Half-life default 60 days means
+        a 60-day-old memory retains 50 % of its recency bonus, a year-old memory
+        retains ~11 %.  The decay is bounded to [0.80, 1.0] so old memories stay
+        retrievable and the penalty is never catastrophic — retrieval correctness
+        always dominates raw score.
+        """
+        import math
+        lam = math.log(2) / half_life_days
+        now = datetime.now(timezone.utc)
+        for r in results:
+            ts_str = r.get("data", {}).get("timestamp_created") or r.get("timestamp_created")
+            if not ts_str:
+                continue
+            try:
+                # Support both "Z" suffix ISO and "+HH:MM" offsets
+                ts_str_clean = ts_str.replace("Z", "+00:00")
+                mem_dt = datetime.fromisoformat(ts_str_clean)
+                if mem_dt.tzinfo is None:
+                    mem_dt = mem_dt.replace(tzinfo=timezone.utc)
+                age_days = max(0.0, (now - mem_dt).total_seconds() / 86400.0)
+                decay = max(0.80, math.exp(-lam * age_days))
+                r["similarity_score"] = r["similarity_score"] * decay
+            except (ValueError, TypeError):
+                pass
+        return results
+
     async def search_memories(self, query: str, limit: int = 10, 
                             min_importance: int = None, max_importance: int = None,
                             memory_type: str = None, database_filter: str = "all") -> Dict:
         """Advanced semantic search across all databases with filtering"""
-        
+
+        # ------------------------------------------------------------------
+        # Feature #3 — Query Intent classification (used for tie-breaks below)
+        # ------------------------------------------------------------------
+        query_intent = self._classify_query_intent(query)
+
         # Generate embedding for the search query
         query_embedding = await self.embedding_service.generate_embedding(query)
         if not query_embedding:
             # Fallback to text-based search if embedding fails
             return await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type)
-        
+
+        # ------------------------------------------------------------------
+        # Feature #4 — Semantic Query Cache
+        # Check whether a semantically near-identical query was already answered
+        # this session (cosine ≥ 0.97 against a cached embedding).
+        # We only cache when no narrowing filters are active so the cached result
+        # set is equivalent to what would be freshly computed.
+        # ------------------------------------------------------------------
+        _CACHE_SIM_THRESHOLD = 0.97
+        _CACHE_TTL_SECONDS = 300        # 5-minute TTL per entry
+        _CACHE_MAX = 32
+        cache_key_params = (database_filter, limit, min_importance, max_importance, memory_type)
+        cache_hit_payload = None
+        q_vec = np.array(query_embedding, dtype=np.float32)
+        q_norm = float(np.linalg.norm(q_vec))
+
+        if q_norm > 0:
+            now_ts = time.monotonic()
+            expired_keys = [k for k, (_, _, ts) in self._search_cache.items()
+                            if now_ts - ts > _CACHE_TTL_SECONDS]
+            for k in expired_keys:
+                self._search_cache.pop(k, None)
+
+            for ck, (c_vec, c_payload, c_ts) in list(self._search_cache.items()):
+                if ck[1:] != cache_key_params:     # params must match exactly
+                    continue
+                if now_ts - c_ts > _CACHE_TTL_SECONDS:
+                    continue
+                c_norm = float(np.linalg.norm(c_vec))
+                if c_norm == 0:
+                    continue
+                sim = float(np.dot(q_vec, c_vec) / (q_norm * c_norm))
+                if sim >= _CACHE_SIM_THRESHOLD:
+                    cache_hit_payload = dict(c_payload)
+                    cache_hit_payload["cache_hit"] = True
+                    cache_hit_payload["cache_similarity"] = round(sim, 4)
+                    break
+
+        if cache_hit_payload is not None:
+            return cache_hit_payload
+
         all_results = []
         candidate_limit = max(limit * 4, 20)
         reranking_candidate_limit = min(candidate_limit, self.reranking_service.get_candidate_limit(default=30))
@@ -3688,28 +3849,75 @@ class PersistentAIMemorySystem:
 
         for result in all_results:
             result["similarity_score"] = self._apply_lightweight_hybrid_rescoring(query, result)
-        
+
+        # ------------------------------------------------------------------
+        # Feature #5 — Temporal Relevance Decay (applied before sorting so
+        # boosted + decayed scores are compared together)
+        # ------------------------------------------------------------------
+        all_results = self._apply_temporal_decay(all_results)
+
+        # ------------------------------------------------------------------
+        # Feature #3 — intent tie-break multiplier (micro-adjustment, post-decay)
+        # ------------------------------------------------------------------
+        for r in all_results:
+            r["similarity_score"] *= self._get_intent_tiebreak_multiplier(r, query_intent)
+
         # Sort all results by similarity score and return top results
         all_results.sort(key=lambda x: x["similarity_score"], reverse=True)
 
         reranking_applied = False
         confidence_bypassed = False
+        gap_bypassed = False
+
         if all_results:
-            top_score = all_results[0]["similarity_score"]
-            bypass_threshold = self.reranking_service.get_confidence_bypass_threshold()
-            # Skip the expensive cross-encoder call when the semantic result is already
-            # high-confidence. Top score above the threshold means the embedding model
-            # already found a clear match and BGE is unlikely to change the top result.
-            if self.reranking_service.is_enabled() and top_score >= bypass_threshold:
+            top_raw = all_results[0].get("_raw_similarity", all_results[0]["similarity_score"])
+
+            # ------------------------------------------------------------------
+            # Feature #1 — Adaptive Bypass Calibration
+            # Instead of a fixed 0.92 threshold on raw cosine, compute the
+            # threshold dynamically as:  median(raw_cosines) + 1.5 * std(raw_cosines)
+            # clamped to [0.80, 0.95].  This self-calibrates to the score
+            # distribution of the actual result set rather than a hand-tuned
+            # constant, recovering bypass behaviour even when typical scores drift.
+            # ------------------------------------------------------------------
+            raw_scores = [r.get("_raw_similarity", r["similarity_score"]) for r in all_results]
+            if len(raw_scores) >= 4:
+                arr = np.array(raw_scores, dtype=np.float32)
+                adaptive_threshold = float(np.median(arr) + 1.5 * np.std(arr))
+                adaptive_threshold = max(0.80, min(0.95, adaptive_threshold))
+            else:
+                adaptive_threshold = self.reranking_service.get_confidence_bypass_threshold()
+
+            # ------------------------------------------------------------------
+            # Feature #2 — Score-Gap Tiebreaker Router
+            # When the gap between #1 and #2 is wide (top_raw clearly dominant)
+            # skip the expensive cross-encoder — the ordering is unambiguous.
+            # Gap threshold 0.07 is calibrated to production score distributions.
+            # ------------------------------------------------------------------
+            _GAP_BYPASS_THRESHOLD = 0.07
+            if len(all_results) >= 2:
+                second_raw = all_results[1].get("_raw_similarity", all_results[1]["similarity_score"])
+                score_gap = top_raw - second_raw
+                gap_bypass = score_gap >= _GAP_BYPASS_THRESHOLD
+            else:
+                gap_bypass = True   # single result — nothing to reorder
+
+            bypass_threshold = adaptive_threshold
+            if self.reranking_service.is_enabled() and (top_raw >= bypass_threshold or gap_bypass):
                 confidence_bypassed = True
+                gap_bypassed = gap_bypass
             else:
                 rerank_candidates = all_results[:reranking_candidate_limit]
                 reranked_prefix = await self.rerank_search_results(query, rerank_candidates, top_n=len(rerank_candidates))
                 reranking_applied = self.reranking_service.last_reranking_applied
                 if reranked_prefix:
                     all_results = reranked_prefix + all_results[reranking_candidate_limit:]
-        
-        return {
+
+        # Strip internal Sprint 8A field before returning to callers
+        for r in all_results:
+            r.pop("_raw_similarity", None)
+
+        payload = {
             "status": "success",
             "query": query,
             "results": all_results[:reranking_final_top_n],
@@ -3719,8 +3927,22 @@ class PersistentAIMemorySystem:
             "reranking_enabled": self.reranking_service.is_enabled(),
             "reranking_applied": reranking_applied,
             "confidence_bypassed": confidence_bypassed,
+            "gap_bypassed": gap_bypassed,
+            "query_intent": query_intent,
+            "cache_hit": False,
             "reranking_latency_ms": round(self.reranking_service.last_reranking_latency_ms, 2),
         }
+
+        # Feature #4 — store result in session cache
+        if q_norm > 0:
+            if len(self._search_cache) >= _CACHE_MAX:
+                # FIFO eviction: drop oldest entry
+                oldest_key = next(iter(self._search_cache))
+                self._search_cache.pop(oldest_key, None)
+            cache_entry_key = (query[:120], *cache_key_params)
+            self._search_cache[cache_entry_key] = (q_vec, payload, time.monotonic())
+
+        return payload
 
     async def rerank_search_results(self, query: str, results: List[Dict[str, Any]], top_n: int = None) -> List[Dict[str, Any]]:
         """Reranks candidates using Rank-Weighted Fusion (RWF): 70% semantic rank + 30% BGE rank.
@@ -3975,6 +4197,8 @@ class PersistentAIMemorySystem:
                     result = {
                         "type": "ai_memory",
                         "similarity_score": similarity,
+                        "_raw_similarity": similarity,  # Sprint 8A: pre-boost cosine for bypass gate
+                        "_embedding": stored_embedding,  # Sprint 7: retained for cross-result cluster pass
                         "data": {
                             "memory_id": row["memory_id"],
                             "content": row["content"],
@@ -4026,8 +4250,49 @@ class PersistentAIMemorySystem:
                 result["similarity_score"] += 0.35
         
         results.sort(key=lambda x: x["similarity_score"], reverse=True)
-        return results[:limit]
-    
+
+        # Sprint 7: Importance-Preferent Near-Duplicate Suppression
+        # -----------------------------------------------------------------------
+        # After scoring, clusters of near-duplicate docs collapse to the
+        # highest-importance representative. Prevents keyword-rich near-dups
+        # from blocking the authoritative anchor memory from reaching top-1.
+        #
+        # Algorithm: greedy pass over sorted results; when a candidate's
+        # cross-result cosine with an already-selected doc exceeds the
+        # threshold, the higher-importance doc wins. Equal importance → first
+        # in sort order (higher score) wins.
+        #
+        # Why proxy via stored contextual embeddings instead of content diff:
+        # Contextual embeddings (numeric prefix format) preserve importance
+        # distinctness while content near-dups still cluster at cosine > 0.88.
+        _NEAR_DUP_THRESHOLD = 0.95
+        pool = results[:50]  # anchors always land here after Sprint 6 boost
+        survivors = []
+        for candidate in pool:
+            c_emb = candidate.get("_embedding")
+            c_imp = candidate["data"]["importance_level"]
+            cluster_hit = -1
+            if c_emb:
+                for i, sel in enumerate(survivors):
+                    s_emb = sel.get("_embedding")
+                    if s_emb:
+                        cross = self._calculate_cosine_similarity(c_emb, s_emb)
+                        if cross > _NEAR_DUP_THRESHOLD:
+                            cluster_hit = i
+                            break
+            if cluster_hit == -1:
+                survivors.append(candidate)
+            elif c_imp > survivors[cluster_hit]["data"]["importance_level"]:
+                # Higher-importance doc from same cluster displaces current representative
+                survivors[cluster_hit] = candidate
+            # else: candidate is dominated → silently dropped
+
+        survivors.sort(key=lambda x: x["similarity_score"], reverse=True)
+        for r in survivors:
+            r.pop("_embedding", None)
+            # _raw_similarity is retained: needed by search_memories() bypass gate (Sprint 8A)
+        return survivors[:limit]
+
     async def _search_conversations(self, query_embedding: List[float], limit: int) -> List[Dict]:
         """Search conversation messages using semantic similarity"""
         

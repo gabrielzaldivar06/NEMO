@@ -1,0 +1,58 @@
+[Embedding Service Configuration]
+Loading configuration from embedding_config.json...
+Intelligent Embedding Service Configuration
+Primary: lm_studio (text-embedding-qwen3-embedding-4b)
+Fallback: ollama (nomic-embed-text)
+Preserving existing 768D embeddings, using best available for new ones
+To customize, edit embedding_config.json in the project directory
+Reranking Service Configuration
+Primary: llama_cpp (bge-reranker-v2-m3-Q4_K_M.gguf)
+Enabled: True
+Embedded batch 50/120
+Embedded batch 100/120
+Embedded batch 120/120
+Persistent AI Memory ù Entropy Benchmark
+============================================================
+Data dir: C:\Users\gabri\AppData\Local\Temp\pam_benchmark_entropy_s1zlqllt
+Corpus: 120 memorias  (12 anchors / 12 imposters / 12 distractors / 12 cross-topic / 72 filler)
+Queries: 48  (clean=12, typo_severe=12, paraphrase_extreme=12, confusory=12)
+
+Top-1 accuracy:           47.92%
+Recall@3:                 89.58%
+Recall@5:                 93.75%
+Recall@10:                93.75%
+MRR:                      0.6830
+
+Top-1 adversarial (confusory): 16.67%
+Imposter intercept rate:       50.00%
+Avg score gap (rank1-rank2):   0.0793
+
+Avg search latency:  4239.16 ms
+Median latency:      4124.04 ms
+P95 latency:         6674.02 ms
+
+Category Top-1:
+  clean                 : 83.33%
+Traceback (most recent call last):
+  File "C:\dev\memory persistence\persistent-ai-memory\examples\benchmark_memory2.py", line 709, in <module>
+    main()
+    ~~~~^^
+  File "C:\dev\memory persistence\persistent-ai-memory\examples\benchmark_memory2.py", line 705, in main
+    asyncio.run(run_benchmark(keep_data=args.keep_data, limit=args.limit))
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\gabri\AppData\Local\Python\pythoncore-3.14-64\Lib\asyncio\runners.py", line 204, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Users\gabri\AppData\Local\Python\pythoncore-3.14-64\Lib\asyncio\runners.py", line 127, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\gabri\AppData\Local\Python\pythoncore-3.14-64\Lib\asyncio\base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\dev\memory persistence\persistent-ai-memory\examples\benchmark_memory2.py", line 658, in run_benchmark
+    print(f"  {cat:<22}: {acc:.2%}{marker}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\gabri\AppData\Local\Python\pythoncore-3.14-64\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2190' in position 33: character maps to <undefined>

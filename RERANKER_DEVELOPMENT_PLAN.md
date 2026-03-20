@@ -123,6 +123,34 @@
 		- ✅ Top-1 ≥ 75% → **94.44%** (FAR exceeded!) ✅
 		- ✅ MRR ≥ 0.8079 → **0.9537** ✅
 
+- **Sprint 7 — COMPLETE ✅ — BENCHMARKED:**
+	- **Importance-Preferent Near-Duplicate Suppression (threshold=0.95):** After the Sprint 6 composite boost and sort, a greedy cluster pass collapses groups of near-duplicate memories (cross-result cosine > 0.95) to the single highest-`importance_level` representative. If two results share the same semantic cluster but different importance, the lower-importance one is silently dropped; the higher-importance one keeps its position in the sorted list. A re-sort of survivors restores monotonic score ordering before returning. The pool is limited to top-50 post-boost results (anchors always land there after Sprint 6). Threshold 0.95 was chosen because storage-level dedup runs at 0.92 — genuine benchmark near-dups live above that; threshold 0.88 caused false groupings between distinct memories sharing the same type/importance prefix tokens.
+	- **First attempt (threshold=0.88) — tested and reverted mid-sprint:** Caused regression to 66.67% Top-1. Root cause: contextual embeddings share a substantial prefix (`type | importancia:N | [tags]:`) — two distinct memories of the same type and same importance level can reach cosine 0.88–0.92 from shared prefix signal alone, without being true near-dups. The cluster pass incorrectly suppressed legitimate rank=1 answers, leading to 10 new failures.
+	- **Final threshold 0.95:** Only catches memories that are semantically near-identical (same content, minimal variation). Correct behaviours observed: `"si lm studio cae"` improved from **miss → rank=5** (near-dup competitors were suppressed, letting the fallback anchor surface in top-10 for the first time). Recall@5 reached 100%.
+	- **Sprint 7 benchmark (stress, 240 items, DB isolated):**
+
+| Metric | Sprint 6 | Sprint 7 (+Near-Dup Suppression) | Delta |
+|---|---|---|---|
+| Top-1 | 94.44% | **94.44%** | = |
+| Recall@3 | 97.22% | **97.22%** | = |
+| Recall@5 | 97.22% | **100.00%** | **+2.78pp** |
+| Recall@10 | 97.22% | **100.00%** | **+2.78pp** |
+| MRR | 0.9537 | **0.9593** | +0.006 |
+| Avg latency | 2148ms | **2199ms** | +51ms (+2.4%) |
+| **Typo Top-1** | 100% | **100%** | = |
+| Paraphrase | 100% | **100%** | = |
+| Clean | 86.67% | **86.67%** | = |
+
+	- **Analysis:** The near-dup suppressor delivers marginal but confirmed gains: Recall@5 hits 100% (all correct answers are in the top-5 for every query), MRR improves to 0.9593, and the previously-missing `"si lm studio cae"` anchor now surfaces at rank=5. Top-1 is unchanged — the two hard failures remain structurally different problems: `"como funciona la busqueda semantica"` (rank=3) needs score-monotonic tie-breaking within the cluster (Sprint 7 only promotes by importance, not by relevance-to-query), and `"si lm studio cae"` (rank=5) requires LLM-level intent bridging from specific-brand to abstract-concept. The 0.95 threshold is deliberately conservative — raising it would silently fail to group true near-dups; lowering it risks prefix-collision false groupings (as proven at 0.88).
+	- **Remaining hard failures (2):**
+		1. `"como funciona la busqueda semantica"` → rank=3. Near-dup and anchor both pass the 0.95 cluster check as separate entries (their contextual embeddings differ due to importance-level tag). Requires query-relevance-aware tie-breaking within the cluster, or Sprint 10/HyDE.
+		2. `"si lm studio cae que usa el sistema"` → rank=5 (improved from miss). Still not rank=1. Needs LLM semantic bridge "LM Studio" → "proveedor principal". Sprint 10.
+	- **Sprint 7 exit criteria:**
+		- ✅ Recall@5 ≥ 97.22% (maintain) → **100%** ✅
+		- ✅ MRR ≥ 0.9537 (maintain) → **0.9593** ✅
+		- ✅ Top-1 ≥ 94.44% (maintain) → **94.44%** ✅
+		- ✅ "si lm studio cae" improves → **rank=5 (was miss)** ✅
+
 ---
 
 ## Master Intelligence Plan
@@ -144,6 +172,7 @@ Transform the system from a "smart search engine" into a self-improving memory b
 | Sprint 4.5 | + Confidence Bypass | **66.67%** | **0.7778** | **2166ms** | ✅ -24% latency, MRR restored |
 | Sprint 5 | + Contextual Retrieval | **72.22%** | **0.8079** | **2025ms** | ✅ Typo Top-1 doubled (22→44%), MRR > 0.80 |
 | Sprint 6 | + Type-Quality Boost | **94.44%** | **0.9537** | **2148ms** | ✅ Typo+Paraphrase=100%, FAR exceeds 75% target |
+| Sprint 7 | + Near-Dup Suppression (0.95) | **94.44%** | **0.9593** | **2199ms** | ✅ Recall@5=100%, MRR+0.006, LM Studio miss→rank=5 |
 
 ### Sprint Roadmap
 
@@ -153,7 +182,8 @@ Transform the system from a "smart search engine" into a self-improving memory b
 | **5** ✅ | Contextual Retrieval (metadata prefix on embeddings) | Top-1 +8–15%, Typo partial improvement | Medium | Done |
 | **5a** ✅ | Self-Correction feedback loop | Correction recall = 100% when stored | Very low | Done |
 | **6** | MMR Diversity Reranking + Importance Boost | Near-dup confusion ↓, rank regressions fixed | Medium | 1 day |
-| **7** | Offline Consolidation (Generative Archiving) | Corpus density ↑, duplicate noise ↓ | Medium | 2 days |
+| **7** ✅ | Near-Dup Suppression (importance-preferent, cosine>0.95) | Recall@5=100%, MRR improvement, LM Studio miss→rank=5 | Low | Done |
+| **8** | Offline Consolidation (Generative Archiving) | Corpus density ↑, duplicate noise ↓ | Medium | 2 days |
 | **8** | Query Adaptation + Hard Negatives | Typo Top-1 > 40% (from 22.22%) | High | 2 days |
 | **9** | GraphRAG (entity relationships) | Graph-adjacent recall +15–20% on related queries | High | 3–4 days |
 | **10** | Multi-Agent Reflection (LLM critic) | Ambiguous query precision +10–15% | Medium | 1 day |

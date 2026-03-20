@@ -1,0 +1,73 @@
+[Embedding Service Configuration]
+Loading configuration from embedding_config.json...
+Intelligent Embedding Service Configuration
+Primary: lm_studio (text-embedding-qwen3-embedding-4b)
+Fallback: ollama (nomic-embed-text)
+Preserving existing 768D embeddings, using best available for new ones
+To customize, edit embedding_config.json in the project directory
+Reranking Service Configuration
+Primary: llama_cpp (bge-reranker-v2-m3-Q4_K_M.gguf)
+Enabled: True
+Embedded batch 100/240
+Embedded batch 200/240
+Embedded batch 240/240
+Persistent AI Memory Benchmark
+============================================================
+Data dir: C:\Users\gabri\AppData\Local\Temp\pam_benchmark_stress_s5xkw_gq
+Profile: stress
+Single run: True
+Memories: 240
+Queries: 36
+Top-1 accuracy: 94.44%
+Recall@3: 97.22%
+Recall@5: 100.00%
+Recall@10: 100.00%
+MRR: 0.9593
+Avg search latency: 2199.09 ms
+Median search latency: 2112.82 ms
+P95 search latency: 3373.20 ms
+Avg store latency: 16.67 ms
+Category Top-1:
+  clean: 86.67%
+  paraphrase: 100.00%
+  typo: 100.00%
+Report: C:\Users\gabri\AppData\Local\Temp\pam_benchmark_stress_s5xkw_gq\benchmark_report.json
+
+Per-query summary
+------------------------------------------------------------
+rank=   1 latency= 2445.65 ms query=como arreglamos el timezone en windows
+rank=   1 latency= 3032.95 ms query=como resolvimos el error de zona horaria en winodws
+rank=   1 latency= 1654.04 ms query=fix del timezone fallback para windows
+rank=   1 latency= 2456.40 ms query=cual es el endpoint local de embeddings
+rank=   1 latency= 2796.02 ms query=localhost 1234 embeddings endpoint real
+rank=   1 latency= 2405.42 ms query=que url usa lm sutdio para embeddings
+rank=   1 latency= 3009.48 ms query=que modelo de embeddings quedo cargado
+rank=   1 latency= 2787.81 ms query=identificador del modelo qwen de embeddings
+rank=   1 latency= 2933.73 ms query=como se llama el modelo qewn3 embed 4b en lm studio
+rank=   1 latency= 3373.20 ms query=como arranca powershell si no existe llama-server
+rank=   1 latency= 2790.58 ms query=script ps1 fallback a lms.exe
+rank=   1 latency= 3824.86 ms query=como inicia el servidor con poweshell cuando falta llama server
+rank=   1 latency= 1207.27 ms query=que valida el health check
+rank=   1 latency= 2824.48 ms query=para que sirve tests test health check py
+rank=   1 latency= 2286.11 ms query=q valida el helth chekc del sistema
+rank=   1 latency= 2108.51 ms query=como se lanza el servidor mcp instalable
+rank=   1 latency= 1104.95 ms query=entrypoint del mcp server
+rank=   1 latency= 3571.20 ms query=como arrancar pams sevrer
+rank=   3 latency= 1777.54 ms query=como funciona la busqueda semantica
+rank=   1 latency= 1417.84 ms query=search memories ranking similarity score
+rank=   1 latency= 3332.69 ms query=como trabaja la busqueda semantca del proyecto
+rank=   1 latency= 2117.56 ms query=puede reflexionar sobre uso de herramientas
+rank=   1 latency= 2146.34 ms query=tool logging y reflexion de patrones
+rank=   1 latency= 1916.64 ms query=el sistema analiza tools calls o no
+rank=   1 latency=  973.22 ms query=que fallback de embeddings tenemos
+rank=   5 latency= 1658.88 ms query=si lm studio cae que usa el sistema
+rank=   1 latency= 1913.49 ms query=fallbak ollama nomic embed text
+rank=   1 latency=  966.31 ms query=como guarda continuidad por workspace
+rank=   1 latency= 1838.96 ms query=sesiones de desarrollo e insights de proyecto
+rank=   1 latency= 1745.59 ms query=continudad de trabajo por worksapce
+rank=   1 latency= 1810.47 ms query=como se almacenan los turnos de conversacion
+rank=   1 latency= 1361.24 ms query=store conversation role session id metadata
+rank=   1 latency= 2117.13 ms query=como guarda conversaciones con sessoin id
+rank=   1 latency= 1934.33 ms query=como se crean memorias curadas con tags
+rank=   1 latency= 1526.31 ms query=create memory importance level tags
+rank=   1 latency= 2000.16 ms query=como guardar memorias semanticas con typ y tags
