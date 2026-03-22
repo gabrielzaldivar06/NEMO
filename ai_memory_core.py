@@ -3329,11 +3329,12 @@ class PersistentAIMemorySystem:
                 "message": str(e)
             }
 
-    async def prime_context(self) -> Dict:
-        """Sprint 1 T3 — Compound context bundle for session start.
+    async def prime_context(self, topic: str = None) -> Dict:
+        """Sprint 1 T3 / Sprint 2 T3 — Compound context bundle for session start.
 
         Executes in parallel:
           1. Top-5 high-importance memories (compact, min_importance=7)
+             Uses optional `topic` to narrow the query (e.g. "NEMO dev sprint")
           2. Active reminders (up to 3)
           3. Last session summary (most recent conversation timestamp + snippet)
 
@@ -3344,8 +3345,10 @@ class PersistentAIMemorySystem:
 
         async def _get_top_memories():
             try:
+                base_query = "active projects recent decisions preferences"
+                search_query = f"{topic} {base_query}" if topic else base_query
                 result = await self.search_memories(
-                    query="active projects recent decisions preferences",
+                    query=search_query,
                     limit=5,
                     min_importance=7,
                     compact=True,
@@ -3484,6 +3487,52 @@ class PersistentAIMemorySystem:
             "contextual_prefix": contextual_text[:80] if embedding else None,
             "consolidation_warning": consolidation_warning,
         }
+
+    async def update_memory(self, memory_id: str, content: str = None,
+                            importance_level: int = None, tags: List[str] = None) -> Dict:
+        """Update content, importance, or tags of an existing curated memory.
+
+        Only provided fields are updated. If content changes, the embedding is
+        regenerated asynchronously so retrieval quality stays fresh.
+        """
+        if not any([content is not None, importance_level is not None, tags is not None]):
+            return {"status": "error", "message": "No fields to update"}
+
+        sets, params = [], []
+        ts = get_current_timestamp()
+        if content is not None:
+            sets.append("content = ?")
+            params.append(content)
+        if importance_level is not None:
+            sets.append("importance_level = ?")
+            params.append(importance_level)
+        if tags is not None:
+            sets.append("tags = ?")
+            params.append(json.dumps(tags) if isinstance(tags, list) else tags)
+        sets.append("timestamp_updated = ?")
+        params.append(ts)
+        params.append(memory_id)
+
+        rows = await self.ai_memory_db.execute_update(
+            f"UPDATE curated_memories SET {', '.join(sets)} WHERE memory_id = ?",
+            tuple(params)
+        )
+        if rows == 0:
+            return {"status": "error", "message": f"Memory {memory_id} not found"}
+
+        # Regenerate embedding asynchronously when content changes
+        if content is not None:
+            asyncio.create_task(self._add_embedding_to_memory(memory_id, content))
+
+        return {"status": "success", "memory_id": memory_id}
+
+    async def close(self) -> None:
+        """Graceful shutdown — cancel background tasks. DB connections are per-operation so nothing to flush."""
+        if hasattr(self, 'file_monitor') and self.file_monitor:
+            try:
+                self.file_monitor.stop()
+            except Exception:
+                pass
 
     # =============================================================================
     # SCHEDULE OPERATIONS
@@ -3892,7 +3941,10 @@ class PersistentAIMemorySystem:
         query_embedding = await self.embedding_service.generate_embedding(query)
         if not query_embedding:
             # Fallback to text-based search if embedding fails
-            return await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type)
+            result = await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type)
+            if compact:
+                result = self._apply_compact_format(result)
+            return result
 
         # ------------------------------------------------------------------
         # Feature #4 — Semantic Query Cache
@@ -4081,31 +4133,42 @@ class PersistentAIMemorySystem:
         # "[score|imp:N|type|tag1,tag2] Content snippet (date)"
         # Saves ~90% tokens per result. Default=True since LLMs rarely need raw embedding fields.
         if compact:
-            compact_results = []
-            for r in payload["results"]:
-                score = round(r.get("similarity_score", 0), 2)
-                data = r.get("data", r)
-                imp = data.get("importance_level", "?")
-                rtype = r.get("type", data.get("memory_type", "mem"))
-                tags = data.get("tags", [])
-                if isinstance(tags, str):
-                    try:
-                        import json as _json
-                        tags = _json.loads(tags)
-                    except Exception:
-                        tags = [tags]
-                tag_str = ",".join(tags[:3]) if tags else ""
-                content = data.get("content", data.get("message_content", ""))
-                snippet = (content[:120] + "…") if len(content) > 120 else content
-                ts = data.get("timestamp_created", data.get("timestamp", ""))
-                date_str = ts[:10] if ts else ""
-                tag_part = f"|{tag_str}" if tag_str else ""
-                date_part = f" ({date_str})" if date_str else ""
-                compact_results.append(f"[{score}|imp:{imp}|{rtype}{tag_part}] {snippet}{date_part}")
-            payload["results"] = compact_results
-            payload["compact"] = True
+            payload = self._apply_compact_format(payload)
 
         return payload
+
+    def _apply_compact_format(self, payload: Dict) -> Dict:
+        """Sprint 1/2 — Convert full result dicts to compressed one-liner strings.
+
+        Format: "[score|imp:N|type|tag1,tag2] snippet (date)"
+        Saves ~90% tokens vs full JSON objects. Called by search_memories and
+        _text_based_search so compact=True always works regardless of search path.
+        """
+        import json as _json
+        compact_results = []
+        for r in payload.get("results", []):
+            score = round(r.get("similarity_score", 0), 2)
+            data = r.get("data", r)
+            imp = data.get("importance_level", "?")
+            rtype = r.get("type", data.get("memory_type", "mem"))
+            tags = data.get("tags", [])
+            if isinstance(tags, str):
+                try:
+                    tags = _json.loads(tags)
+                except Exception:
+                    tags = [tags]
+            tag_str = ",".join(tags[:3]) if tags else ""
+            content = data.get("content", data.get("message_content", ""))
+            snippet = (content[:120] + "…") if len(content) > 120 else content
+            ts = data.get("timestamp_created", data.get("timestamp", ""))
+            date_str = ts[:10] if ts else ""
+            tag_part = f"|{tag_str}" if tag_str else ""
+            date_part = f" ({date_str})" if date_str else ""
+            compact_results.append(f"[{score}|imp:{imp}|{rtype}{tag_part}] {snippet}{date_part}")
+        result = dict(payload)
+        result["results"] = compact_results
+        result["compact"] = True
+        return result
 
     async def rerank_search_results(self, query: str, results: List[Dict[str, Any]], top_n: int = None) -> List[Dict[str, Any]]:
         """Reranks candidates using Rank-Weighted Fusion (RWF): 70% semantic rank + 30% BGE rank.

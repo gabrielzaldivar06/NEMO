@@ -38,20 +38,6 @@ logger = logging.getLogger(__name__)
 class AIMemoryMCPServer:
     """MCP Server for Friday's Memory System"""
 
-    async def update_memory(self, memory_id: str, content: str = None, importance_level: int = None, tags: List[str] = None) -> Dict:
-        """Update an existing memory"""
-        
-        success = await self.ai_memory_db.update_memory(memory_id, content, importance_level, tags)
-        
-        # If content was updated, regenerate embedding
-        if content is not None:
-            asyncio.create_task(self._add_embedding_to_memory(memory_id, content))
-        
-        return {
-            "status": "success" if success else "error",
-            "memory_id": memory_id
-        }   
-        
     def __init__(self):
         self.memory_system = PersistentAIMemorySystem()
         self.server = Server("ai-memory")
@@ -153,11 +139,14 @@ class AIMemoryMCPServer:
                     "Returns your working memory: high-priority memories, pending reminders, and last session summary — "
                     "all compressed into a single response. "
                     "Do NOT call search_memories or get_reminders until this has been called. "
-                    "After calling prime_context you will know what you already know about this user and context."
+                    "After calling prime_context you will know what you already know about this user and context. "
+                    "Pass topic= to narrow memory retrieval to a specific project or subject."
                 ),
                 inputSchema={
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "topic": {"type": "string", "description": "Optional topic to focus memory retrieval (e.g. 'NEMO dev sprint')"}
+                    },
                     "additionalProperties": False
                 }
             ),
@@ -712,7 +701,7 @@ class AIMemoryMCPServer:
 
             # Route to appropriate handler
             if tool_name == "prime_context":
-                result = await self.memory_system.prime_context()
+                result = await self.memory_system.prime_context(topic=arguments.get("topic"))
                 self._session_primed = True
                 self._primed_bundle = result
             elif tool_name == "search_memories":
