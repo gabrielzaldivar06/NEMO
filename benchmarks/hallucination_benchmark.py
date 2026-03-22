@@ -379,7 +379,7 @@ class HallucinationBenchmark:
             self._nemo = PersistentAIMemorySystem(enable_file_monitoring=False)
             print(f"{GREEN}✓ NEMO cargado para CAT-6{RESET}")
         except Exception as e:
-            print(f"{YELLOW}⚠ NEMO no disponible: {e}{RESET}")
+            print(f"{YELLOW}[!] NEMO no disponible: {e}{RESET}")
             self.nemo_enabled = False
 
     async def _ask(self, question: str, system: str = None,
@@ -588,7 +588,7 @@ class HallucinationBenchmark:
             if bundle.get("last_session"):
                 memories_str += f"\nÚltima sesión: {bundle['last_session']}"
         except Exception as e:
-            print(f"{YELLOW}  ⚠ prime_context falló: {e}{RESET}")
+            print(f"{YELLOW}  [!] prime_context falló: {e}{RESET}")
             return [], 0.0, 0.0, 0.0
 
         # Contexto NEMO = instrucción de anclaje conductual + memorias del usuario
