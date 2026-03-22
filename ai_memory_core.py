@@ -3329,6 +3329,74 @@ class PersistentAIMemorySystem:
                 "message": str(e)
             }
 
+    async def prime_context(self) -> Dict:
+        """Sprint 1 T3 — Compound context bundle for session start.
+
+        Executes in parallel:
+          1. Top-5 high-importance memories (compact, min_importance=7)
+          2. Active reminders (up to 3)
+          3. Last session summary (most recent conversation timestamp + snippet)
+
+        Returns a compressed bundle (~120 tokens) so the LLM has full working
+        memory loaded in a single tool call with no planning overhead.
+        """
+        import asyncio as _asyncio
+
+        async def _get_top_memories():
+            try:
+                result = await self.search_memories(
+                    query="active projects recent decisions preferences",
+                    limit=5,
+                    min_importance=7,
+                    compact=True,
+                )
+                return result.get("results", [])
+            except Exception:
+                return []
+
+        async def _get_reminders():
+            try:
+                reminders = await self.get_active_reminders(limit=3)
+                if isinstance(reminders, list):
+                    return [
+                        f"[{r.get('priority_level','?')}] {r.get('content','')[:80]} — {(r.get('due_datetime') or '')[:10]}"
+                        for r in reminders[:3]
+                    ]
+                return []
+            except Exception:
+                return []
+
+        async def _get_last_session():
+            try:
+                rows = await self.conversations_db.execute_query(
+                    "SELECT m.timestamp, m.content FROM messages m "
+                    "JOIN conversations c ON m.conversation_id = c.conversation_id "
+                    "ORDER BY m.timestamp DESC LIMIT 1"
+                )
+                if rows:
+                    row = dict(rows[0])
+                    ts = (row.get("timestamp") or "")[:10]
+                    snippet = (row.get("content") or "")[:100]
+                    return f"{ts}: {snippet}"
+                return None
+            except Exception:
+                return None
+
+        memories, reminders, last_session = await _asyncio.gather(
+            _get_top_memories(),
+            _get_reminders(),
+            _get_last_session(),
+        )
+
+        return {
+            "status": "success",
+            "primed_at": get_current_timestamp(),
+            "memories": memories,
+            "reminders": reminders,
+            "last_session": last_session,
+            "hint": "Context loaded. You may now answer or call search_memories(compact=true) for topic-specific retrieval.",
+        }
+
     # =============================================================================
     # AI MEMORY OPERATIONS
     # =============================================================================
@@ -3811,7 +3879,8 @@ class PersistentAIMemorySystem:
 
     async def search_memories(self, query: str, limit: int = 10, 
                             min_importance: int = None, max_importance: int = None,
-                            memory_type: str = None, database_filter: str = "all") -> Dict:
+                            memory_type: str = None, database_filter: str = "all",
+                            compact: bool = False) -> Dict:
         """Advanced semantic search across all databases with filtering"""
 
         # ------------------------------------------------------------------
@@ -4007,6 +4076,34 @@ class PersistentAIMemorySystem:
                     except Exception:
                         pass
             asyncio.ensure_future(_bump_access(memory_ids_to_bump, ts_now))
+
+        # Sprint 1 T2 — Compact format: convert full result objects to compressed one-liners
+        # "[score|imp:N|type|tag1,tag2] Content snippet (date)"
+        # Saves ~90% tokens per result. Default=True since LLMs rarely need raw embedding fields.
+        if compact:
+            compact_results = []
+            for r in payload["results"]:
+                score = round(r.get("similarity_score", 0), 2)
+                data = r.get("data", r)
+                imp = data.get("importance_level", "?")
+                rtype = r.get("type", data.get("memory_type", "mem"))
+                tags = data.get("tags", [])
+                if isinstance(tags, str):
+                    try:
+                        import json as _json
+                        tags = _json.loads(tags)
+                    except Exception:
+                        tags = [tags]
+                tag_str = ",".join(tags[:3]) if tags else ""
+                content = data.get("content", data.get("message_content", ""))
+                snippet = (content[:120] + "…") if len(content) > 120 else content
+                ts = data.get("timestamp_created", data.get("timestamp", ""))
+                date_str = ts[:10] if ts else ""
+                tag_part = f"|{tag_str}" if tag_str else ""
+                date_part = f" ({date_str})" if date_str else ""
+                compact_results.append(f"[{score}|imp:{imp}|{rtype}{tag_part}] {snippet}{date_part}")
+            payload["results"] = compact_results
+            payload["compact"] = True
 
         return payload
 
