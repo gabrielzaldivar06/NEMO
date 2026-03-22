@@ -2593,7 +2593,11 @@ class EmbeddingService:
             self.fallback_config = self.full_config.get("fallback", {})
 
         self.embeddings_endpoint = self._build_embeddings_endpoint(self.primary_config)
-            
+
+        # Shared aiohttp session — created lazily on first use, reused across all
+        # embedding calls so each generate_embedding() doesn't open a new TCP connection.
+        self._session: Optional["aiohttp.ClientSession"] = None
+
         self.provider_availability = {
             "lm_studio": None,  # Will be tested on first use
             "ollama": None,
@@ -2675,6 +2679,18 @@ class EmbeddingService:
         except Exception as e:
             logger.warning(f"Failed to get user config, using defaults: {e}")
             return cls()  # Fallback to defaults
+
+    async def _get_session(self) -> "aiohttp.ClientSession":
+        """Return the shared aiohttp session, creating it lazily on first call."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        """Close the shared HTTP session. Call when shutting down."""
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
 
     async def generate_embedding(self, text: str, model: str = None) -> List[float]:
         """Generate embedding using intelligent provider selection with preservation strategy"""
@@ -2775,21 +2791,21 @@ class EmbeddingService:
         add_special_tokens = config.get("add_special_tokens", True)
 
         try:
-            async with aiohttp.ClientSession() as session:
-                payload = {"model": model, "input": text, "add_special_tokens": add_special_tokens}
-                async with session.post(self.embeddings_endpoint, json=payload, headers=headers) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data and "data" in data and len(data["data"]) > 0:
-                            embedding = data["data"][0].get("embedding")
-                            if embedding:
-                                return embedding
-                        logger.error(f"Invalid {provider_name} response format: {data}")
-                        return None
-
-                    error_text = await response.text()
-                    logger.error(f"{provider_name} API error {response.status}: {error_text}")
+            session = await self._get_session()
+            payload = {"model": model, "input": text, "add_special_tokens": add_special_tokens}
+            async with session.post(self.embeddings_endpoint, json=payload, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data and "data" in data and len(data["data"]) > 0:
+                        embedding = data["data"][0].get("embedding")
+                        if embedding:
+                            return embedding
+                    logger.error(f"Invalid {provider_name} response format: {data}")
                     return None
+
+                error_text = await response.text()
+                logger.error(f"{provider_name} API error {response.status}: {error_text}")
+                return None
         except asyncio.CancelledError as e:
             logger.error(f"{provider_name} embedding error: {e}")
             return None
@@ -2808,23 +2824,23 @@ class EmbeddingService:
         model = config.get("model", "nomic-embed-text")
         self.embeddings_endpoint = f"{base_url.rstrip('/')}/api/embeddings"
         
-        async with aiohttp.ClientSession() as session:
-            try:
-                payload = {"model": model, "prompt": text}
-                async with session.post(self.embeddings_endpoint, json=payload) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return data.get("embedding")
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"Ollama API error {response.status}: {error_text}")
-                        return None
-            except asyncio.CancelledError as e:
-                logger.error(f"Ollama embedding error: {e}")
-                return None
-            except Exception as e:
-                logger.error(f"Ollama embedding error: {e}")
-                return None
+        try:
+            session = await self._get_session()
+            payload = {"model": model, "prompt": text}
+            async with session.post(self.embeddings_endpoint, json=payload) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get("embedding")
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Ollama API error {response.status}: {error_text}")
+                    return None
+        except asyncio.CancelledError as e:
+            logger.error(f"Ollama embedding error: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Ollama embedding error: {e}")
+            return None
     
     async def _generate_lm_studio_embedding(self, text: str, fallback: bool = False) -> List[float]:
         """Generate embedding using any OpenAI-compatible local endpoint."""
@@ -2851,20 +2867,20 @@ class EmbeddingService:
         model = config.get("model", "text-embedding-3-small")
         
         try:
-            async with aiohttp.ClientSession() as session:
-                headers = {"Authorization": f"Bearer {api_key}"}
-                payload = {"model": model, "input": text}
-                async with session.post("https://api.openai.com/v1/embeddings", 
-                                        json=payload, headers=headers) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data and "data" in data and len(data["data"]) > 0:
-                            return data["data"][0].get("embedding")
-                        return None
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"OpenAI API error {response.status}: {error_text}")
-                        return None
+            session = await self._get_session()
+            headers = {"Authorization": f"Bearer {api_key}"}
+            payload = {"model": model, "input": text}
+            async with session.post("https://api.openai.com/v1/embeddings",
+                                    json=payload, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data and "data" in data and len(data["data"]) > 0:
+                        return data["data"][0].get("embedding")
+                    return None
+                else:
+                    error_text = await response.text()
+                    logger.error(f"OpenAI API error {response.status}: {error_text}")
+                    return None
         except asyncio.CancelledError as e:
             logger.error(f"OpenAI embedding error: {e}")
             return None
@@ -3329,6 +3345,77 @@ class PersistentAIMemorySystem:
                 "message": str(e)
             }
 
+    async def prime_context(self, topic: str = None) -> Dict:
+        """Sprint 1 T3 / Sprint 2 T3 — Compound context bundle for session start.
+
+        Executes in parallel:
+          1. Top-5 high-importance memories (compact, min_importance=7)
+             Uses optional `topic` to narrow the query (e.g. "NEMO dev sprint")
+          2. Active reminders (up to 3)
+          3. Last session summary (most recent conversation timestamp + snippet)
+
+        Returns a compressed bundle (~120 tokens) so the LLM has full working
+        memory loaded in a single tool call with no planning overhead.
+        """
+        import asyncio as _asyncio
+
+        async def _get_top_memories():
+            try:
+                base_query = "active projects recent decisions preferences"
+                search_query = f"{topic} {base_query}" if topic else base_query
+                result = await self.search_memories(
+                    query=search_query,
+                    limit=5,
+                    min_importance=7,
+                    compact=True,
+                )
+                return result.get("results", [])
+            except Exception:
+                return []
+
+        async def _get_reminders():
+            try:
+                reminders = await self.get_active_reminders(limit=3)
+                if isinstance(reminders, list):
+                    return [
+                        f"[{r.get('priority_level','?')}] {r.get('content','')[:80]} — {(r.get('due_datetime') or '')[:10]}"
+                        for r in reminders[:3]
+                    ]
+                return []
+            except Exception:
+                return []
+
+        async def _get_last_session():
+            try:
+                rows = await self.conversations_db.execute_query(
+                    "SELECT m.timestamp, m.content FROM messages m "
+                    "JOIN conversations c ON m.conversation_id = c.conversation_id "
+                    "ORDER BY m.timestamp DESC LIMIT 1"
+                )
+                if rows:
+                    row = dict(rows[0])
+                    ts = (row.get("timestamp") or "")[:10]
+                    snippet = (row.get("content") or "")[:100]
+                    return f"{ts}: {snippet}"
+                return None
+            except Exception:
+                return None
+
+        memories, reminders, last_session = await _asyncio.gather(
+            _get_top_memories(),
+            _get_reminders(),
+            _get_last_session(),
+        )
+
+        return {
+            "status": "success",
+            "primed_at": get_current_timestamp(),
+            "memories": memories,
+            "reminders": reminders,
+            "last_session": last_session,
+            "hint": "Context loaded. You may now answer or call search_memories(compact=true) for topic-specific retrieval.",
+        }
+
     # =============================================================================
     # AI MEMORY OPERATIONS
     # =============================================================================
@@ -3336,86 +3423,168 @@ class PersistentAIMemorySystem:
     async def create_memory(self, content: str, memory_type: str = None,
                           importance_level: int = 5, tags: List[str] = None,
                           source_conversation_id: str = None) -> Dict:
-        """Create a curated AI memory with semantic deduplication.
+        """Create a curated AI memory with non-blocking embedding generation.
 
-        Generates the embedding before inserting so that semantically equivalent
-        memories (raw cosine similarity >= 0.92) are rejected at ingestion time,
-        preventing corpus pollution that degrades retrieval and reranking quality.
-        The embedding is stored synchronously since it is already available.
+        The memory is inserted immediately so the caller gets an instant response.
+        Embedding generation and semantic deduplication run in the background —
+        avoiding the GPU/CPU spike from the embedding model blocking the event loop
+        and freezing the host system during inference.
+
+        Exact-text deduplication is still synchronous (cheap DB query) to prevent
+        trivially identical entries before the background task runs.
         """
-        # Build contextual text — same enrichment used by _add_embedding_to_memory
-        # so that dedup comparison is apples-to-apples with stored embeddings.
-        contextual_text = self._build_contextual_embedding_text(
-            content, memory_type, importance_level, tags or []
+        # Fast exact-text dedup synchronously — no embedding needed
+        existing = await self.ai_memory_db.execute_query(
+            "SELECT memory_id FROM curated_memories WHERE content = ? AND memory_type IS ?",
+            (content, memory_type)
         )
-        # Generate embedding first — needed for both dedup check and immediate storage
-        embedding = await self.embedding_service.generate_embedding(contextual_text)
+        if existing:
+            return {
+                "status": "deduplicated",
+                "memory_id": existing[0]["memory_id"],
+                "similarity": 1.0,
+                "existing_content": content[:120],
+                "message": "An identical memory already exists. No new entry was created."
+            }
 
-        # Semantic deduplication: scan existing embeddings without importance boosting
-        consolidation_warning = None  # Feature #6: set below if near-dup detected
-        if embedding:
-            new_vec = np.array(embedding, dtype=np.float32)
-            new_norm = float(np.linalg.norm(new_vec))
-            if new_norm > 0:
-                rows = await self.ai_memory_db.execute_query(
-                    "SELECT memory_id, content, embedding FROM curated_memories WHERE embedding IS NOT NULL"
-                )
-                best_sim = 0.0
-                best_match = None
-                for row in rows:
-                    stored_vec = np.frombuffer(row["embedding"], dtype=np.float32)
-                    stored_norm = float(np.linalg.norm(stored_vec))
-                    if stored_norm == 0:
-                        continue
-                    sim = float(np.dot(new_vec, stored_vec) / (new_norm * stored_norm))
-                    if sim > best_sim:
-                        best_sim = sim
-                        best_match = row
-                if best_sim >= 0.92 and best_match:
-                    return {
-                        "status": "deduplicated",
-                        "memory_id": best_match["memory_id"],
-                        "similarity": round(best_sim, 4),
-                        "existing_content": best_match["content"][:120],
-                        "message": "A semantically equivalent memory already exists. No new entry was created."
-                    }
-
-                # ------------------------------------------------------------------
-                # Feature #6 — Memory Consolidation at Write-Time
-                # Flag near-duplicates (consolidation_threshold ≤ sim < dedup_threshold)
-                # so the caller can decide whether consolidation is appropriate.
-                # We still insert the memory — this is advisory, not blocking.
-                # ------------------------------------------------------------------
-                consolidation_warning = None
-                if self._consolidation_threshold <= best_sim < 0.92 and best_match:
-                    consolidation_warning = {
-                        "near_duplicate_id": best_match["memory_id"],
-                        "similarity": round(best_sim, 4),
-                        "existing_snippet": best_match["content"][:120],
-                        "suggestion": (
-                            "This memory is semantically close to an existing one. "
-                            "Consider updating the existing memory instead of creating a new one."
-                        ),
-                    }
-
-        # No duplicate — insert then store the already-generated embedding immediately
+        # Insert immediately — user gets instant response
         memory_id = await self.ai_memory_db.create_memory(
             content, memory_type, importance_level, tags, source_conversation_id
         )
 
-        if embedding:
+        # Embedding + semantic dedup run in background (non-blocking)
+        contextual_text = self._build_contextual_embedding_text(
+            content, memory_type, importance_level, tags or []
+        )
+        asyncio.create_task(
+            self._background_embed_and_dedup(memory_id, content, contextual_text)
+        )
+
+        return {
+            "status": "success",
+            "memory_id": memory_id,
+            "contextual_prefix": contextual_text[:80],
+            "consolidation_warning": None,
+        }
+
+    async def _background_embed_and_dedup(
+        self, memory_id: str, content: str, contextual_text: str
+    ) -> None:
+        """Background task: generate embedding, run semantic dedup, update or remove.
+
+        Runs after create_memory returns so the caller is never blocked by
+        embedding model inference. If a semantic duplicate is found the newly
+        inserted memory is deleted to keep the corpus clean.
+        """
+        try:
+            embedding = await self.embedding_service.generate_embedding(contextual_text)
+            if not embedding:
+                return
+
+            new_vec = np.array(embedding, dtype=np.float32)
+            new_norm = float(np.linalg.norm(new_vec))
+            if new_norm == 0:
+                return
+
+            # Vectorized cosine similarity against all stored embeddings
+            rows = await self.ai_memory_db.execute_query(
+                "SELECT memory_id, content, embedding FROM curated_memories "
+                "WHERE embedding IS NOT NULL AND memory_id != ?",
+                (memory_id,)
+            )
+
+            best_sim = 0.0
+            best_match = None
+            if rows:
+                blobs = [r["embedding"] for r in rows]
+                matrix = np.vstack([np.frombuffer(b, dtype=np.float32) for b in blobs])
+                norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+                norms = np.where(norms == 0, 1.0, norms)
+                sims = (matrix / norms) @ (new_vec / new_norm)
+                best_idx = int(np.argmax(sims))
+                best_sim = float(sims[best_idx])
+                best_match = rows[best_idx]
+
+            if best_sim >= 0.92 and best_match:
+                # Semantic duplicate found — remove the just-inserted memory
+                await self.ai_memory_db.execute_update(
+                    "DELETE FROM curated_memories WHERE memory_id = ?",
+                    (memory_id,)
+                )
+                logger.info(
+                    f"Background dedup removed {memory_id} (sim={best_sim:.4f} "
+                    f"vs {best_match['memory_id']})"
+                )
+                return
+
+            # No duplicate — store the embedding
             embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
             await self.ai_memory_db.execute_update(
                 "UPDATE curated_memories SET embedding = ? WHERE memory_id = ?",
                 (embedding_blob, memory_id)
             )
 
-        return {
-            "status": "success",
-            "memory_id": memory_id,
-            "contextual_prefix": contextual_text[:80] if embedding else None,
-            "consolidation_warning": consolidation_warning,
-        }
+            # Advisory consolidation warning (logged only — not surfaced to caller
+            # since we're in background)
+            if self._consolidation_threshold <= best_sim < 0.92 and best_match:
+                logger.info(
+                    f"Near-duplicate advisory: {memory_id} sim={best_sim:.4f} "
+                    f"vs {best_match['memory_id']} — consider merging"
+                )
+
+        except Exception as e:
+            logger.error(f"Background embed/dedup failed for {memory_id}: {e}")
+
+    async def update_memory(self, memory_id: str, content: str = None,
+                            importance_level: int = None, tags: List[str] = None) -> Dict:
+        """Update content, importance, or tags of an existing curated memory.
+
+        Only provided fields are updated. If content changes, the embedding is
+        regenerated asynchronously so retrieval quality stays fresh.
+        """
+        if not any([content is not None, importance_level is not None, tags is not None]):
+            return {"status": "error", "message": "No fields to update"}
+
+        sets, params = [], []
+        ts = get_current_timestamp()
+        if content is not None:
+            sets.append("content = ?")
+            params.append(content)
+        if importance_level is not None:
+            sets.append("importance_level = ?")
+            params.append(importance_level)
+        if tags is not None:
+            sets.append("tags = ?")
+            params.append(json.dumps(tags) if isinstance(tags, list) else tags)
+        sets.append("timestamp_updated = ?")
+        params.append(ts)
+        params.append(memory_id)
+
+        rows = await self.ai_memory_db.execute_update(
+            f"UPDATE curated_memories SET {', '.join(sets)} WHERE memory_id = ?",
+            tuple(params)
+        )
+        if rows == 0:
+            return {"status": "error", "message": f"Memory {memory_id} not found"}
+
+        # Regenerate embedding asynchronously when content changes
+        if content is not None:
+            asyncio.create_task(self._add_embedding_to_memory(memory_id, content))
+
+        return {"status": "success", "memory_id": memory_id}
+
+    async def close(self) -> None:
+        """Graceful shutdown — cancel background tasks and close shared HTTP session."""
+        if hasattr(self, 'file_monitor') and self.file_monitor:
+            try:
+                self.file_monitor.stop()
+            except Exception:
+                pass
+        if hasattr(self, 'embedding_service'):
+            try:
+                await self.embedding_service.close()
+            except Exception:
+                pass
 
     # =============================================================================
     # SCHEDULE OPERATIONS
@@ -3811,7 +3980,8 @@ class PersistentAIMemorySystem:
 
     async def search_memories(self, query: str, limit: int = 10, 
                             min_importance: int = None, max_importance: int = None,
-                            memory_type: str = None, database_filter: str = "all") -> Dict:
+                            memory_type: str = None, database_filter: str = "all",
+                            compact: bool = False) -> Dict:
         """Advanced semantic search across all databases with filtering"""
 
         # ------------------------------------------------------------------
@@ -3823,7 +3993,10 @@ class PersistentAIMemorySystem:
         query_embedding = await self.embedding_service.generate_embedding(query)
         if not query_embedding:
             # Fallback to text-based search if embedding fails
-            return await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type)
+            result = await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type)
+            if compact:
+                result = self._apply_compact_format(result)
+            return result
 
         # ------------------------------------------------------------------
         # Feature #4 — Semantic Query Cache
@@ -4008,7 +4181,46 @@ class PersistentAIMemorySystem:
                         pass
             asyncio.ensure_future(_bump_access(memory_ids_to_bump, ts_now))
 
+        # Sprint 1 T2 — Compact format: convert full result objects to compressed one-liners
+        # "[score|imp:N|type|tag1,tag2] Content snippet (date)"
+        # Saves ~90% tokens per result. Default=True since LLMs rarely need raw embedding fields.
+        if compact:
+            payload = self._apply_compact_format(payload)
+
         return payload
+
+    def _apply_compact_format(self, payload: Dict) -> Dict:
+        """Sprint 1/2 — Convert full result dicts to compressed one-liner strings.
+
+        Format: "[score|imp:N|type|tag1,tag2] snippet (date)"
+        Saves ~90% tokens vs full JSON objects. Called by search_memories and
+        _text_based_search so compact=True always works regardless of search path.
+        """
+        import json as _json
+        compact_results = []
+        for r in payload.get("results", []):
+            score = round(r.get("similarity_score", 0), 2)
+            data = r.get("data", r)
+            imp = data.get("importance_level", "?")
+            rtype = r.get("type", data.get("memory_type", "mem"))
+            tags = data.get("tags", [])
+            if isinstance(tags, str):
+                try:
+                    tags = _json.loads(tags)
+                except Exception:
+                    tags = [tags]
+            tag_str = ",".join(tags[:3]) if tags else ""
+            content = data.get("content", data.get("message_content", ""))
+            snippet = (content[:120] + "…") if len(content) > 120 else content
+            ts = data.get("timestamp_created", data.get("timestamp", ""))
+            date_str = ts[:10] if ts else ""
+            tag_part = f"|{tag_str}" if tag_str else ""
+            date_part = f" ({date_str})" if date_str else ""
+            compact_results.append(f"[{score}|imp:{imp}|{rtype}{tag_part}] {snippet}{date_part}")
+        result = dict(payload)
+        result["results"] = compact_results
+        result["compact"] = True
+        return result
 
     async def rerank_search_results(self, query: str, results: List[Dict[str, Any]], top_n: int = None) -> List[Dict[str, Any]]:
         """Reranks candidates using Rank-Weighted Fusion (RWF): 70% semantic rank + 30% BGE rank.

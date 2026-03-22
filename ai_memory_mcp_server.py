@@ -24,6 +24,7 @@ from mcp.types import (
     CallToolResult,
     TextContent,
     Tool,
+    Resource,
 )
 
 # Local imports (will be implemented)
@@ -37,25 +38,13 @@ logger = logging.getLogger(__name__)
 class AIMemoryMCPServer:
     """MCP Server for Friday's Memory System"""
 
-    async def update_memory(self, memory_id: str, content: str = None, importance_level: int = None, tags: List[str] = None) -> Dict:
-        """Update an existing memory"""
-        
-        success = await self.ai_memory_db.update_memory(memory_id, content, importance_level, tags)
-        
-        # If content was updated, regenerate embedding
-        if content is not None:
-            asyncio.create_task(self._add_embedding_to_memory(memory_id, content))
-        
-        return {
-            "status": "success" if success else "error",
-            "memory_id": memory_id
-        }   
-        
     def __init__(self):
         self.memory_system = PersistentAIMemorySystem()
         self.server = Server("ai-memory")
         self.client_context = {}  # Track client-specific context
         self._maintenance_task = None  # Background maintenance task
+        self._session_primed = False    # Sprint 1 T4: first-call injection flag
+        self._primed_bundle = None      # Sprint 1 T6: pre-heated context bundle
         
         # Enable debug logging for MCP server
         logging.getLogger("mcp.server").setLevel(logging.DEBUG)
@@ -65,6 +54,11 @@ class AIMemoryMCPServer:
         
         # Start automatic maintenance
         self._start_automatic_maintenance()
+
+        # Sprint 1 T6 — Kick off context pre-heating as a background task.
+        # prime_context() runs immediately after the event loop starts so that
+        # _primed_bundle is warm by the time the first tool call arrives.
+        # _start_preheat() is called from run() after the loop is running.
         
         logger.info("AIMemoryMCPServer initialized successfully")
     
@@ -80,6 +74,52 @@ class AIMemoryMCPServer:
         async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> CallToolResult:
             """Execute tool based on client and parameters"""
             return await self._execute_tool(name, arguments or {})
+
+        # Sprint 1 T5 — MCP Resources: clients that support resources (e.g. VS Code Copilot)
+        # receive active context BEFORE the LLM generates its first token, with zero tool calls.
+        @self.server.list_resources()
+        async def handle_list_resources():
+            return [
+                Resource(
+                    uri="memory://context/active",
+                    name="Active Context",
+                    description="High-priority memories + pending reminders — auto-loaded before conversation starts",
+                    mimeType="text/plain",
+                ),
+                Resource(
+                    uri="memory://context/session",
+                    name="Last Session",
+                    description="Compressed summary of the most recent conversation session",
+                    mimeType="text/plain",
+                ),
+            ]
+
+        @self.server.read_resource()
+        async def handle_read_resource(uri: str):
+            import urllib.parse
+            uri_str = str(uri)
+            if uri_str == "memory://context/active":
+                bundle = self._primed_bundle or await self.memory_system.prime_context()
+                self._primed_bundle = bundle
+                self._session_primed = True
+                lines = ["=== NEMO Active Context ==="]
+                for m in bundle.get("memories", []):
+                    lines.append(f"• {m}")
+                reminders = bundle.get("reminders", [])
+                if reminders:
+                    lines.append("\nReminders:")
+                    for r in reminders:
+                        lines.append(f"  ⏰ {r}")
+                ls = bundle.get("last_session")
+                if ls:
+                    lines.append(f"\nLast session: {ls}")
+                return "\n".join(lines)
+            elif uri_str == "memory://context/session":
+                bundle = self._primed_bundle or await self.memory_system.prime_context()
+                self._primed_bundle = bundle
+                ls = bundle.get("last_session") or "No previous sessions found."
+                return f"Last session: {ls}"
+            return "Resource not found."
     
     async def _get_client_tools(self) -> List[Tool]:
         """Return tools available to the current client"""
@@ -93,8 +133,31 @@ class AIMemoryMCPServer:
             # Common tools available to all clients
             common_tools = [
             Tool(
+                name="prime_context",
+                description=(
+                    "CALL ONCE at the start of every conversation BEFORE anything else. "
+                    "Returns your working memory: high-priority memories, pending reminders, and last session summary — "
+                    "all compressed into a single response. "
+                    "Do NOT call search_memories or get_reminders until this has been called. "
+                    "After calling prime_context you will know what you already know about this user and context. "
+                    "Pass topic= to narrow memory retrieval to a specific project or subject."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "topic": {"type": "string", "description": "Optional topic to focus memory retrieval (e.g. 'NEMO dev sprint')"}
+                    },
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
                 name="search_memories",
-                description="Search memories using semantic similarity with importance and type filtering",
+                description=(
+                    "CALL THIS when starting work on any technical topic, project, or personal context. "
+                    "Required before answering questions about past decisions, preferences, or project state. "
+                    "Use compact=true (default) to save tokens. "
+                    "Returns memories ranked by semantic relevance + importance + recency."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -103,14 +166,15 @@ class AIMemoryMCPServer:
                         "database_filter": {"type": "string", "description": "Filter by database type", "enum": ["conversations", "ai_memories", "schedule", "all"], "default": "all"},
                         "min_importance": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Minimum importance level to include (1-10)"},
                         "max_importance": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Maximum importance level to include (1-10)"},
-                        "memory_type": {"type": "string", "description": "Filter by memory type (e.g., 'safety', 'preference', 'skill', 'general')"}
+                        "memory_type": {"type": "string", "description": "Filter by memory type (e.g., 'safety', 'preference', 'skill', 'general')"},
+                        "compact": {"type": "boolean", "description": "Return compressed one-line strings instead of full JSON objects — saves ~90% tokens", "default": True}
                     },
                     "required": ["query"]
                 }
             ),
             Tool(
                 name="store_conversation",
-                description="Store conversation automatically",
+                description="Store a conversation message. Call this after each exchange to persist context for future sessions.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -124,7 +188,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="create_memory",
-                description="Create a curated memory entry",
+                description="Persist an important fact, decision, or preference to long-term memory. Use for anything worth remembering across sessions.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -214,7 +278,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_reminders",
-                description="Get up to 5 active (uncompleted) reminders, sorted by due date.",
+                description="Get active reminders. Already included in prime_context() for session start — call this separately only when you need reminder status mid-conversation.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -224,7 +288,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_recent_context",
-                description="Get recent conversation context",
+                description="Get raw recent message history. Prefer prime_context() for session start — use this only when you need specific past messages mid-conversation.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -621,8 +685,26 @@ class AIMemoryMCPServer:
         
         try:
             logger.info(f"Executing tool: {tool_name} with arguments: {arguments}")
+
+            # Sprint 1 T4 — First-call context injection
+            # On the very first tool call of this server process, silently run prime_context
+            # and attach the bundle to the response so the LLM receives working memory
+            # as a side-effect of whatever action it was already going to take.
+            injected_context = None
+            if not self._session_primed and tool_name != "prime_context":
+                self._session_primed = True
+                try:
+                    injected_context = self._primed_bundle or await self.memory_system.prime_context()
+                    self._primed_bundle = injected_context  # cache for Resources
+                except Exception as _e:
+                    logger.warning(f"First-call context injection failed: {_e}")
+
             # Route to appropriate handler
-            if tool_name == "search_memories":
+            if tool_name == "prime_context":
+                result = await self.memory_system.prime_context(topic=arguments.get("topic"))
+                self._session_primed = True
+                self._primed_bundle = result
+            elif tool_name == "search_memories":
                 result = await self.memory_system.search_memories(**arguments)
             elif tool_name == "store_conversation":
                 result = await self.memory_system.store_conversation(**arguments)
@@ -729,6 +811,9 @@ class AIMemoryMCPServer:
             
             # Format the result as a proper TextContent object
             if isinstance(result, (dict, list)):
+                # Sprint 1 T4 — prepend session context on first call
+                if injected_context is not None and isinstance(result, dict):
+                    result = {"session_context": injected_context, **result}
                 result_text = json.dumps(result, indent=2, default=str)
             else:
                 result_text = str(result)
@@ -792,6 +877,25 @@ class AIMemoryMCPServer:
         except RuntimeError:
             logger.warning("Event loop not running. Call `_start_automatic_maintenance()` after loop starts.")
         logger.info("🔧 Automatic database maintenance started")
+
+    def _start_preheat(self):
+        """Sprint 1 T6 — Schedule context pre-heating as a background task."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._preheat_context())
+            logger.info("🔥 Context pre-heating scheduled")
+        except RuntimeError:
+            logger.warning("Event loop not running, skipping pre-heat.")
+
+    async def _preheat_context(self):
+        """Sprint 1 T6 — Run prime_context() in background so bundle is ready at first call."""
+        try:
+            self._primed_bundle = await self.memory_system.prime_context()
+            logger.info("✅ Context pre-heated: %d memories, %d reminders",
+                        len(self._primed_bundle.get("memories", [])),
+                        len(self._primed_bundle.get("reminders", [])))
+        except Exception as e:
+            logger.warning(f"⚠️ Context pre-heating failed: {e}")
     
     async def _maintenance_loop(self):
         """Background loop for automatic database maintenance"""
@@ -1014,6 +1118,7 @@ async def main():
         logger.info("Waiting for stdio connection from LM Studio...")
         async with stdio_server() as (read_stream, write_stream):
             logger.info("LM Studio connected via stdio")
+            mcp_server._start_preheat()   # Sprint 1 T6 — pre-heat context bundle
             await mcp_server.server.run(
                 read_stream,
                 write_stream,
