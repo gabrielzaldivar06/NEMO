@@ -31,15 +31,27 @@ if ($serverStatus -match "running|activo|started") {
     Log "  → LM Studio server iniciado"
 }
 
-# ── 3. Cargar modelo de embedding principal ────────────────────────────────────
-Log "Cargando Qwen3-Embedding-4B..."
-lms load text-embedding-qwen3-embedding-4b -y 2>&1 | ForEach-Object { Log "  lms: $_" }
-Start-Sleep -Seconds 3
+# ── 3. Cargar modelo de embedding principal (solo si no está ya cargado) ────────
+$loadedModels = lms ps 2>&1 | Out-String
 
-# ── 4. Cargar reranker ─────────────────────────────────────────────────────────
-Log "Cargando BGE-reranker-v2-m3..."
-lms load text-embedding-bge-reranker-v2-m3 -y 2>&1 | ForEach-Object { Log "  lms: $_" }
-Start-Sleep -Seconds 2
+if ($loadedModels -notmatch "text-embedding-qwen3-embedding-4b") {
+    Log "Cargando Qwen3-Embedding-4B..."
+    lms load text-embedding-qwen3-embedding-4b -y 2>&1 | ForEach-Object { Log "  lms: $_" }
+    Start-Sleep -Seconds 3
+    Log "  → Qwen3 embedding cargado"
+} else {
+    Log "  → Qwen3-Embedding-4B ya estaba cargado, omitiendo"
+}
+
+# ── 4. Cargar reranker (solo si no está ya cargado) ───────────────────────────
+if ($loadedModels -notmatch "text-embedding-bge-reranker-v2-m3") {
+    Log "Cargando BGE-reranker-v2-m3..."
+    lms load text-embedding-bge-reranker-v2-m3 -y 2>&1 | ForEach-Object { Log "  lms: $_" }
+    Start-Sleep -Seconds 2
+    Log "  → BGE reranker cargado"
+} else {
+    Log "  → BGE-reranker-v2-m3 ya estaba cargado, omitiendo"
+}
 
 # ── 5. Iniciar NEMO monitor (bandeja del sistema) ─────────────────────────────
 Log "Iniciando NEMO monitor..."
