@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 import time
 import warnings
 import os
+import sys
+import pathlib
 # MCP imports
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
@@ -1052,7 +1054,15 @@ class AIMemoryMCPServer:
             }
     
     async def cleanup(self):
-        """Cleanup resources when server stops"""
+        """Cleanup resources when server stops.
+
+        Cancels the maintenance background task AND any other lingering
+        asyncio tasks (background embeds, access-count bumps, etc.) so
+        the process exits promptly when VS Code closes the stdio pipe.
+        Zombie processes were largely caused by hanging background tasks
+        keeping the event loop alive after the connection was gone.
+        """
+        # Cancel maintenance loop
         if self._maintenance_task and not self._maintenance_task.done():
             self._maintenance_task.cancel()
             try:
@@ -1060,6 +1070,23 @@ class AIMemoryMCPServer:
             except asyncio.CancelledError:
                 pass
             logger.info("🔧 Automatic maintenance stopped")
+
+        # Cancel all remaining background tasks spawned during this session
+        # (embedding generation, access-count bumps, dedup tasks, etc.)
+        current = asyncio.current_task()
+        pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
+        if pending:
+            logger.info(f"🧹 Cancelling {len(pending)} background task(s) on shutdown")
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        # Close the embedding service's shared HTTP session (defensive — core also
+        # calls this in its own shutdown path, so we suppress double-close errors)
+        try:
+            await self.memory_system.embedding_service.close()
+        except Exception:
+            pass
     
 
 
@@ -1097,8 +1124,61 @@ async def start_http_server(mcp_server: AIMemoryMCPServer, host: str = "127.0.0.
         logger.warning(f"Failed to start HTTP server: {e}")
         return None
 
+# ---------------------------------------------------------------------------
+# Singleton PID lockfile — only one NEMO server should run at a time.
+# Location: ~/.ai_memory/nemo.pid
+# On startup: kill any previous instance listed in the file, then write ours.
+# On exit:    remove the file so the slot is free for the next launch.
+# ---------------------------------------------------------------------------
+_PID_FILE = pathlib.Path.home() / ".ai_memory" / "nemo.pid"
+
+
+def _acquire_singleton() -> None:
+    """Kill previous server instance (if still alive) and claim the PID file."""
+    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    if _PID_FILE.exists():
+        try:
+            old_pid = int(_PID_FILE.read_text().strip())
+            if old_pid != os.getpid():
+                # Check if the old process is still alive
+                try:
+                    import ctypes
+                    # OpenProcess with SYNCHRONIZE (0x00100000) — non-destructive check
+                    handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, old_pid)
+                    if handle:
+                        ctypes.windll.kernel32.CloseHandle(handle)
+                        # Process exists — terminate it gracefully
+                        import subprocess
+                        subprocess.run(
+                            ["taskkill", "/PID", str(old_pid), "/F"],
+                            capture_output=True, timeout=5
+                        )
+                        logger.info(f"🧹 Killed previous NEMO instance (PID {old_pid})")
+                except Exception as _e:
+                    logger.debug(f"Could not kill old PID {old_pid}: {_e}")
+        except (ValueError, OSError):
+            pass
+
+    _PID_FILE.write_text(str(os.getpid()))
+    logger.info(f"📌 PID lockfile written: {_PID_FILE} (PID {os.getpid()})")
+
+
+def _release_singleton() -> None:
+    """Remove PID lockfile on clean exit."""
+    try:
+        if _PID_FILE.exists() and _PID_FILE.read_text().strip() == str(os.getpid()):
+            _PID_FILE.unlink()
+            logger.info("📌 PID lockfile released")
+    except OSError:
+        pass
+
+
 async def main():
     """Main entry point for the MCP server"""
+    # Singleton guard: kill any leftover previous instance before starting
+    _acquire_singleton()
+
     logger.info("AI Memory MCP Server starting...")
     
     # Set debug logging for MCP components
@@ -1132,6 +1212,7 @@ async def main():
         raise
     finally:
         await mcp_server.cleanup()
+        _release_singleton()
 
 
 def cli():
