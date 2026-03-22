@@ -391,9 +391,9 @@ class HallucinationBenchmark:
             )
             latency = (time.perf_counter() - t0) * 1000
             return resp.choices[0].message.content.strip(), latency
-        except Exception as e:
+        except BaseException as e:
             latency = (time.perf_counter() - t0) * 1000
-            return f"[ERROR: {e}]", latency
+            return f"[ERROR: {type(e).__name__}: {e}]", latency
 
     # ------------------------------------------------------------------
     # CAT-1: Factual Recall
@@ -647,6 +647,13 @@ class HallucinationBenchmark:
 
         total_time = time.perf_counter() - t_start
 
+        # Cleanup NEMO session
+        if self._nemo:
+            try:
+                await self._nemo.close()
+            except Exception:
+                pass
+
         # Calcular métricas globales
         report = self._compute_report(all_results, total_time, nemo_delta)
         self._print_final_report(report)
@@ -797,7 +804,13 @@ async def _main():
         nemo_enabled=args.nemo,
     )
 
-    report = await bench.run()
+    try:
+        report = await bench.run()
+    except BaseException as exc:
+        import traceback
+        print(f"\n{RED}[FATAL] {type(exc).__name__}: {exc}{RESET}", flush=True)
+        traceback.print_exc()
+        sys.exit(1)
 
     if args.output:
         out_path = Path(args.output)
