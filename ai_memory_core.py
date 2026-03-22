@@ -2598,6 +2598,11 @@ class EmbeddingService:
         # embedding calls so each generate_embedding() doesn't open a new TCP connection.
         self._session: Optional["aiohttp.ClientSession"] = None
 
+        # Semaphore: at most 2 concurrent embedding requests to avoid overwhelming
+        # LM Studio when many background tasks fire simultaneously (e.g. bulk create_memory).
+        # Created lazily in generate_embedding() because __init__ may run before the loop.
+        self._embed_semaphore: Optional[asyncio.Semaphore] = None
+
         self.provider_availability = {
             "lm_studio": None,  # Will be tested on first use
             "ollama": None,
@@ -2680,10 +2685,14 @@ class EmbeddingService:
             logger.warning(f"Failed to get user config, using defaults: {e}")
             return cls()  # Fallback to defaults
 
+    # Default timeout for embedding HTTP requests: 30s total, 5s connect.
+    # Prevents infinite freeze when LM Studio is busy loading a model or saturated.
+    _SESSION_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=5)
+
     async def _get_session(self) -> "aiohttp.ClientSession":
         """Return the shared aiohttp session, creating it lazily on first call."""
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(timeout=self._SESSION_TIMEOUT)
         return self._session
 
     async def close(self) -> None:
@@ -2693,8 +2702,20 @@ class EmbeddingService:
             self._session = None
 
     async def generate_embedding(self, text: str, model: str = None) -> List[float]:
-        """Generate embedding using intelligent provider selection with preservation strategy"""
-        
+        """Generate embedding using intelligent provider selection with preservation strategy.
+
+        A semaphore (max 2 concurrent) limits parallel requests to LM Studio so a burst
+        of background embed tasks doesn't cascade into timeouts across all workspaces.
+        """
+        # Lazy semaphore init — must happen inside a running event loop
+        if self._embed_semaphore is None:
+            self._embed_semaphore = asyncio.Semaphore(2)
+
+        async with self._embed_semaphore:
+            return await self._generate_embedding_inner(text, model)
+
+    async def _generate_embedding_inner(self, text: str, model: str = None) -> List[float]:
+        """Internal: generate embedding (called under semaphore)."""
         # Try primary provider first
         primary_provider = self.primary_config.get("provider", "llama_cpp")
         self.embeddings_endpoint = self._build_embeddings_endpoint(self.primary_config)
@@ -5414,59 +5435,62 @@ class PersistentAIMemorySystem:
                                    timezone_str: str = None, force_refresh: bool = False,
                                    return_changes_only: bool = False, update_today: bool = True,
                                    severe_update: bool = False) -> Dict:
-        """Open-Meteo forecast (no API key). Defaults to Motley, MN and caches once per local day."""
+        """Open-Meteo forecast (no API key). Defaults to Motley, MN and caches once per local day.
+
+        Uses aiohttp (non-blocking) instead of requests.get() so the asyncio event loop
+        is never frozen while waiting for the HTTP response.
+        """
         try:
-            import requests
             from datetime import datetime, timedelta
-            import json
-            import os
-            
+
             # Default location (Motley, MN)
             lat = latitude if latitude is not None else 46.3436
             lon = longitude if longitude is not None else -94.6297
             tz = timezone_str if timezone_str is not None else "America/Chicago"
-            
+
             # Create cache directory
             cache_dir = Path("weather_cache")
             cache_dir.mkdir(exist_ok=True)
-            
+
             today = datetime.now().strftime("%Y-%m-%d")
             cache_file = cache_dir / f"weather_{today}.json"
-            
+
             # Check cache unless forced refresh
             if not force_refresh and cache_file.exists():
                 with open(cache_file, 'r') as f:
                     cached_data = json.load(f)
-                
+
                 if return_changes_only:
                     return {"status": "cached", "message": "Using cached weather data"}
                 else:
                     return cached_data
-            
-            # Fetch from Open-Meteo API
+
+            # Fetch from Open-Meteo API using aiohttp (non-blocking)
             url = "https://api.open-meteo.com/v1/forecast"
             params = {
                 "latitude": lat,
                 "longitude": lon,
                 "timezone": tz,
-                "current": ["temperature_2m", "relative_humidity_2m", "weather_code", "wind_speed_10m"],
-                "daily": ["weather_code", "temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
+                "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum",
                 "forecast_days": 7
             }
-            
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            
-            weather_data = response.json()
+
+            timeout = aiohttp.ClientTimeout(total=10, connect=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, params=params) as response:
+                    response.raise_for_status()
+                    weather_data = await response.json()
+
             weather_data["cached_at"] = datetime.now().isoformat()
             weather_data["location"] = {"latitude": lat, "longitude": lon, "timezone": tz}
-            
+
             # Save to cache
             with open(cache_file, 'w') as f:
                 json.dump(weather_data, f, indent=2)
-            
+
             return weather_data
-            
+
         except Exception as e:
             logger.error(f"Error getting weather: {e}")
             return {"status": "error", "message": str(e)}
