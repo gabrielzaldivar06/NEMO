@@ -3140,6 +3140,12 @@ class RerankingService:
                     raw_text = await response.text()
                     import json as _json
                     payload = _json.loads(raw_text)
+                    # LM Studio returns HTTP 200 with {"error": "..."} for unsupported endpoints
+                    if isinstance(payload, dict) and "error" in payload and not any(
+                        k in payload for k in ("results", "data", "rankings")
+                    ):
+                        logger.error(f"{provider_name} rerank endpoint not supported: {payload['error']}")
+                        return None
                     normalized_results = self._normalize_rerank_response(payload, documents)
                     if normalized_results:
                         return normalized_results[:top_n]

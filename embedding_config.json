@@ -44,9 +44,9 @@
   "reranking_configuration": {
     "primary": {
       "enabled": true,
-      "provider": "lm_studio",
-      "model": "text-embedding-bge-reranker-v2-m3",
-      "base_url": "http://localhost:1234",
+      "provider": "llama_cpp",
+      "model": "bge-reranker-v2-m3-Q4_K_M.gguf",
+      "base_url": "http://localhost:8080",
       "rerank_path": "/v1/rerank",
       "candidate_count": 15,
       "final_top_n": 5,
@@ -54,14 +54,13 @@
       "unavailable_retry_seconds": 60,
       "confidence_bypass_threshold": 0.92,
       "model_path": "C:/Users/gabri/.lmstudio/models/gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf",
-      "lms_load_cmd": "lms load text-embedding-bge-reranker-v2-m3 -y",
-      "description": "BGE-reranker-v2-m3 via LM Studio API en localhost:1234/v1/rerank"
+      "description": "BGE-reranker-v2-m3 via llama-server --reranking en localhost:8080/v1/rerank. Arrancar: start_qwen_reranker_server.bat"
     },
     "fallback": {
       "enabled": false,
       "provider": "custom",
       "model": "your-reranker-model",
-      "base_url": "http://localhost:8080",
+      "base_url": "http://localhost:8081",
       "rerank_path": "/rerank",
       "description": "Optional fallback reranking endpoint"
     }
