@@ -20,10 +20,12 @@ from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import (
+    Annotations,
     CallToolRequestParams,
     CallToolResult,
     TextContent,
     Tool,
+    ToolAnnotations,
     Resource,
 )
 
@@ -85,12 +87,20 @@ class AIMemoryMCPServer:
                     name="Active Context",
                     description="High-priority memories + pending reminders — auto-loaded before conversation starts",
                     mimeType="text/plain",
+                    annotations=Annotations(
+                        audience=["assistant"],
+                        priority=1.0,
+                    ),
                 ),
                 Resource(
                     uri="memory://context/session",
                     name="Last Session",
                     description="Compressed summary of the most recent conversation session",
                     mimeType="text/plain",
+                    annotations=Annotations(
+                        audience=["assistant"],
+                        priority=0.8,
+                    ),
                 ),
             ]
 
@@ -129,17 +139,25 @@ class AIMemoryMCPServer:
         client_type = self._detect_client_type()
         logger.info(f"Detected client type: {client_type}")
         
+        # Behavioral annotation constants — help clients decide auto-approval & trust level
+        _RONLY   = ToolAnnotations(readOnlyHint=True,  openWorldHint=False)
+        _WRITE   = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+        _UPDATE  = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+        _DESTROY = ToolAnnotations(readOnlyHint=False, destructiveHint=True,  openWorldHint=False)
+        _EXTERN  = ToolAnnotations(readOnlyHint=True,  openWorldHint=True)
+
         try:
             # Common tools available to all clients
             common_tools = [
             Tool(
                 name="prime_context",
+                annotations=_RONLY,
                 description=(
-                    "CALL ONCE at the start of every conversation BEFORE anything else. "
-                    "Returns your working memory: high-priority memories, pending reminders, and last session summary — "
-                    "all compressed into a single response. "
+                    "REQUIRED FIRST ACTION — call this before you respond to anything, including greetings. "
+                    "Skipping it means operating blind: you will repeat mistakes already made in previous sessions, "
+                    "contradict past architectural decisions, and assert things that are wrong for this project. "
+                    "Returns working memory in a single call: high-priority memories, pending reminders, last session summary. "
                     "Do NOT call search_memories or get_reminders until this has been called. "
-                    "After calling prime_context you will know what you already know about this user and context. "
                     "Pass topic= to narrow memory retrieval to a specific project or subject."
                 ),
                 inputSchema={
@@ -152,8 +170,10 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="search_memories",
+                annotations=_RONLY,
                 description=(
-                    "CALL THIS when starting work on any technical topic, project, or personal context. "
+                    "Call before asserting that any API, method, architecture decision, or project fact exists. "
+                    "A confident wrong answer based on stale training data is worse than a slow correct one. "
                     "Required before answering questions about past decisions, preferences, or project state. "
                     "Use compact=true (default) to save tokens. "
                     "Returns memories ranked by semantic relevance + importance + recency."
@@ -174,7 +194,11 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="store_conversation",
-                description="Store a conversation message. Call this after each exchange to persist context for future sessions.",
+                annotations=_WRITE,
+                description=(
+                    "Store a conversation message. Call this after each meaningful exchange. "
+                    "Skipping it means this session is lost — the next conversation starts without knowing what happened here."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -188,6 +212,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="create_memory",
+                annotations=_WRITE,
                 description="Persist an important fact, decision, or preference to long-term memory. Use for anything worth remembering across sessions.",
                 inputSchema={
                     "type": "object",
@@ -203,9 +228,11 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="create_correction",
+                annotations=_WRITE,
                 description=(
-                    "Record a correction: store a past mistake and the correct answer with maximum priority. "
-                    "Use this whenever the AI gave wrong information and you provided the right answer. "
+                    "CALL THIS immediately when the user corrects you — not at the end of the session, right now. "
+                    "Stores the mistake and correct answer with maximum priority (+0.35 retrieval boost). "
+                    "Skipping this means the same error repeats in future sessions. "
                     "Corrections are always surfaced before regular memories during retrieval."
                 ),
                 inputSchema={
@@ -234,6 +261,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="update_memory",
+                annotations=_UPDATE,
                 description="Update an existing curated memory",
                 inputSchema={
                     "type": "object",
@@ -248,6 +276,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="create_appointment",
+                annotations=_WRITE,
                 description="Create an appointment, optionally recurring (e.g., weekly mental health appointments)",
                 inputSchema={
                     "type": "object",
@@ -265,6 +294,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="create_reminder",
+                annotations=_WRITE,
                 description="Create a reminder",
                 inputSchema={
                     "type": "object",
@@ -278,6 +308,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_reminders",
+                annotations=_RONLY,
                 description="Get active reminders. Already included in prime_context() for session start — call this separately only when you need reminder status mid-conversation.",
                 inputSchema={
                     "type": "object",
@@ -288,6 +319,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_recent_context",
+                annotations=_RONLY,
                 description="Get raw recent message history. Prefer prime_context() for session start — use this only when you need specific past messages mid-conversation.",
                 inputSchema={
                     "type": "object",
@@ -299,6 +331,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_system_health",
+                annotations=_RONLY,
                 description="Get comprehensive system health, statistics, and database status",
                 inputSchema={
                     "type": "object",
@@ -308,6 +341,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_tool_usage_summary",
+                annotations=_RONLY,
                 description="Get AI tool usage summary and insights for self-reflection",
                 inputSchema={
                     "type": "object",
@@ -319,6 +353,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="reflect_on_tool_usage",
+                annotations=_WRITE,
                 description="AI self-reflection on tool usage patterns and effectiveness",
                 inputSchema={
                     "type": "object", 
@@ -330,6 +365,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_ai_insights",
+                annotations=_RONLY,
                 description="Get recent AI self-reflection insights and patterns",
                 inputSchema={
                     "type": "object",
@@ -341,6 +377,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_active_reminders",
+                annotations=_RONLY,
                 description="Get active (not completed) reminders",
                 inputSchema={
                     "type": "object",
@@ -352,6 +389,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_completed_reminders",
+                annotations=_RONLY,
                 description="Get recently completed reminders",
                 inputSchema={
                     "type": "object",
@@ -362,6 +400,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="complete_reminder",
+                annotations=_WRITE,
                 description="Mark a reminder as completed",
                 inputSchema={
                     "type": "object",
@@ -373,6 +412,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="reschedule_reminder",
+                annotations=_WRITE,
                 description="Update the due date of a reminder",
                 inputSchema={
                     "type": "object",
@@ -385,6 +425,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="delete_reminder",
+                annotations=_DESTROY,
                 description="Permanently delete a reminder",
                 inputSchema={
                     "type": "object",
@@ -396,6 +437,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="cancel_appointment",
+                annotations=_DESTROY,
                 description="Cancel a scheduled appointment",
                 inputSchema={
                     "type": "object",
@@ -407,6 +449,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="complete_appointment",
+                annotations=_WRITE,
                 description="Mark an appointment as completed",
                 inputSchema={
                     "type": "object",
@@ -418,6 +461,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_upcoming_appointments",
+                annotations=_RONLY,
                 description="Get upcoming appointments (not cancelled)",
                 inputSchema={
                     "type": "object",
@@ -429,6 +473,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_appointments",
+                annotations=_RONLY,
                 description="Get recent appointments, optionally filtered by date range",
                 inputSchema={
                     "type": "object",
@@ -440,6 +485,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="store_ai_reflection",
+                annotations=_WRITE,
                 description="Store an AI self-reflection/insight record (manual write)",
                 inputSchema={
                     "type": "object",
@@ -457,6 +503,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="write_ai_insights",
+                annotations=_WRITE,
                 description="Alias of store_ai_reflection – write an AI self-reflection/insight record",
                 inputSchema={
                     "type": "object",
@@ -474,6 +521,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_current_time",
+                annotations=_RONLY,
                 description="Get the current server time in ISO format (UTC and local)",
                 inputSchema={
                     "type": "object",
@@ -483,6 +531,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_weather_open_meteo",
+                annotations=_EXTERN,
                 description="Open-Meteo forecast (no API key). Defaults to Motley, MN and caches once per local day.",
                 inputSchema={
                     "type": "object",
@@ -499,6 +548,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="brave_web_search",
+                annotations=_EXTERN,
                 description="Perform a general web search using Brave Search API",
                 inputSchema={
                     "type": "object",
@@ -513,6 +563,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="brave_local_search",
+                annotations=_EXTERN,
                 description="Search for local businesses and places using Brave Search API",
                 inputSchema={
                     "type": "object",
@@ -534,6 +585,7 @@ class AIMemoryMCPServer:
         vscode_tools = [
             Tool(
                 name="save_development_session",
+                annotations=_WRITE,
                 description="Save VS Code development session context",
                 inputSchema={
                     "type": "object",
@@ -548,6 +600,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="store_project_insight",
+                annotations=_WRITE,
                 description="Store development insight or decision",
                 inputSchema={
                     "type": "object",
@@ -562,6 +615,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="search_project_history",
+                annotations=_RONLY,
                 description="Search VS Code project development history",
                 inputSchema={
                     "type": "object",
@@ -574,6 +628,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="link_code_context",
+                annotations=_WRITE,
                 description="Link conversation to specific code context",
                 inputSchema={
                     "type": "object",
@@ -588,6 +643,7 @@ class AIMemoryMCPServer:
             ),
             Tool(
                 name="get_project_continuity",
+                annotations=_RONLY,
                 description="Get context to continue development work",
                 inputSchema={
                     "type": "object",
@@ -606,6 +662,7 @@ class AIMemoryMCPServer:
                 sillytavern_tools = [
                     Tool(
                         name="get_character_context",
+                        annotations=_RONLY,
                         description="Get relevant context about characters from memory",
                         inputSchema={
                             "type": "object",
@@ -619,6 +676,7 @@ class AIMemoryMCPServer:
                     ),
                     Tool(
                         name="store_roleplay_memory",
+                        annotations=_WRITE,
                         description="Store important roleplay moments or character developments",
                         inputSchema={
                             "type": "object",
@@ -633,6 +691,7 @@ class AIMemoryMCPServer:
                     ),
                     Tool(
                         name="search_roleplay_history",
+                        annotations=_RONLY,
                         description="Search past roleplay interactions and character development",
                         inputSchema={
                             "type": "object",
@@ -1145,10 +1204,22 @@ async def main():
                 write_stream,
                 InitializationOptions(
                     server_name="ai-memory",
-                    server_version="1.0.0",
+                    server_version="1.2.0",
                     capabilities=mcp_server.server.get_capabilities(
                         notification_options=NotificationOptions(),
                         experimental_capabilities={}
+                    ),
+                    instructions=(
+                        "NEMO persistent memory system active. Risk of not using it:\n"
+                        "- Skip prime_context → repeat mistakes already made, contradict previous architectural decisions\n"
+                        "- Skip search_memories → hallucinate APIs or project details with false confidence\n"
+                        "- Skip create_correction → same error repeats in future sessions\n\n"
+                        "Required sequence each session:\n"
+                        "① prime_context() FIRST — before you respond to anything, including greetings\n"
+                        "② search_memories(query) — before asserting any project fact, API, or decision\n"
+                        "③ respond\n\n"
+                        "On corrections: create_correction() immediately — not at end of session, right now.\n"
+                        "On session end: store_conversation() to persist context for next session."
                     )
                 )
             )
