@@ -942,8 +942,111 @@ class AIMemoryDatabase(DatabaseManager):
                 conn.execute("ALTER TABLE curated_memories ADD COLUMN access_count INTEGER DEFAULT 0")
             if 'last_accessed_at' not in existing_cols:
                 conn.execute("ALTER TABLE curated_memories ADD COLUMN last_accessed_at TEXT")
+            # Sprint 11 — FTS5 virtual table for sparse BM25 retrieval (hybrid dense+sparse)
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS curated_memories_fts
+                USING fts5(
+                    memory_id UNINDEXED,
+                    content,
+                    tags,
+                    tokenize='unicode61 remove_diacritics 1'
+                )
+            """)
+            # Backfill any rows not yet indexed (safe to run repeatedly)
+            conn.execute("""
+                INSERT INTO curated_memories_fts(memory_id, content, tags)
+                SELECT memory_id, content, COALESCE(tags, '')
+                FROM curated_memories
+                WHERE memory_id NOT IN (SELECT memory_id FROM curated_memories_fts)
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS fts_memories_ai
+                AFTER INSERT ON curated_memories BEGIN
+                    INSERT INTO curated_memories_fts(memory_id, content, tags)
+                    VALUES (new.memory_id, new.content, COALESCE(new.tags, ''));
+                END
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS fts_memories_au
+                AFTER UPDATE ON curated_memories BEGIN
+                    DELETE FROM curated_memories_fts WHERE memory_id = old.memory_id;
+                    INSERT INTO curated_memories_fts(memory_id, content, tags)
+                    VALUES (new.memory_id, new.content, COALESCE(new.tags, ''));
+                END
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS fts_memories_ad
+                AFTER DELETE ON curated_memories BEGIN
+                    DELETE FROM curated_memories_fts WHERE memory_id = old.memory_id;
+                END
+            """)
             conn.commit()
     
+    @staticmethod
+    def _build_fts_query(text: str) -> str:
+        """Convert free-text to an FTS5 MATCH expression (broad OR of significant tokens)."""
+        import re
+        tokens = re.findall(r'[a-z\u00e0-\u00fc\u00c0-\u00dc0-9_]{3,}', text, re.IGNORECASE)
+        if not tokens:
+            return ""
+        return " OR ".join(f'"{t}"' for t in dict.fromkeys(t.lower() for t in tokens))
+
+    async def search_fts(self, query: str, limit: int = 20) -> List[Dict]:
+        """BM25 sparse retrieval from FTS5 index.
+
+        Returns ranked list of row dicts (metadata only, no embedding BLOB).
+        Embeddings are fetched separately by callers that need them, avoiding
+        fetching large BLOBs for the many results that turn out to be duplicates
+        of the dense candidate pool.
+        SQLite FTS5 bm25() returns negative values — ORDER BY ASC = best first.
+        """
+        fts_expr = self._build_fts_query(query)
+        if not fts_expr:
+            return []
+        try:
+            rows = await self.execute_query(
+                """SELECT cm.memory_id, cm.content, cm.importance_level, cm.memory_type,
+                          cm.timestamp_created, cm.tags, cm.access_count,
+                          bm25(curated_memories_fts) AS bm25_score
+                   FROM curated_memories_fts
+                   JOIN curated_memories cm USING (memory_id)
+                   WHERE curated_memories_fts MATCH ?
+                   ORDER BY bm25_score
+                   LIMIT ?""",
+                (fts_expr, limit),
+            )
+        except Exception as e:
+            logger.warning(f"FTS search error (non-fatal): {e}")
+            return []
+        return [
+            {
+                "memory_id": row["memory_id"],
+                "content": row["content"],
+                "importance_level": row["importance_level"],
+                "memory_type": row["memory_type"],
+                "timestamp_created": row["timestamp_created"],
+                "tags": row["tags"],
+                "access_count": row["access_count"] or 0,
+                "bm25": float(row["bm25_score"]),
+            }
+            for row in rows
+        ]
+
+    async def get_embeddings_by_ids(self, memory_ids: List[str]) -> Dict[str, bytes]:
+        """Fetch embedding BLOBs for a specific set of memory_ids."""
+        if not memory_ids:
+            return {}
+        placeholders = ",".join("?" * len(memory_ids))
+        rows = await self.execute_query(
+            f"SELECT memory_id, embedding FROM curated_memories WHERE memory_id IN ({placeholders})",
+            tuple(memory_ids),
+        )
+        return {
+            row["memory_id"]: bytes(row["embedding"])
+            for row in rows
+            if row["embedding"]
+        }
+
     async def create_memory(self, content: str, memory_type: str = None, 
                           importance_level: int = 5, tags: List[str] = None,
                           source_conversation_id: str = None) -> str:
@@ -4097,11 +4200,51 @@ class PersistentAIMemorySystem:
         reranking_candidate_limit = min(candidate_limit, self.reranking_service.get_candidate_limit(default=30))
         reranking_final_top_n = min(limit, self.reranking_service.get_final_result_count(default=limit))
         
-        # Search AI memories
+        # Search AI memories — hybrid dense + sparse (Sprint 11)
         if database_filter in ["all", "ai_memories"]:
-            memory_results = await self._search_ai_memories(query_embedding, candidate_limit, min_importance, max_importance, memory_type)
+            # Run dense vector search and FTS sparse search in parallel to
+            # avoid adding FTS latency on top of dense latency.
+            memory_results, sparse_rows = await asyncio.gather(
+                self._search_ai_memories(query_embedding, candidate_limit, min_importance, max_importance, memory_type),
+                self.ai_memory_db.search_fts(query, candidate_limit // 2),
+            )
             all_results.extend(memory_results)
-        
+
+            # FTS sparse pool expansion: surface candidates that fell below the
+            # cosine 0.3 threshold but are keyword-relevant.  We compute their
+            # actual cosine similarity and add them to the candidate pool so the
+            # downstream rescoring + optional reranker can evaluate them.
+            # (We intentionally do NOT boost existing dense results here, as the
+            # type-quality composite scoring is already carefully calibrated.)
+            if sparse_rows:
+                dense_ids = {r["data"]["memory_id"] for r in memory_results}
+                new_candidates = [s for s in sparse_rows if s["memory_id"] not in dense_ids]
+                if new_candidates:
+                    embed_map = await self.ai_memory_db.get_embeddings_by_ids(
+                        [s["memory_id"] for s in new_candidates]
+                    )
+                    for srow in new_candidates:
+                        emb_bytes = embed_map.get(srow["memory_id"])
+                        if not emb_bytes:
+                            continue
+                        stored_emb = np.frombuffer(emb_bytes, dtype=np.float32).tolist()
+                        cosine = self._calculate_cosine_similarity(query_embedding, stored_emb)
+                        all_results.append({
+                            "type": "ai_memory",
+                            "similarity_score": cosine,
+                            "_raw_similarity": cosine,
+                            "_embedding": stored_emb,
+                            "data": {
+                                "memory_id": srow["memory_id"],
+                                "content": srow["content"],
+                                "importance_level": srow["importance_level"],
+                                "memory_type": srow["memory_type"],
+                                "timestamp_created": srow["timestamp_created"],
+                                "tags": json.loads(srow["tags"]) if srow["tags"] else [],
+                                "access_count": srow["access_count"],
+                            }
+                        })
+
         # Search conversations
         if database_filter in ["all", "conversations"]:
             conversation_results = await self._search_conversations(query_embedding, candidate_limit)
