@@ -9,8 +9,13 @@ embeddings. The MCP server name is `nemo`. All memory lives in `~/.ai_memory/`.
 ## Memory Workflow
 
 ### On every new conversation
-1. Call `search_memories` with the main topic or user name to retrieve relevant context.
-2. Call `get_recent_context` to surface recent activity (last 24–72 h).
+1. Call `prime_context` FIRST — before responding to anything, including greetings.
+   Skipping it means operating blind: you will repeat past mistakes, contradict previous
+   decisions, and hallucinate project details. It returns memories + reminders + last
+   session summary in one call (replaces separate `search_memories` + `get_recent_context`
+   at session start).
+2. Call `search_memories` mid-conversation before asserting any API, method, or
+   architecture decision. A confident wrong answer is worse than a slow correct one.
 3. If the user mentions their name or key preferences and they are not already stored,
    call `create_memory` with `memory_type = "preference"`.
 
@@ -43,7 +48,8 @@ says is critical. Default to `6` for most durable facts.
 
 - When the user mentions a task, deadline, or recurring commitment, offer to store it
   via `create_reminder` or `create_appointment`.
-- Check `get_upcoming_appointments` at session start if the user asks about their schedule.
+- Reminders and upcoming appointments are included in `prime_context()` output — no
+  need to call `get_upcoming_appointments` separately at session start.
 - Recurring patterns: `daily`, `weekly`, `monthly`, `yearly`.
 
 ## Search Strategy
