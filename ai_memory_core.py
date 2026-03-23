@@ -2714,6 +2714,33 @@ class EmbeddingService:
         async with self._embed_semaphore:
             return await self._generate_embedding_inner(text, model)
 
+    async def generate_query_embedding(self, query: str) -> List[float]:
+        """Generate embedding for a *search query* using the model's instruction prefix.
+
+        Qwen3-Embedding was trained asymmetrically:
+          - Documents are embedded as-is (or with our compact contextual prefix).
+          - Queries benefit from a task instruction prefix of the form:
+              ``Instruct: {task}\\nQuery:{query}``
+        Without this prefix the model cannot distinguish a paraphrased query from an
+        unrelated passage, causing ~5-15% Top-1 regression on extreme paraphrase sets.
+
+        The instruction is read from ``embedding_config.json`` → primary.query_instruction.
+        If not configured (or empty string), falls back to plain generate_embedding() so
+        models that are not instruction-aware are unaffected.
+        """
+        instruction = self.primary_config.get("query_instruction", "").strip()
+        if instruction:
+            # Official Qwen3-Embedding format: no space after "Query:"
+            instructed_text = f"Instruct: {instruction}\nQuery:{query}"
+        else:
+            instructed_text = query
+
+        if self._embed_semaphore is None:
+            self._embed_semaphore = asyncio.Semaphore(2)
+
+        async with self._embed_semaphore:
+            return await self._generate_embedding_inner(instructed_text)
+
     async def _generate_embedding_inner(self, text: str, model: str = None) -> List[float]:
         """Internal: generate embedding (called under semaphore)."""
         # Try primary provider first
@@ -3790,7 +3817,7 @@ class PersistentAIMemorySystem:
         Returns:
             Dict containing search results from project context
         """
-        query_embedding = await self.embedding_service.generate_embedding(query)
+        query_embedding = await self.embedding_service.generate_query_embedding(query)
         if not query_embedding:
             return await self._text_based_project_search(query, limit)
             
@@ -4016,8 +4043,8 @@ class PersistentAIMemorySystem:
         # ------------------------------------------------------------------
         query_intent = self._classify_query_intent(query)
 
-        # Generate embedding for the search query
-        query_embedding = await self.embedding_service.generate_embedding(query)
+        # Generate embedding for the search query (instruction-prefixed for Qwen3)
+        query_embedding = await self.embedding_service.generate_query_embedding(query)
         if not query_embedding:
             # Fallback to text-based search if embedding fails
             result = await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type)
