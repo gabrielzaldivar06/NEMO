@@ -942,8 +942,111 @@ class AIMemoryDatabase(DatabaseManager):
                 conn.execute("ALTER TABLE curated_memories ADD COLUMN access_count INTEGER DEFAULT 0")
             if 'last_accessed_at' not in existing_cols:
                 conn.execute("ALTER TABLE curated_memories ADD COLUMN last_accessed_at TEXT")
+            # Sprint 11 — FTS5 virtual table for sparse BM25 retrieval (hybrid dense+sparse)
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS curated_memories_fts
+                USING fts5(
+                    memory_id UNINDEXED,
+                    content,
+                    tags,
+                    tokenize='unicode61 remove_diacritics 1'
+                )
+            """)
+            # Backfill any rows not yet indexed (safe to run repeatedly)
+            conn.execute("""
+                INSERT INTO curated_memories_fts(memory_id, content, tags)
+                SELECT memory_id, content, COALESCE(tags, '')
+                FROM curated_memories
+                WHERE memory_id NOT IN (SELECT memory_id FROM curated_memories_fts)
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS fts_memories_ai
+                AFTER INSERT ON curated_memories BEGIN
+                    INSERT INTO curated_memories_fts(memory_id, content, tags)
+                    VALUES (new.memory_id, new.content, COALESCE(new.tags, ''));
+                END
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS fts_memories_au
+                AFTER UPDATE ON curated_memories BEGIN
+                    DELETE FROM curated_memories_fts WHERE memory_id = old.memory_id;
+                    INSERT INTO curated_memories_fts(memory_id, content, tags)
+                    VALUES (new.memory_id, new.content, COALESCE(new.tags, ''));
+                END
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS fts_memories_ad
+                AFTER DELETE ON curated_memories BEGIN
+                    DELETE FROM curated_memories_fts WHERE memory_id = old.memory_id;
+                END
+            """)
             conn.commit()
     
+    @staticmethod
+    def _build_fts_query(text: str) -> str:
+        """Convert free-text to an FTS5 MATCH expression (broad OR of significant tokens)."""
+        import re
+        tokens = re.findall(r'[a-z\u00e0-\u00fc\u00c0-\u00dc0-9_]{3,}', text, re.IGNORECASE)
+        if not tokens:
+            return ""
+        return " OR ".join(f'"{t}"' for t in dict.fromkeys(t.lower() for t in tokens))
+
+    async def search_fts(self, query: str, limit: int = 20) -> List[Dict]:
+        """BM25 sparse retrieval from FTS5 index.
+
+        Returns ranked list of row dicts (metadata only, no embedding BLOB).
+        Embeddings are fetched separately by callers that need them, avoiding
+        fetching large BLOBs for the many results that turn out to be duplicates
+        of the dense candidate pool.
+        SQLite FTS5 bm25() returns negative values — ORDER BY ASC = best first.
+        """
+        fts_expr = self._build_fts_query(query)
+        if not fts_expr:
+            return []
+        try:
+            rows = await self.execute_query(
+                """SELECT cm.memory_id, cm.content, cm.importance_level, cm.memory_type,
+                          cm.timestamp_created, cm.tags, cm.access_count,
+                          bm25(curated_memories_fts) AS bm25_score
+                   FROM curated_memories_fts
+                   JOIN curated_memories cm USING (memory_id)
+                   WHERE curated_memories_fts MATCH ?
+                   ORDER BY bm25_score
+                   LIMIT ?""",
+                (fts_expr, limit),
+            )
+        except Exception as e:
+            logger.warning(f"FTS search error (non-fatal): {e}")
+            return []
+        return [
+            {
+                "memory_id": row["memory_id"],
+                "content": row["content"],
+                "importance_level": row["importance_level"],
+                "memory_type": row["memory_type"],
+                "timestamp_created": row["timestamp_created"],
+                "tags": row["tags"],
+                "access_count": row["access_count"] or 0,
+                "bm25": float(row["bm25_score"]),
+            }
+            for row in rows
+        ]
+
+    async def get_embeddings_by_ids(self, memory_ids: List[str]) -> Dict[str, bytes]:
+        """Fetch embedding BLOBs for a specific set of memory_ids."""
+        if not memory_ids:
+            return {}
+        placeholders = ",".join("?" * len(memory_ids))
+        rows = await self.execute_query(
+            f"SELECT memory_id, embedding FROM curated_memories WHERE memory_id IN ({placeholders})",
+            tuple(memory_ids),
+        )
+        return {
+            row["memory_id"]: bytes(row["embedding"])
+            for row in rows
+            if row["embedding"]
+        }
+
     async def create_memory(self, content: str, memory_type: str = None, 
                           importance_level: int = 5, tags: List[str] = None,
                           source_conversation_id: str = None) -> str:
@@ -2598,6 +2701,11 @@ class EmbeddingService:
         # embedding calls so each generate_embedding() doesn't open a new TCP connection.
         self._session: Optional["aiohttp.ClientSession"] = None
 
+        # Semaphore: at most 2 concurrent embedding requests to avoid overwhelming
+        # LM Studio when many background tasks fire simultaneously (e.g. bulk create_memory).
+        # Created lazily in generate_embedding() because __init__ may run before the loop.
+        self._embed_semaphore: Optional[asyncio.Semaphore] = None
+
         self.provider_availability = {
             "lm_studio": None,  # Will be tested on first use
             "ollama": None,
@@ -2680,10 +2788,14 @@ class EmbeddingService:
             logger.warning(f"Failed to get user config, using defaults: {e}")
             return cls()  # Fallback to defaults
 
+    # Default timeout for embedding HTTP requests: 30s total, 5s connect.
+    # Prevents infinite freeze when LM Studio is busy loading a model or saturated.
+    _SESSION_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=5)
+
     async def _get_session(self) -> "aiohttp.ClientSession":
         """Return the shared aiohttp session, creating it lazily on first call."""
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(timeout=self._SESSION_TIMEOUT)
         return self._session
 
     async def close(self) -> None:
@@ -2693,8 +2805,73 @@ class EmbeddingService:
             self._session = None
 
     async def generate_embedding(self, text: str, model: str = None) -> List[float]:
-        """Generate embedding using intelligent provider selection with preservation strategy"""
-        
+        """Generate embedding using intelligent provider selection with preservation strategy.
+
+        A semaphore (max 2 concurrent) limits parallel requests to LM Studio so a burst
+        of background embed tasks doesn't cascade into timeouts across all workspaces.
+        """
+        # Lazy semaphore init — must happen inside a running event loop
+        if self._embed_semaphore is None:
+            self._embed_semaphore = asyncio.Semaphore(2)
+
+        async with self._embed_semaphore:
+            return await self._generate_embedding_inner(text, model)
+
+    async def generate_query_embedding(self, query: str) -> List[float]:
+        """Generate embedding for a *search query* using the model's instruction prefix.
+
+        Qwen3-Embedding was trained asymmetrically:
+          - Documents are embedded as-is (or with our compact contextual prefix).
+          - Queries benefit from a task instruction prefix of the form:
+              ``Instruct: {task}\\nQuery:{query}``
+        Without this prefix the model cannot distinguish a paraphrased query from an
+        unrelated passage, causing ~5-15% Top-1 regression on extreme paraphrase sets.
+
+        The instruction is read from ``embedding_config.json`` → primary.query_instruction.
+        If not configured (or empty string), falls back to plain generate_embedding() so
+        models that are not instruction-aware are unaffected.
+        """
+        instruction = self.primary_config.get("query_instruction", "").strip()
+        if instruction:
+            # Official Qwen3-Embedding format: no space after "Query:"
+            instructed_text = f"Instruct: {instruction}\nQuery:{query}"
+        else:
+            instructed_text = query
+
+        if self._embed_semaphore is None:
+            self._embed_semaphore = asyncio.Semaphore(2)
+
+        async with self._embed_semaphore:
+            return await self._generate_embedding_inner(instructed_text)
+
+    async def generate_document_embedding(self, text: str) -> List[float]:
+        """Generate embedding for a *stored document/memory* with optional instruction prefix.
+
+        Companion to generate_query_embedding() for the document side of asymmetric
+        retrieval.  When ``document_instruction`` is set in embedding_config.json the
+        text is wrapped as:
+            ``Instruct: {instruction}\\nDocument:{text}``
+
+        This helps instruction-aware models (e.g. Qwen3-Embedding) understand that
+        stored memories contain specific technical names and implementation details
+        which should be matched against more abstract queries.  Falls back to plain
+        generate_embedding() when document_instruction is absent so models that are
+        not instruction-aware are unaffected.
+        """
+        instruction = self.primary_config.get("document_instruction", "").strip()
+        if instruction:
+            instructed_text = f"Instruct: {instruction}\nDocument:{text}"
+        else:
+            instructed_text = text
+
+        if self._embed_semaphore is None:
+            self._embed_semaphore = asyncio.Semaphore(2)
+
+        async with self._embed_semaphore:
+            return await self._generate_embedding_inner(instructed_text)
+
+    async def _generate_embedding_inner(self, text: str, model: str = None) -> List[float]:
+        """Internal: generate embedding (called under semaphore)."""
         # Try primary provider first
         primary_provider = self.primary_config.get("provider", "llama_cpp")
         self.embeddings_endpoint = self._build_embeddings_endpoint(self.primary_config)
@@ -3119,6 +3296,12 @@ class RerankingService:
                     raw_text = await response.text()
                     import json as _json
                     payload = _json.loads(raw_text)
+                    # LM Studio returns HTTP 200 with {"error": "..."} for unsupported endpoints
+                    if isinstance(payload, dict) and "error" in payload and not any(
+                        k in payload for k in ("results", "data", "rankings")
+                    ):
+                        logger.error(f"{provider_name} rerank endpoint not supported: {payload['error']}")
+                        return None
                     normalized_results = self._normalize_rerank_response(payload, documents)
                     if normalized_results:
                         return normalized_results[:top_n]
@@ -3763,7 +3946,7 @@ class PersistentAIMemorySystem:
         Returns:
             Dict containing search results from project context
         """
-        query_embedding = await self.embedding_service.generate_embedding(query)
+        query_embedding = await self.embedding_service.generate_query_embedding(query)
         if not query_embedding:
             return await self._text_based_project_search(query, limit)
             
@@ -3989,8 +4172,8 @@ class PersistentAIMemorySystem:
         # ------------------------------------------------------------------
         query_intent = self._classify_query_intent(query)
 
-        # Generate embedding for the search query
-        query_embedding = await self.embedding_service.generate_embedding(query)
+        # Generate embedding for the search query (instruction-prefixed for Qwen3)
+        query_embedding = await self.embedding_service.generate_query_embedding(query)
         if not query_embedding:
             # Fallback to text-based search if embedding fails
             result = await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type)
@@ -4043,11 +4226,51 @@ class PersistentAIMemorySystem:
         reranking_candidate_limit = min(candidate_limit, self.reranking_service.get_candidate_limit(default=30))
         reranking_final_top_n = min(limit, self.reranking_service.get_final_result_count(default=limit))
         
-        # Search AI memories
+        # Search AI memories — hybrid dense + sparse (Sprint 11)
         if database_filter in ["all", "ai_memories"]:
-            memory_results = await self._search_ai_memories(query_embedding, candidate_limit, min_importance, max_importance, memory_type)
+            # Run dense vector search and FTS sparse search in parallel to
+            # avoid adding FTS latency on top of dense latency.
+            memory_results, sparse_rows = await asyncio.gather(
+                self._search_ai_memories(query_embedding, candidate_limit, min_importance, max_importance, memory_type),
+                self.ai_memory_db.search_fts(query, candidate_limit // 2),
+            )
             all_results.extend(memory_results)
-        
+
+            # FTS sparse pool expansion: surface candidates that fell below the
+            # cosine 0.3 threshold but are keyword-relevant.  We compute their
+            # actual cosine similarity and add them to the candidate pool so the
+            # downstream rescoring + optional reranker can evaluate them.
+            # (We intentionally do NOT boost existing dense results here, as the
+            # type-quality composite scoring is already carefully calibrated.)
+            if sparse_rows:
+                dense_ids = {r["data"]["memory_id"] for r in memory_results}
+                new_candidates = [s for s in sparse_rows if s["memory_id"] not in dense_ids]
+                if new_candidates:
+                    embed_map = await self.ai_memory_db.get_embeddings_by_ids(
+                        [s["memory_id"] for s in new_candidates]
+                    )
+                    for srow in new_candidates:
+                        emb_bytes = embed_map.get(srow["memory_id"])
+                        if not emb_bytes:
+                            continue
+                        stored_emb = np.frombuffer(emb_bytes, dtype=np.float32).tolist()
+                        cosine = self._calculate_cosine_similarity(query_embedding, stored_emb)
+                        all_results.append({
+                            "type": "ai_memory",
+                            "similarity_score": cosine,
+                            "_raw_similarity": cosine,
+                            "_embedding": stored_emb,
+                            "data": {
+                                "memory_id": srow["memory_id"],
+                                "content": srow["content"],
+                                "importance_level": srow["importance_level"],
+                                "memory_type": srow["memory_type"],
+                                "timestamp_created": srow["timestamp_created"],
+                                "tags": json.loads(srow["tags"]) if srow["tags"] else [],
+                                "access_count": srow["access_count"],
+                            }
+                        })
+
         # Search conversations
         if database_filter in ["all", "conversations"]:
             conversation_results = await self._search_conversations(query_embedding, candidate_limit)
@@ -5414,59 +5637,62 @@ class PersistentAIMemorySystem:
                                    timezone_str: str = None, force_refresh: bool = False,
                                    return_changes_only: bool = False, update_today: bool = True,
                                    severe_update: bool = False) -> Dict:
-        """Open-Meteo forecast (no API key). Defaults to Motley, MN and caches once per local day."""
+        """Open-Meteo forecast (no API key). Defaults to Motley, MN and caches once per local day.
+
+        Uses aiohttp (non-blocking) instead of requests.get() so the asyncio event loop
+        is never frozen while waiting for the HTTP response.
+        """
         try:
-            import requests
             from datetime import datetime, timedelta
-            import json
-            import os
-            
+
             # Default location (Motley, MN)
             lat = latitude if latitude is not None else 46.3436
             lon = longitude if longitude is not None else -94.6297
             tz = timezone_str if timezone_str is not None else "America/Chicago"
-            
+
             # Create cache directory
             cache_dir = Path("weather_cache")
             cache_dir.mkdir(exist_ok=True)
-            
+
             today = datetime.now().strftime("%Y-%m-%d")
             cache_file = cache_dir / f"weather_{today}.json"
-            
+
             # Check cache unless forced refresh
             if not force_refresh and cache_file.exists():
                 with open(cache_file, 'r') as f:
                     cached_data = json.load(f)
-                
+
                 if return_changes_only:
                     return {"status": "cached", "message": "Using cached weather data"}
                 else:
                     return cached_data
-            
-            # Fetch from Open-Meteo API
+
+            # Fetch from Open-Meteo API using aiohttp (non-blocking)
             url = "https://api.open-meteo.com/v1/forecast"
             params = {
                 "latitude": lat,
                 "longitude": lon,
                 "timezone": tz,
-                "current": ["temperature_2m", "relative_humidity_2m", "weather_code", "wind_speed_10m"],
-                "daily": ["weather_code", "temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
+                "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum",
                 "forecast_days": 7
             }
-            
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            
-            weather_data = response.json()
+
+            timeout = aiohttp.ClientTimeout(total=10, connect=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, params=params) as response:
+                    response.raise_for_status()
+                    weather_data = await response.json()
+
             weather_data["cached_at"] = datetime.now().isoformat()
             weather_data["location"] = {"latitude": lat, "longitude": lon, "timezone": tz}
-            
+
             # Save to cache
             with open(cache_file, 'w') as f:
                 json.dump(weather_data, f, indent=2)
-            
+
             return weather_data
-            
+
         except Exception as e:
             logger.error(f"Error getting weather: {e}")
             return {"status": "error", "message": str(e)}

@@ -687,17 +687,18 @@ class AIMemoryMCPServer:
             logger.info(f"Executing tool: {tool_name} with arguments: {arguments}")
 
             # Sprint 1 T4 — First-call context injection
-            # On the very first tool call of this server process, silently run prime_context
-            # and attach the bundle to the response so the LLM receives working memory
-            # as a side-effect of whatever action it was already going to take.
+            # Only inject if:  (a) session not yet primed  AND  (b) the preheat bundle is
+            # already warm (_primed_bundle is not None).  Avoids firing a second concurrent
+            # prime_context() call when _preheat_context() is still running in the background
+            # — the triple-fire race (preheat + first-call + resource read) was a main freeze
+            # cause when LM Studio was slow to respond to the first embedding request.
             injected_context = None
             if not self._session_primed and tool_name != "prime_context":
                 self._session_primed = True
-                try:
-                    injected_context = self._primed_bundle or await self.memory_system.prime_context()
-                    self._primed_bundle = injected_context  # cache for Resources
-                except Exception as _e:
-                    logger.warning(f"First-call context injection failed: {_e}")
+                if self._primed_bundle is not None:
+                    # Preheat finished — attach the ready bundle for free
+                    injected_context = self._primed_bundle
+                # else: preheat still running; skip injection to avoid duplicate embedding call
 
             # Route to appropriate handler
             if tool_name == "prime_context":
@@ -863,20 +864,15 @@ class AIMemoryMCPServer:
             }
     
     def _start_automatic_maintenance(self):
-        """Start automatic database maintenance background task"""
+        """Start automatic database maintenance background task.
+        Must be called from within a running event loop (e.g. inside async main).
+        """
         try:
             loop = asyncio.get_running_loop()
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
             self._maintenance_task = loop.create_task(self._maintenance_loop())
-
+            logger.info("🔧 Automatic database maintenance started")
         except RuntimeError:
-            logger.warning("Event loop not running. Call `_start_automatic_maintenance()` after loop starts.")
-        logger.info("🔧 Automatic database maintenance started")
+            logger.warning("Event loop not running — _start_automatic_maintenance() must be called from async context.")
 
     def _start_preheat(self):
         """Sprint 1 T6 — Schedule context pre-heating as a background task."""
@@ -1056,7 +1052,15 @@ class AIMemoryMCPServer:
             }
     
     async def cleanup(self):
-        """Cleanup resources when server stops"""
+        """Cleanup resources when server stops.
+
+        Cancels the maintenance background task AND any other lingering
+        asyncio tasks (background embeds, access-count bumps, etc.) so
+        the process exits promptly when VS Code closes the stdio pipe.
+        Zombie processes were largely caused by hanging background tasks
+        keeping the event loop alive after the connection was gone.
+        """
+        # Cancel maintenance loop
         if self._maintenance_task and not self._maintenance_task.done():
             self._maintenance_task.cancel()
             try:
@@ -1064,6 +1068,23 @@ class AIMemoryMCPServer:
             except asyncio.CancelledError:
                 pass
             logger.info("🔧 Automatic maintenance stopped")
+
+        # Cancel all remaining background tasks spawned during this session
+        # (embedding generation, access-count bumps, dedup tasks, etc.)
+        current = asyncio.current_task()
+        pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
+        if pending:
+            logger.info(f"🧹 Cancelling {len(pending)} background task(s) on shutdown")
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        # Close the embedding service's shared HTTP session (defensive — core also
+        # calls this in its own shutdown path, so we suppress double-close errors)
+        try:
+            await self.memory_system.embedding_service.close()
+        except Exception:
+            pass
     
 
 
@@ -1103,7 +1124,7 @@ async def start_http_server(mcp_server: AIMemoryMCPServer, host: str = "127.0.0.
 
 async def main():
     """Main entry point for the MCP server"""
-    logger.info("AI Memory MCP Server starting...")
+    logger.info("AI Memory MCP Server starting... (PID %d)", os.getpid())
     
     # Set debug logging for MCP components
     logging.getLogger("mcp").setLevel(logging.DEBUG)

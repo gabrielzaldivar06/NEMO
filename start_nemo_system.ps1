@@ -43,29 +43,28 @@ if ($loadedModels -notmatch "text-embedding-qwen3-embedding-4b") {
     Log "  → Qwen3-Embedding-4B ya estaba cargado, omitiendo"
 }
 
-# ── 4. Cargar reranker (solo si no está ya cargado) ───────────────────────────
-if ($loadedModels -notmatch "text-embedding-bge-reranker-v2-m3") {
-    Log "Cargando BGE-reranker-v2-m3..."
-    lms load text-embedding-bge-reranker-v2-m3 -y 2>&1 | ForEach-Object { Log "  lms: $_" }
-    Start-Sleep -Seconds 2
-    Log "  → BGE reranker cargado"
+# ── 4. Reranker: arrancar llama-server en :8080 (LM Studio NO implementa /v1/rerank) ──
+$rerankerAlive = $false
+try {
+    $resp = [System.Net.WebRequest]::Create("http://localhost:8080/health")
+    $resp.Timeout = 2000
+    $resp.GetResponse().Close()
+    $rerankerAlive = $true
+} catch {}
+
+if ($rerankerAlive) {
+    Log "  → Reranker llama-server ya estaba corriendo en :8080"
 } else {
-    Log "  → BGE-reranker-v2-m3 ya estaba cargado, omitiendo"
+    Log "Iniciando BGE-reranker-v2-m3 via llama-server en :8080..."
+    Start-Process -FilePath "cmd.exe" `
+        -ArgumentList "/c `"$PROJECT\start_qwen_reranker_server.bat`"" `
+        -WindowStyle Minimized
+    Start-Sleep -Seconds 6
+    Log "  → Reranker iniciado (endpoint: http://localhost:8080/v1/rerank)"
 }
 
-# ── 5. Iniciar NEMO monitor (bandeja del sistema) ─────────────────────────────
-Log "Iniciando NEMO monitor..."
-$nemoProc = Get-Process -Name "pythonw" -ErrorAction SilentlyContinue | 
-    Where-Object { $_.CommandLine -like "*status_monitor*" }
-
-if ($nemoProc) {
-    Log "  → NEMO ya estaba corriendo (PID $($nemoProc.Id))"
-} else {
-    Start-Process "$VENV\pythonw.exe" -ArgumentList "`"$PROJECT\status_monitor.py`"" -WindowStyle Hidden
-    Log "  → NEMO monitor iniciado"
-}
-
+# ── 5. MCP Server arranca automáticamente por VS Code (stdio) ─────────────────
 Log "=== Sistema NEMO listo ==="
-Log "    Embedding : http://localhost:1234/v1/embeddings"
-Log "    Reranker  : http://localhost:1234/v1/rerank"
-Log "    MCP NEMO  : se activa con VS Code"
+Log "    Embedding : http://localhost:1234/v1/embeddings  (LM Studio)"
+Log "    Reranker  : http://localhost:8080/v1/rerank      (llama-server)"
+Log "    MCP NEMO  : stdio — se activa automáticamente con VS Code/Copilot"
