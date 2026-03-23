@@ -8,12 +8,13 @@
 <p align="center">
   <a href="https://creativecommons.org/licenses/by-nc/4.0/"><img src="https://img.shields.io/badge/Licencia-CC%20BY--NC%204.0-lightgrey.svg" alt="Licencia: CC BY-NC 4.0"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
-  <img src="https://img.shields.io/badge/release-v1.1.0--Sprint10-green.svg" alt="Release">
+  <img src="https://img.shields.io/badge/release-v1.2.0--Sprint12-green.svg" alt="Release">
   <img src="https://img.shields.io/badge/herramientas_MCP-31-blueviolet.svg" alt="MCP Tools">
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/precisión_Top--1-92%25-brightgreen.svg" alt="Top-1 Accuracy">
   <img src="https://img.shields.io/badge/MRR-0.9583-brightgreen.svg" alt="MRR">
+  <img src="https://img.shields.io/badge/FTS5%2BDense-Hybrid-blue.svg" alt="FTS5 Hybrid">
   <img src="https://img.shields.io/badge/ejecución-100%25_local-orange.svg" alt="100% Local">
   <img src="https://img.shields.io/badge/sin_nube-sin_claves-red.svg" alt="Sin Nube">
 </p>
@@ -50,10 +51,16 @@ NEMO resuelve el problema fundamental de los LLMs: **la amnesia entre sesiones**
 - Todos los datos viven en `~/.ai_memory/` como SQLite — sin nube, sin rastreo
 
 ```
-Benchmarks de producción (Sprint 10):
-  Precisión Top-1  →  92 %
+Benchmarks de producción (Sprint 12 — reranker activo):
+  Precisión Top-1  →  92 %     (24 queries, corpus real)
   MRR              →  0.9583
-  Latencia P95     →  2 095 ms  (pipeline completo de 11 fases)
+  Latencia P95     →  2 847 ms  (pipeline completo — FTS5+Dense+Reranker)
+
+Benchmark stress (48 queries, 120 memorias, categorías extremas):
+  Top-1 global     →  83.33 %
+  confusory        →  91.67 %
+  typo_severe      →  91.67 %
+  paraphrase_ext.  →  58.33 %  (ceiling del modelo con vocabulario abstracto)
 ```
 
 ---
@@ -65,18 +72,37 @@ NEMO expone **31 herramientas MCP** a través de un servidor Python stdio. Cuand
 ```
 Consulta
   │
-  ├─ 1. Generar embedding (Qwen3-Embedding-4B, 3840D)
+  ├─ 1. Generar embedding asimétrico (Qwen3-4B — query_instruction B1)
   ├─ 2. Caché semántica de sesión (omitir si está en caché)
-  ├─ 3. Recuperación ANN coseno (top-50 candidatos)
+  ├─ 3. Dense ANN coseno (top-50) + FTS5 BM25 en paralelo (asyncio.gather)
+  │     └─ candidatos FTS-only reciben coseno y entran al pipeline
   ├─ 4. Hybrid rescoring (0.7 × semántico + 0.3 × BM25)
   ├─ 5. Decaimiento temporal + bonus de recencia
   ├─ 6. Clasificador de intención de consulta (factual / procedimental / contextual)
   ├─ 7. Boosts de calidad (importancia, corrección +0.35, access count)
   ├─ 8. Bypass adaptativo + gap router
-  ├─ 9. Reranking neuronal — BGE-reranker-v2-m3 (Rank-Weighted Fusion)
+  ├─ 9. Reranking neuronal — BGE-reranker-v2-m3 via llama_cpp :8080 (RWF)
   ├─ 10. Supresión de near-duplicados (coseno > 0.95 duro, > 0.80 suave)
   └─ 11. Retroalimentación access count → retornar top-N
 ```
+
+---
+
+## Novedades en v1.2.0 (Sprint 11 & 12)
+
+### Sprint 11 — Recuperación Híbrida FTS5 + Dense
+- **SQLite FTS5** como índice de texto completo (unicode61, sin diacríticos) para BM25 léxico
+- Búsqueda densa y FTS5 corren en **paralelo** (`asyncio.gather`) — sin latencia adicional
+- Candidatos exclusivos de FTS5 entran al pipeline de reranking con coseno calculado al vuelo
+- Triggers automáticos mantienen el índice FTS5 sincronizado; backfill idempotente en startup
+
+### Sprint 12 — Embeddings Asimétricos + Reranker Real
+- **Reranker corregido**: `embedding_config.json` ahora apunta a `llama_cpp` `:8080` (LM Studio no implementa `/v1/rerank`); se añadió detección de falso-200
+- **Query instruction B1**: Qwen3 con instrucción asimétrica optimizada — diferencia vocabulario abstracto de nombres técnicos específicos (+4.2pp Top-1 en stress test)
+- **`generate_document_embedding()`**: método utilitario disponible para experimentos de recuperación simétrica futura
+- **Freeze fixes**: 4 root causes eliminados en el servidor MCP bajo escrituras concurrentes
+- **Multi-workspace simultáneo**: instancias en diferentes workspaces ya no se matan entre sí
+- **Anti-alucinación**: 4 estrategias integradas (grounding verification, confidence scoring, source attribution, contradiction detection)
 
 ---
 
@@ -84,7 +110,7 @@ Consulta
 
 | Característica | Detalle |
 |----------------|---------|
-| **Búsqueda semántica** | Qwen3-Embedding-4B (3840D) + reranker neuronal BGE |
+| **Búsqueda híbrida** | Dense (Qwen3-4B, asimétrico) + FTS5 BM25 léxico en paralelo + reranker BGE |
 | **31 herramientas MCP** | Memoria, conversaciones, agenda, correcciones, reflexiones, salud |
 | **5 bases de datos SQLite** | conversations · ai_memories · schedule · mcp_tool_calls · vscode_project |
 | **Deduplicación semántica** | Umbral duro 0.92 · umbral suave 0.82 (sin memorias duplicadas) |
@@ -258,12 +284,12 @@ No hace falta pedirle al agente que use NEMO — ocurre solo en Agent mode.
 │            ai_memory_core.py  (~4900 líneas)         │
 │  ┌─────────────────┐  ┌──────────────────────────┐  │
 │  │ EmbeddingService│  │    RerankingService       │  │
-│  │ Qwen3-4B @:1234 │  │ BGE-reranker-v2-m3 @:1234│  │
+  │  │ Qwen3-4B @:1234 │  │ BGE-reranker-v2-m3 @:8080│  │
 │  └─────────────────┘  └──────────────────────────┘  │
 │  ┌─────────────────────────────────────────────────┐ │
 │  │         PersistentAIMemorySystem                 │ │
-│  │  búsqueda 11 fases · dedup semántico · intención │ │
-│  │  decaimiento temporal · RWF · supresión near-dup │ │
+  │  │  búsqueda 11 fases · FTS5+Dense paralelo        │ │
+  │  │  dedup semántico · decaimiento · RWF · near-dup  │ │
 │  └─────────────────────────────────────────────────┘ │
 └────────────────────────┬────────────────────────────┘
                          │
@@ -281,7 +307,7 @@ No hace falta pedirle al agente que use NEMO — ocurre solo en Agent mode.
 | Proveedor | Modelo | Dimensiones | Costo |
 |-----------|--------|-------------|-------|
 | **LM Studio** (recomendado) | Qwen3-Embedding-4B | 3840D | Gratis |
-| **LM Studio** (reranker) | BGE-reranker-v2-m3 | — | Gratis |
+| **llama_cpp** (reranker) | BGE-reranker-v2-m3-Q4_K_M | — | Gratis |
 | **Ollama** (respaldo) | nomic-embed-text | 768D | Gratis |
 | **OpenAI** (nube) | text-embedding-3-large | 3072D | $$$ |
 
