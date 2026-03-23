@@ -2844,6 +2844,32 @@ class EmbeddingService:
         async with self._embed_semaphore:
             return await self._generate_embedding_inner(instructed_text)
 
+    async def generate_document_embedding(self, text: str) -> List[float]:
+        """Generate embedding for a *stored document/memory* with optional instruction prefix.
+
+        Companion to generate_query_embedding() for the document side of asymmetric
+        retrieval.  When ``document_instruction`` is set in embedding_config.json the
+        text is wrapped as:
+            ``Instruct: {instruction}\\nDocument:{text}``
+
+        This helps instruction-aware models (e.g. Qwen3-Embedding) understand that
+        stored memories contain specific technical names and implementation details
+        which should be matched against more abstract queries.  Falls back to plain
+        generate_embedding() when document_instruction is absent so models that are
+        not instruction-aware are unaffected.
+        """
+        instruction = self.primary_config.get("document_instruction", "").strip()
+        if instruction:
+            instructed_text = f"Instruct: {instruction}\nDocument:{text}"
+        else:
+            instructed_text = text
+
+        if self._embed_semaphore is None:
+            self._embed_semaphore = asyncio.Semaphore(2)
+
+        async with self._embed_semaphore:
+            return await self._generate_embedding_inner(instructed_text)
+
     async def _generate_embedding_inner(self, text: str, model: str = None) -> List[float]:
         """Internal: generate embedding (called under semaphore)."""
         # Try primary provider first
