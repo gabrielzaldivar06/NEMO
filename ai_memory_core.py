@@ -4251,7 +4251,7 @@ class PersistentAIMemorySystem:
         query_embedding = await self.embedding_service.generate_query_embedding(query)
         if not query_embedding:
             # Fallback to text-based search if embedding fails
-            result = await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type)
+            result = await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type, tags_include)
             if compact:
                 result = self._apply_compact_format(result)
             return result
@@ -5272,7 +5272,8 @@ class PersistentAIMemorySystem:
     
     async def _text_based_search(self, query: str, limit: int, database_filter: str,
                                min_importance: int = None, max_importance: int = None,
-                               memory_type: str = None) -> Dict:
+                               memory_type: str = None,
+                               tags_include: List[str] = None) -> Dict:
         """Fallback text-based search when embeddings are unavailable"""
         
         query_words = query.lower().split()
@@ -5330,6 +5331,24 @@ class PersistentAIMemorySystem:
                         "data": dict(row)
                     })
         
+        # Apply tags_include filter if specified
+        if tags_include:
+            import json as _json
+            _tag_set = {t.lower() for t in tags_include}
+            filtered = []
+            for r in results:
+                raw_tags = r.get("data", {}).get("tags", "[]")
+                if isinstance(raw_tags, str):
+                    try:
+                        tag_list = _json.loads(raw_tags)
+                    except Exception:
+                        tag_list = []
+                else:
+                    tag_list = raw_tags or []
+                if any(str(t).lower() in _tag_set for t in tag_list):
+                    filtered.append(r)
+            results = filtered
+
         # Remove duplicates and limit results
         seen = set()
         unique_results = []
