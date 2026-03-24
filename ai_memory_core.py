@@ -4773,29 +4773,47 @@ class PersistentAIMemorySystem:
         
         rows = await self.ai_memory_db.execute_query(sql, params)
         results = []
-        
-        for row in rows:
-            if row["embedding"]:
-                stored_embedding = np.frombuffer(row["embedding"], dtype=np.float32).tolist()
-                similarity = self._calculate_cosine_similarity(query_embedding, stored_embedding)
-                
-                if similarity > 0.3:  # Threshold for relevance
-                    result = {
-                        "type": "ai_memory",
-                        "similarity_score": similarity,
-                        "_raw_similarity": similarity,  # Sprint 8A: pre-boost cosine for bypass gate
-                        "_embedding": stored_embedding,  # Sprint 7: retained for cross-result cluster pass
-                        "data": {
-                            "memory_id": row["memory_id"],
-                            "content": row["content"],
-                            "importance_level": row["importance_level"],
-                            "memory_type": row["memory_type"],
-                            "timestamp_created": row["timestamp_created"],
-                            "tags": json.loads(row["tags"]) if row["tags"] else [],
-                            "access_count": row["access_count"] if "access_count" in row.keys() else 0,
-                        }
+
+        if rows:
+            q_arr = np.array(query_embedding, dtype=np.float32)
+            rows_list = list(rows)
+
+            def _batch_cosine_ai(rows_inner, q_arr_inner):
+                valid = [
+                    (row, np.frombuffer(row["embedding"], dtype=np.float32))
+                    for row in rows_inner if row["embedding"]
+                ]
+                if not valid:
+                    return []
+                valid_rows, embeds = zip(*valid)
+                matrix = np.vstack(embeds)
+                q_norm = float(np.linalg.norm(q_arr_inner))
+                if q_norm < 1e-9:
+                    return []
+                norms = np.linalg.norm(matrix, axis=1)
+                norms = np.where(norms < 1e-9, 1.0, norms)
+                sims = (matrix @ q_arr_inner) / (norms * q_norm)
+                return [
+                    (valid_rows[j], embeds[j], float(sims[j]))
+                    for j in range(len(valid_rows)) if sims[j] > 0.3
+                ]
+
+            for row, emb_arr, similarity in await asyncio.to_thread(_batch_cosine_ai, rows_list, q_arr):
+                results.append({
+                    "type": "ai_memory",
+                    "similarity_score": similarity,
+                    "_raw_similarity": similarity,  # Sprint 8A: pre-boost cosine for bypass gate
+                    "_embedding": emb_arr,  # Sprint 7: retained for cross-result cluster pass (ndarray)
+                    "data": {
+                        "memory_id": row["memory_id"],
+                        "content": row["content"],
+                        "importance_level": row["importance_level"],
+                        "memory_type": row["memory_type"],
+                        "timestamp_created": row["timestamp_created"],
+                        "tags": json.loads(row["tags"]) if row["tags"] else [],
+                        "access_count": row["access_count"] if "access_count" in row.keys() else 0,
                     }
-                    results.append(result)
+                })
         
         # Sprint 6: Type-Quality Composite Boost
         # --------------------------------------------------------------------
@@ -4866,68 +4884,76 @@ class PersistentAIMemorySystem:
         _NEAR_DUP_THRESHOLD = 0.95
         _WEAK_DUP_THRESHOLD = 0.80  # Sprint 10 rev: 0.85 too tight — imp(9) escaped suppression; ≥3 tags keeps precision
         pool = results[:50]  # anchors always land here after Sprint 6 boost
-        survivors = []
 
-        def _meta_cluster(a_data, b_data):
-            """True when two memories share the same topic: same memory_type AND ≥3 common tags."""
-            if a_data.get("memory_type") != b_data.get("memory_type"):
-                return False
-            a_tags = set(a_data.get("tags") or [])
-            b_tags = set(b_data.get("tags") or [])
-            return len(a_tags & b_tags) >= 3  # Sprint 10: raised from ≥2 for precision
+        def _run_dedup(pool_inner, near_thresh, weak_thresh):
+            def _meta_cluster_inner(a_data, b_data):
+                """True when two memories share the same topic: same memory_type AND ≥3 common tags."""
+                if a_data.get("memory_type") != b_data.get("memory_type"):
+                    return False
+                a_tags = set(a_data.get("tags") or [])
+                b_tags = set(b_data.get("tags") or [])
+                return len(a_tags & b_tags) >= 3  # Sprint 10: raised from ≥2 for precision
 
-        for candidate in pool:
-            c_emb = candidate.get("_embedding")
-            c_imp = candidate["data"]["importance_level"]
-            c_ts  = candidate["data"].get("timestamp_created") or ""
-            cluster_hit = -1
-            is_weak_dup = False
-            if c_emb:
-                for i, sel in enumerate(survivors):
-                    s_emb = sel.get("_embedding")
-                    if s_emb:
-                        cross = self._calculate_cosine_similarity(c_emb, s_emb)
-                        if cross > _NEAR_DUP_THRESHOLD:
-                            cluster_hit = i
-                            is_weak_dup = False
-                            break
-                        elif (cross > _WEAK_DUP_THRESHOLD
-                              and cluster_hit == -1
-                              and _meta_cluster(candidate["data"], sel["data"])):
-                            cluster_hit = i
-                            is_weak_dup = True
-                            # Do NOT break — a strong dup may still be found further in the list
-            if cluster_hit == -1:
-                survivors.append(candidate)
-            elif is_weak_dup:
-                # Sprint 9 T5 — Metadata-Aware Weak Supersession
-                # Same type + same tags + semantically similar → the OLDER memory is the
-                # canonical representative of this topic cluster.  Inherit the cluster's
-                # top score so rank position is preserved after the final re-sort.
-                s_ts = survivors[cluster_hit]["data"].get("timestamp_created") or ""
-                if c_ts and s_ts and c_ts < s_ts:
-                    candidate["similarity_score"] = survivors[cluster_hit]["similarity_score"]
-                    survivors[cluster_hit] = candidate
-                # else: candidate is newer → silently dropped (existing is canonical)
-            else:
-                # Strong near-dup (cosine > 0.95) — Sprint 7 + T1 logic
-                s_imp = survivors[cluster_hit]["data"]["importance_level"]
-                s_ts  = survivors[cluster_hit]["data"].get("timestamp_created") or ""
-                imp_diff = abs(c_imp - s_imp)
-                if c_imp > s_imp:
-                    # Higher-importance doc from same cluster displaces current representative
-                    survivors[cluster_hit] = candidate
-                elif imp_diff <= 1:
-                    # Sprint 9 T1 — Creation-Order Tiebreaker
-                    # When importance is tied (≤1 point gap), the OLDER memory is the
-                    # canonical original; the newer one is the imposter/copy.
-                    # Lexicographic ISO string comparison works because our timestamps are
-                    # zero-padded UTC (e.g. "2026-03-20T10:00:00+00:00").
+            survivors_inner = []
+            for candidate in pool_inner:
+                c_emb = candidate.get("_embedding")
+                c_imp = candidate["data"]["importance_level"]
+                c_ts  = candidate["data"].get("timestamp_created") or ""
+                cluster_hit = -1
+                is_weak_dup = False
+                if c_emb is not None:
+                    c_norm = float(np.linalg.norm(c_emb))
+                    for i, sel in enumerate(survivors_inner):
+                        s_emb = sel.get("_embedding")
+                        if s_emb is not None:
+                            s_norm = float(np.linalg.norm(s_emb))
+                            if c_norm > 1e-9 and s_norm > 1e-9:
+                                cross = float(np.dot(c_emb, s_emb)) / (c_norm * s_norm)
+                            else:
+                                cross = 0.0
+                            if cross > near_thresh:
+                                cluster_hit = i
+                                is_weak_dup = False
+                                break
+                            elif (cross > weak_thresh
+                                  and cluster_hit == -1
+                                  and _meta_cluster_inner(candidate["data"], sel["data"])):
+                                cluster_hit = i
+                                is_weak_dup = True
+                                # Do NOT break — a strong dup may still be found further in the list
+                if cluster_hit == -1:
+                    survivors_inner.append(candidate)
+                elif is_weak_dup:
+                    # Sprint 9 T5 — Metadata-Aware Weak Supersession
+                    # Same type + same tags + semantically similar → the OLDER memory is the
+                    # canonical representative of this topic cluster.  Inherit the cluster's
+                    # top score so rank position is preserved after the final re-sort.
+                    s_ts = survivors_inner[cluster_hit]["data"].get("timestamp_created") or ""
                     if c_ts and s_ts and c_ts < s_ts:
-                        survivors[cluster_hit] = candidate
-                # else: candidate importance is clearly lower → silently dropped
+                        candidate["similarity_score"] = survivors_inner[cluster_hit]["similarity_score"]
+                        survivors_inner[cluster_hit] = candidate
+                    # else: candidate is newer → silently dropped (existing is canonical)
+                else:
+                    # Strong near-dup (cosine > 0.95) — Sprint 7 + T1 logic
+                    s_imp = survivors_inner[cluster_hit]["data"]["importance_level"]
+                    s_ts  = survivors_inner[cluster_hit]["data"].get("timestamp_created") or ""
+                    imp_diff = abs(c_imp - s_imp)
+                    if c_imp > s_imp:
+                        # Higher-importance doc from same cluster displaces current representative
+                        survivors_inner[cluster_hit] = candidate
+                    elif imp_diff <= 1:
+                        # Sprint 9 T1 — Creation-Order Tiebreaker
+                        # When importance is tied (≤1 point gap), the OLDER memory is the
+                        # canonical original; the newer one is the imposter/copy.
+                        # Lexicographic ISO string comparison works because our timestamps are
+                        # zero-padded UTC (e.g. "2026-03-20T10:00:00+00:00").
+                        if c_ts and s_ts and c_ts < s_ts:
+                            survivors_inner[cluster_hit] = candidate
+                    # else: candidate importance is clearly lower → silently dropped
+            survivors_inner.sort(key=lambda x: x["similarity_score"], reverse=True)
+            return survivors_inner
 
-        survivors.sort(key=lambda x: x["similarity_score"], reverse=True)
+        survivors = await asyncio.to_thread(_run_dedup, pool, _NEAR_DUP_THRESHOLD, _WEAK_DUP_THRESHOLD)
         for r in survivors:
             r.pop("_embedding", None)
             # _raw_similarity is retained: needed by search_memories() bypass gate (Sprint 8A)
@@ -4946,27 +4972,41 @@ class PersistentAIMemorySystem:
         
         rows = await self.conversations_db.execute_query(query)
         results = []
-        
-        for row in rows:
-            if row["embedding"]:
-                stored_embedding = np.frombuffer(row["embedding"], dtype=np.float32).tolist()
-                similarity = self._calculate_cosine_similarity(query_embedding, stored_embedding)
-                
-                if similarity > 0.3:
-                    result = {
-                        "type": "conversation",
-                        "similarity_score": similarity,
-                        "data": {
-                            "message_id": row["message_id"],
-                            "conversation_id": row["conversation_id"],
-                            "timestamp": row["timestamp"],
-                            "role": row["role"],
-                            "content": row["content"],
-                            "metadata": json.loads(row["metadata"]) if row["metadata"] else None
-                        }
+
+        if rows:
+            q_arr = np.array(query_embedding, dtype=np.float32)
+
+            def _batch_cosine_conv(rows_inner, q_arr_inner):
+                valid = [
+                    (row, np.frombuffer(row["embedding"], dtype=np.float32))
+                    for row in rows_inner if row["embedding"]
+                ]
+                if not valid:
+                    return []
+                valid_rows, embeds = zip(*valid)
+                matrix = np.vstack(embeds)
+                q_norm = float(np.linalg.norm(q_arr_inner))
+                if q_norm < 1e-9:
+                    return []
+                norms = np.linalg.norm(matrix, axis=1)
+                norms = np.where(norms < 1e-9, 1.0, norms)
+                sims = (matrix @ q_arr_inner) / (norms * q_norm)
+                return [(valid_rows[j], float(sims[j])) for j in range(len(valid_rows)) if sims[j] > 0.3]
+
+            for row, similarity in await asyncio.to_thread(_batch_cosine_conv, list(rows), q_arr):
+                results.append({
+                    "type": "conversation",
+                    "similarity_score": similarity,
+                    "data": {
+                        "message_id": row["message_id"],
+                        "conversation_id": row["conversation_id"],
+                        "timestamp": row["timestamp"],
+                        "role": row["role"],
+                        "content": row["content"],
+                        "metadata": json.loads(row["metadata"]) if row["metadata"] else None
                     }
-                    results.append(result)
-        
+                })
+
         results.sort(key=lambda x: x["similarity_score"], reverse=True)
         return results[:limit]
     
@@ -4983,27 +5023,39 @@ class PersistentAIMemorySystem:
             WHERE embedding IS NOT NULL
         """
         
-        rows = await self.schedule_db.execute_query(appointment_query)
-        
-        for row in rows:
-            if row["embedding"]:
-                stored_embedding = np.frombuffer(row["embedding"], dtype=np.float32).tolist()
-                similarity = self._calculate_cosine_similarity(query_embedding, stored_embedding)
-                
-                if similarity > 0.3:
-                    result = {
-                        "type": "appointment",
-                        "similarity_score": similarity,
-                        "data": {
-                            "appointment_id": row["appointment_id"],
-                            "scheduled_datetime": row["scheduled_datetime"],
-                            "title": row["title"],
-                            "description": row["description"],
-                            "location": row["location"]
-                        }
-                    }
-                    results.append(result)
-        
+        q_arr_sched = np.array(query_embedding, dtype=np.float32)
+
+        def _batch_cosine_sched(rows_inner, q_arr_inner):
+            valid = [
+                (row, np.frombuffer(row["embedding"], dtype=np.float32))
+                for row in rows_inner if row["embedding"]
+            ]
+            if not valid:
+                return []
+            valid_rows, embeds = zip(*valid)
+            matrix = np.vstack(embeds)
+            q_norm = float(np.linalg.norm(q_arr_inner))
+            if q_norm < 1e-9:
+                return []
+            norms = np.linalg.norm(matrix, axis=1)
+            norms = np.where(norms < 1e-9, 1.0, norms)
+            sims = (matrix @ q_arr_inner) / (norms * q_norm)
+            return [(valid_rows[j], float(sims[j])) for j in range(len(valid_rows)) if sims[j] > 0.3]
+
+        appt_rows = await self.schedule_db.execute_query(appointment_query)
+        for row, similarity in await asyncio.to_thread(_batch_cosine_sched, list(appt_rows), q_arr_sched):
+            results.append({
+                "type": "appointment",
+                "similarity_score": similarity,
+                "data": {
+                    "appointment_id": row["appointment_id"],
+                    "scheduled_datetime": row["scheduled_datetime"],
+                    "title": row["title"],
+                    "description": row["description"],
+                    "location": row["location"]
+                }
+            })
+
         # Search reminders
         reminder_query = """
             SELECT reminder_id, timestamp_created, due_datetime, content, 
@@ -5011,28 +5063,21 @@ class PersistentAIMemorySystem:
             FROM reminders 
             WHERE embedding IS NOT NULL
         """
-        
-        rows = await self.schedule_db.execute_query(reminder_query)
-        
-        for row in rows:
-            if row["embedding"]:
-                stored_embedding = np.frombuffer(row["embedding"], dtype=np.float32).tolist()
-                similarity = self._calculate_cosine_similarity(query_embedding, stored_embedding)
-                
-                if similarity > 0.3:
-                    result = {
-                        "type": "reminder",
-                        "similarity_score": similarity,
-                        "data": {
-                            "reminder_id": row["reminder_id"],
-                            "due_datetime": row["due_datetime"],
-                            "content": row["content"],
-                            "priority_level": row["priority_level"],
-                            "completed": bool(row["completed"])
-                        }
-                    }
-                    results.append(result)
-        
+
+        rem_rows = await self.schedule_db.execute_query(reminder_query)
+        for row, similarity in await asyncio.to_thread(_batch_cosine_sched, list(rem_rows), q_arr_sched):
+            results.append({
+                "type": "reminder",
+                "similarity_score": similarity,
+                "data": {
+                    "reminder_id": row["reminder_id"],
+                    "due_datetime": row["due_datetime"],
+                    "content": row["content"],
+                    "priority_level": row["priority_level"],
+                    "completed": bool(row["completed"])
+                }
+            })
+
         results.sort(key=lambda x: x["similarity_score"], reverse=True)
         return results[:limit]
     
@@ -5048,27 +5093,41 @@ class PersistentAIMemorySystem:
         
         rows = await self.vscode_db.execute_query(query)
         results = []
-        
-        for row in rows:
-            if row["embedding"]:
-                stored_embedding = np.frombuffer(row["embedding"], dtype=np.float32).tolist()
-                similarity = self._calculate_cosine_similarity(query_embedding, stored_embedding)
-                
-                if similarity > 0.3:
-                    result = {
-                        "type": "project_insight",
-                        "similarity_score": similarity,
-                        "data": {
-                            "insight_id": row["insight_id"],
-                            "timestamp_created": row["timestamp_created"],
-                            "insight_type": row["insight_type"],
-                            "content": row["content"],
-                            "related_files": json.loads(row["related_files"]) if row["related_files"] else None,
-                            "importance_level": row["importance_level"]
-                        }
+
+        if rows:
+            q_arr_pi = np.array(query_embedding, dtype=np.float32)
+
+            def _batch_cosine_pi(rows_inner, q_arr_inner):
+                valid = [
+                    (row, np.frombuffer(row["embedding"], dtype=np.float32))
+                    for row in rows_inner if row["embedding"]
+                ]
+                if not valid:
+                    return []
+                valid_rows, embeds = zip(*valid)
+                matrix = np.vstack(embeds)
+                q_norm = float(np.linalg.norm(q_arr_inner))
+                if q_norm < 1e-9:
+                    return []
+                norms = np.linalg.norm(matrix, axis=1)
+                norms = np.where(norms < 1e-9, 1.0, norms)
+                sims = (matrix @ q_arr_inner) / (norms * q_norm)
+                return [(valid_rows[j], float(sims[j])) for j in range(len(valid_rows)) if sims[j] > 0.3]
+
+            for row, similarity in await asyncio.to_thread(_batch_cosine_pi, list(rows), q_arr_pi):
+                results.append({
+                    "type": "project_insight",
+                    "similarity_score": similarity,
+                    "data": {
+                        "insight_id": row["insight_id"],
+                        "timestamp_created": row["timestamp_created"],
+                        "insight_type": row["insight_type"],
+                        "content": row["content"],
+                        "related_files": json.loads(row["related_files"]) if row["related_files"] else None,
+                        "importance_level": row["importance_level"]
                     }
-                    results.append(result)
-        
+                })
+
         # Boost results based on importance level
         for result in results:
             importance_boost = result["data"]["importance_level"] / 10.0 * 0.15
