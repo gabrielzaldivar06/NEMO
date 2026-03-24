@@ -1917,22 +1917,29 @@ class ConversationFileMonitor:
 
     def _check_mcp_server(self) -> bool:
         """Check if an MCP server is running by attempting a connection.
-        
-        Returns:
-            bool: True if MCP server is running, False otherwise
+
+        NOTE: The socket check is intentionally non-blocking (no timeout wait)
+        so it does not stall the asyncio event loop when called from a coroutine.
+        The result is cached for 60 seconds to minimise overhead.
         """
         # Only check every 60 seconds to avoid overhead
         current_time = time.time()
         if current_time - self.last_mcp_check < 60:
             return self.mcp_server_running
-            
+
         try:
-            # Try to connect to MCP server port
-            with socket.create_connection(("localhost", self.mcp_port), timeout=1.0):
-                self.mcp_server_running = True
-        except (socket.timeout, ConnectionRefusedError):
+            # Use a non-blocking connect attempt instead of a blocking timeout so
+            # the event loop is never stalled for up to 1 second.
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setblocking(False)
+            err = sock.connect_ex(("localhost", self.mcp_port))
+            sock.close()
+            # 0 = connected immediately (port open), EINPROGRESS/EWOULDBLOCK = connecting
+            import errno
+            self.mcp_server_running = err in (0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EAGAIN)
+        except Exception:
             self.mcp_server_running = False
-        
+
         self.last_mcp_check = current_time
         return self.mcp_server_running
         
@@ -1980,11 +1987,16 @@ class ConversationFileMonitor:
             return None
             
         try:
-            with socket.create_connection(("localhost", self.mcp_port), timeout=1.0) as sock:
-                sock.sendall(b"GET_START_TIME\n")
-                response = sock.recv(1024).decode().strip()
-                if response and response != "ERROR":
-                    return datetime.fromisoformat(response)
+            # Use asyncio.to_thread-friendly blocking socket instead of the
+            # 1-second-blocking socket.create_connection.
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.2)  # very short timeout — fire-and-forget check
+            sock.connect(("localhost", self.mcp_port))
+            sock.sendall(b"GET_START_TIME\n")
+            response = sock.recv(1024).decode().strip()
+            sock.close()
+            if response and response != "ERROR":
+                return datetime.fromisoformat(response)
         except Exception as e:
             logger.debug(f"Failed to get MCP start time: {e}")
         return None
@@ -3436,6 +3448,19 @@ class PersistentAIMemorySystem:
         _CACHE_MAX = 32
 
         # ---------------------------------------------------------------------------
+        # Multi-workspace freeze prevention: cap the total number of *pending*
+        # background embedding tasks.  Each workspace spawns its own Python process;
+        # without a cap, a burst of write operations (or the file-monitor importing
+        # history) can enqueue hundreds of concurrent embedding requests to LM Studio,
+        # saturating the GPU and freezing the PC.
+        # At most _BG_EMBED_MAX tasks wait in the background at any moment.
+        # When the cap is reached, new embedding requests are dropped gracefully —
+        # text-only search still works as fallback.
+        # ---------------------------------------------------------------------------
+        self._BG_EMBED_MAX = 6
+        self._bg_embed_semaphore = asyncio.Semaphore(self._BG_EMBED_MAX)
+
+        # ---------------------------------------------------------------------------
         # Sprint 8: Memory Consolidation threshold (feature #6)
         # Memories with cosine > this at write-time are flagged as near-duplicates
         # even if below the hard dedup threshold (0.92). Range: (dedup_thresh, 0.92)
@@ -3466,6 +3491,28 @@ class PersistentAIMemorySystem:
         if self.file_monitor:
             self.file_monitor.add_watch_directory(directory)
 
+    def _schedule_bg_embed(self, coro) -> None:
+        """Schedule a background embedding coroutine with a concurrency cap.
+
+        Multiple VS Code workspaces each spawn their own MCP server process.  Each
+        process can fire dozens of fire-and-forget embedding tasks (e.g. during file
+        monitor imports).  Without a cap, these flood LM Studio and saturate the GPU.
+
+        This method wraps `coro` in a guard that tries to acquire
+        `_bg_embed_semaphore` (non-blocking).  If the semaphore is full (meaning
+        _BG_EMBED_MAX tasks are already pending), the new embedding is **skipped**
+        rather than queued — text-only search still works as a fallback.
+        """
+        async def _guarded():
+            acquired = self._bg_embed_semaphore._value > 0  # fast check without blocking
+            if not acquired:
+                logger.debug("⏭️  Background embed skipped — cap of %d reached", self._BG_EMBED_MAX)
+                return
+            async with self._bg_embed_semaphore:
+                await coro
+
+        asyncio.create_task(_guarded())
+
     # =============================================================================
     # CONVERSATION OPERATIONS
     # =============================================================================
@@ -3478,8 +3525,8 @@ class PersistentAIMemorySystem:
             content, role, session_id, conversation_id, metadata
         )
         
-        # Generate and store embedding asynchronously
-        asyncio.create_task(self._add_embedding_to_message(result["message_id"], content))
+        # Generate and store embedding asynchronously (cap enforced by _schedule_bg_embed)
+        self._schedule_bg_embed(self._add_embedding_to_message(result["message_id"], content))
         
         return {
             "status": "success",
@@ -3752,7 +3799,7 @@ class PersistentAIMemorySystem:
 
         # Regenerate embedding asynchronously when content changes
         if content is not None:
-            asyncio.create_task(self._add_embedding_to_memory(memory_id, content))
+            self._schedule_bg_embed(self._add_embedding_to_memory(memory_id, content))
 
         return {"status": "success", "memory_id": memory_id}
 
@@ -3787,7 +3834,7 @@ class PersistentAIMemorySystem:
         if description:
             content_for_embedding += f" {description}"
         
-        asyncio.create_task(self._add_embedding_to_appointment(appointment_id, content_for_embedding))
+        self._schedule_bg_embed(self._add_embedding_to_appointment(appointment_id, content_for_embedding))
         
         return {
             "status": "success",
@@ -3803,7 +3850,7 @@ class PersistentAIMemorySystem:
         )
         
         # Generate and store embedding for the reminder content
-        asyncio.create_task(self._add_embedding_to_reminder(reminder_id, content))
+        self._schedule_bg_embed(self._add_embedding_to_reminder(reminder_id, content))
         
         return {
             "status": "success",
@@ -3850,7 +3897,7 @@ class PersistentAIMemorySystem:
         )
         
         # Generate and store embedding for the insight content
-        asyncio.create_task(self._add_embedding_to_project_insight(insight_id, content))
+        self._schedule_bg_embed(self._add_embedding_to_project_insight(insight_id, content))
         
         return {
             "status": "success",
@@ -4005,7 +4052,7 @@ class PersistentAIMemorySystem:
             )
             
         # Generate embedding for search
-        asyncio.create_task(self._add_embedding_to_code_context(context_id, description))
+        self._schedule_bg_embed(self._add_embedding_to_code_context(context_id, description))
         
         return {
             "status": "success",

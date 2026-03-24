@@ -2292,29 +2292,32 @@ class DatabaseMaintenance:
             self.memory_system.mcp_db.db_path
         ]
         
+        def _vacuum_db(db_path: str) -> tuple[int, int]:
+            """Run blocking SQLite optimisation in a thread — never call from event loop."""
+            size_before = Path(db_path).stat().st_size if Path(db_path).exists() else 0
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute("VACUUM")    # Reclaim space and defragment
+                conn.execute("REINDEX")   # Rebuild indexes for better performance
+                conn.execute("ANALYZE")   # Update query planner statistics
+            finally:
+                conn.close()
+            size_after = Path(db_path).stat().st_size if Path(db_path).exists() else 0
+            return size_before, size_after
+
         for db_path in db_paths:
             db_name = Path(db_path).stem
             try:
-                # Get database size before optimization
-                size_before = Path(db_path).stat().st_size if Path(db_path).exists() else 0
-                
-                # Optimize database
-                conn = sqlite3.connect(db_path)
-                conn.execute("VACUUM")  # Reclaim space and defragment
-                conn.execute("REINDEX")  # Rebuild indexes for better performance
-                conn.execute("ANALYZE")  # Update query planner statistics
-                conn.close()
-                
-                # Get size after optimization
-                size_after = Path(db_path).stat().st_size if Path(db_path).exists() else 0
-                
+                # Run heavy blocking I/O in a thread pool so the event loop stays free
+                size_before, size_after = await asyncio.to_thread(_vacuum_db, db_path)
+
                 results[db_name] = {
                     "size_before_mb": round(size_before / 1024 / 1024, 2),
                     "size_after_mb": round(size_after / 1024 / 1024, 2),
                     "space_saved_mb": round((size_before - size_after) / 1024 / 1024, 2),
                     "optimized": True
                 }
-                
+
             except Exception as e:
                 results[db_name] = {"error": str(e), "optimized": False}
         
@@ -2547,6 +2550,57 @@ class DatabaseMaintenance:
 
 # Integration function to add to PersistentAIMemorySystem
 async def run_database_maintenance(memory_system, force: bool = False) -> Dict:
-    """Convenience function to run database maintenance"""
-    maintenance = DatabaseMaintenance(memory_system)
-    return await maintenance.run_maintenance(force)
+    """Run database maintenance with a cross-process file lock.
+
+    Multiple VS Code workspaces each start their own MCP server process.  Running
+    VACUUM/REINDEX simultaneously from several processes on the same SQLite files
+    causes lock contention and spikes CPU usage.  A lock file prevents more than
+    one process from running the heavy maintenance cycle at the same time.
+    """
+    import fcntl  # Unix only — falls back to no-lock on Windows
+    lock_path = Path(memory_system.ai_memory_db.db_path).parent / "maintenance.lock"
+
+    async def _run_with_lock() -> Dict:
+        maintenance = DatabaseMaintenance(memory_system)
+        return await maintenance.run_maintenance(force)
+
+    # Try cross-process file lock (Unix / macOS)
+    try:
+        lock_file = open(lock_path, "w")
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock_file.close()
+            logger.info("⏭️  Maintenance skipped — another NEMO process is already running it")
+            return {"skipped": True, "reason": "maintenance lock held by another process"}
+        try:
+            return await _run_with_lock()
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            lock_file.close()
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except (ImportError, AttributeError):
+        # Windows — fcntl not available, use a best-effort PID file lock
+        pid_lock = lock_path.with_suffix(".pid")
+        if pid_lock.exists():
+            try:
+                existing_pid = int(pid_lock.read_text().strip())
+                # Check if that PID is actually still running
+                import signal
+                os.kill(existing_pid, 0)  # raises OSError if process is gone
+                # Process is alive — skip maintenance
+                logger.info("⏭️  Maintenance skipped — PID %d is already running it", existing_pid)
+                return {"skipped": True, "reason": f"maintenance lock held by PID {existing_pid}"}
+            except (ValueError, OSError):
+                pass  # Stale lock — proceed
+        pid_lock.write_text(str(os.getpid()))
+        try:
+            return await _run_with_lock()
+        finally:
+            try:
+                pid_lock.unlink(missing_ok=True)
+            except OSError:
+                pass

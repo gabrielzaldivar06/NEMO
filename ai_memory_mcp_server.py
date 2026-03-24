@@ -954,8 +954,11 @@ class AIMemoryMCPServer:
     
     async def _maintenance_loop(self):
         """Background loop for automatic database maintenance"""
-        # Wait a bit after startup before first maintenance
-        await asyncio.sleep(300)  # 5 minutes initial delay
+        # Each process picks a random initial delay (5–20 min) so multiple workspaces
+        # that all start at roughly the same time don't trigger maintenance in lockstep.
+        import random
+        jitter = random.uniform(5 * 60, 20 * 60)  # 5–20 minutes
+        await asyncio.sleep(jitter)
         
         while True:
             try:
@@ -963,7 +966,9 @@ class AIMemoryMCPServer:
                 result = await self.memory_system.run_database_maintenance()
                 
                 # Log maintenance results
-                if result.get("success"):
+                if result.get("skipped"):
+                    logger.info("⏭️  Maintenance skipped: %s", result.get("reason", ""))
+                elif result.get("success"):
                     logger.info(f"✅ Automatic maintenance completed - optimized {len(result.get('optimization_results', {}))} databases")
                 else:
                     logger.warning(f"⚠️ Automatic maintenance had issues: {result.get('error', 'Unknown error')}")
