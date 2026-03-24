@@ -2073,9 +2073,8 @@ class ConversationFileMonitor:
                 return
             
             # Calculate file hash to detect actual content changes
-            with open(file_path, 'rb') as f:
-                file_content = f.read()
-                current_hash = hashlib.md5(file_content).hexdigest()
+            file_content = await asyncio.to_thread(Path(file_path).read_bytes)
+            current_hash = hashlib.md5(file_content).hexdigest()
             
             # Skip if we've already processed this exact content
             if file_path in self.file_hashes and self.file_hashes[file_path] == current_hash:
@@ -2124,7 +2123,7 @@ class ConversationFileMonitor:
                     content=conv['content'],
                     role=conv['role'],
                     metadata={'source_file': file_path, 'imported_at': get_current_timestamp()},
-                    session_id=self._get_file_hash(file_path)  # Use file hash as session ID for grouping
+                    session_id=current_hash  # Use file hash as session ID for grouping
                 )
                 
                 if is_vscode_chat and not result.get("duplicate", False):
@@ -2158,14 +2157,14 @@ class ConversationFileMonitor:
         try:
             # Special handling for Ollama SQLite database
             if file_path.lower().endswith('db.sqlite') and 'ollama' in file_path.lower():
-                conversations.extend(self._extract_ollama_database(file_path))
+                conversations.extend(await asyncio.to_thread(self._extract_ollama_database, file_path))
                 return conversations
             
             # Special handling for OpenWebUI SQLite database
             if (file_path.lower().endswith('webui.db') or 
                 (file_path.lower().endswith('.db') and 'openwebui' in file_path.lower()) or
                 (file_path.lower().endswith('.db') and 'open-webui' in file_path.lower())):
-                conversations.extend(self._extract_openwebui_database(file_path))
+                conversations.extend(await asyncio.to_thread(self._extract_openwebui_database, file_path))
                 return conversations
             
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -3081,7 +3080,11 @@ class EmbeddingService:
 class RerankingService:
     """Optional reranking service abstraction kept separate from first-stage retrieval."""
 
+    # Shared timeout for all rerank HTTP requests — matches EmbeddingService.
+    _SESSION_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=5)
+
     def __init__(self, config: Dict[str, Any] = None):
+        self._session: Optional["aiohttp.ClientSession"] = None
         if config:
             self.primary_config = config
             self.fallback_config = config.get("fallback", {})
@@ -3138,6 +3141,18 @@ class RerankingService:
     def create_with_user_config(cls) -> 'RerankingService':
         """Create reranking service with config file defaults."""
         return cls()
+
+    async def _get_session(self) -> "aiohttp.ClientSession":
+        """Return the shared aiohttp session, creating it lazily on first call."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=self._SESSION_TIMEOUT)
+        return self._session
+
+    async def close(self) -> None:
+        """Close the shared HTTP session. Call on shutdown."""
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
 
     def _build_rerank_endpoint(self, config: Dict[str, Any]) -> str:
         """Build the effective rerank endpoint for diagnostics and requests."""
@@ -3294,32 +3309,32 @@ class RerankingService:
         started = time.perf_counter()
         try:
             timeout = aiohttp.ClientTimeout(total=self.get_timeout_seconds())
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(endpoint, json=payload, headers=headers) as response:
-                    self.last_reranking_latency_ms = (time.perf_counter() - started) * 1000
-                    self.last_candidate_count = len(documents)
-                    self.rerank_endpoint = endpoint
+            session = await self._get_session()
+            async with session.post(endpoint, json=payload, headers=headers, timeout=timeout) as response:
+                self.last_reranking_latency_ms = (time.perf_counter() - started) * 1000
+                self.last_candidate_count = len(documents)
+                self.rerank_endpoint = endpoint
 
-                    if response.status != 200:
-                        error_text = await response.text()
-                        logger.error(f"{provider_name} rerank API error {response.status}: {error_text}")
-                        return None
-
-                    raw_text = await response.text()
-                    import json as _json
-                    payload = _json.loads(raw_text)
-                    # LM Studio returns HTTP 200 with {"error": "..."} for unsupported endpoints
-                    if isinstance(payload, dict) and "error" in payload and not any(
-                        k in payload for k in ("results", "data", "rankings")
-                    ):
-                        logger.error(f"{provider_name} rerank endpoint not supported: {payload['error']}")
-                        return None
-                    normalized_results = self._normalize_rerank_response(payload, documents)
-                    if normalized_results:
-                        return normalized_results[:top_n]
-
-                    logger.error(f"Invalid {provider_name} rerank response format: {payload}")
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"{provider_name} rerank API error {response.status}: {error_text}")
                     return None
+
+                raw_text = await response.text()
+                import json as _json
+                payload = _json.loads(raw_text)
+                # LM Studio returns HTTP 200 with {"error": "..."} for unsupported endpoints
+                if isinstance(payload, dict) and "error" in payload and not any(
+                    k in payload for k in ("results", "data", "rankings")
+                ):
+                    logger.error(f"{provider_name} rerank endpoint not supported: {payload['error']}")
+                    return None
+                normalized_results = self._normalize_rerank_response(payload, documents)
+                if normalized_results:
+                    return normalized_results[:top_n]
+
+                logger.error(f"Invalid {provider_name} rerank response format: {payload}")
+                return None
         except asyncio.CancelledError as e:
             logger.error(f"{provider_name} rerank request cancelled: {e}")
             return None
@@ -3445,7 +3460,7 @@ class PersistentAIMemorySystem:
         # Cleared on demand; max 32 entries (LRU-ish, FIFO eviction)
         # ---------------------------------------------------------------------------
         self._search_cache: dict = {}
-        _CACHE_MAX = 32
+        # _CACHE_MAX and cache eviction logic live inside the search function that uses it.
 
         # ---------------------------------------------------------------------------
         # Multi-workspace freeze prevention: cap the total number of *pending*
@@ -3813,6 +3828,11 @@ class PersistentAIMemorySystem:
         if hasattr(self, 'embedding_service'):
             try:
                 await self.embedding_service.close()
+            except Exception:
+                pass
+        if hasattr(self, 'reranking_service'):
+            try:
+                await self.reranking_service.close()
             except Exception:
                 pass
 
@@ -4441,14 +4461,15 @@ class PersistentAIMemorySystem:
         if memory_ids_to_bump:
             ts_now = get_current_timestamp()
             async def _bump_access(mids, ts):
-                for mid in mids:
-                    try:
-                        await self.ai_memory_db.execute_update(
-                            "UPDATE curated_memories SET access_count = COALESCE(access_count,0)+1, last_accessed_at=? WHERE memory_id=?",
-                            (ts, mid)
-                        )
-                    except Exception:
-                        pass
+                # Single batch UPDATE instead of N separate queries.
+                placeholders = ",".join("?" * len(mids))
+                try:
+                    await self.ai_memory_db.execute_update(
+                        f"UPDATE curated_memories SET access_count = COALESCE(access_count,0)+1, last_accessed_at=? WHERE memory_id IN ({placeholders})",
+                        (ts, *mids)
+                    )
+                except Exception:
+                    pass
             asyncio.ensure_future(_bump_access(memory_ids_to_bump, ts_now))
 
         # Sprint 1 T2 — Compact format: convert full result objects to compressed one-liners
@@ -5706,8 +5727,9 @@ class PersistentAIMemorySystem:
 
             # Check cache unless forced refresh
             if not force_refresh and cache_file.exists():
-                with open(cache_file, 'r') as f:
-                    cached_data = json.load(f)
+                cached_data = await asyncio.to_thread(
+                    lambda: json.loads(cache_file.read_text(encoding="utf-8"))
+                )
 
                 if return_changes_only:
                     return {"status": "cached", "message": "Using cached weather data"}
@@ -5734,9 +5756,10 @@ class PersistentAIMemorySystem:
             weather_data["cached_at"] = datetime.now().isoformat()
             weather_data["location"] = {"latitude": lat, "longitude": lon, "timezone": tz}
 
-            # Save to cache
-            with open(cache_file, 'w') as f:
-                json.dump(weather_data, f, indent=2)
+            # Save to cache (non-blocking write)
+            await asyncio.to_thread(
+                lambda: cache_file.write_text(json.dumps(weather_data, indent=2), encoding="utf-8")
+            )
 
             return weather_data
 
