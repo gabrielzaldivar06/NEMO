@@ -3699,11 +3699,13 @@ class PersistentAIMemorySystem:
             content, memory_type, importance_level, tags, source_conversation_id
         )
 
-        # Embedding + semantic dedup run in background (non-blocking)
+        # Embedding + semantic dedup run in background (non-blocking).
+        # Use _schedule_bg_embed so the semaphore cap (_BG_EMBED_MAX) is respected
+        # — raw asyncio.create_task() would bypass the cap and flood LM Studio.
         contextual_text = self._build_contextual_embedding_text(
             content, memory_type, importance_level, tags or []
         )
-        asyncio.create_task(
+        self._schedule_bg_embed(
             self._background_embed_and_dedup(memory_id, content, contextual_text)
         )
 
@@ -3743,13 +3745,16 @@ class PersistentAIMemorySystem:
             best_sim = 0.0
             best_match = None
             if rows:
-                blobs = [r["embedding"] for r in rows]
-                matrix = np.vstack([np.frombuffer(b, dtype=np.float32) for b in blobs])
-                norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-                norms = np.where(norms == 0, 1.0, norms)
-                sims = (matrix / norms) @ (new_vec / new_norm)
-                best_idx = int(np.argmax(sims))
-                best_sim = float(sims[best_idx])
+                # CPU-bound numpy ops — run off the event loop to avoid freezing.
+                def _compute_best_match():
+                    blobs = [r["embedding"] for r in rows]
+                    matrix = np.vstack([np.frombuffer(b, dtype=np.float32) for b in blobs])
+                    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+                    norms = np.where(norms == 0, 1.0, norms)
+                    sims = (matrix / norms) @ (new_vec / new_norm)
+                    idx = int(np.argmax(sims))
+                    return float(sims[idx]), idx
+                best_sim, best_idx = await asyncio.to_thread(_compute_best_match)
                 best_match = rows[best_idx]
 
             if best_sim >= 0.92 and best_match:
