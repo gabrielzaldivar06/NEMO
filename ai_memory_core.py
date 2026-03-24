@@ -3634,11 +3634,33 @@ class PersistentAIMemorySystem:
 
         async def _get_last_session():
             try:
-                rows = await self.conversations_db.execute_query(
-                    "SELECT m.timestamp, m.content FROM messages m "
-                    "JOIN conversations c ON m.conversation_id = c.conversation_id "
-                    "ORDER BY m.timestamp DESC LIMIT 1"
-                )
+                # When a topic is provided, prefer a recent message that
+                # mentions the topic so we don't surface another project's
+                # last conversation as context.
+                if topic:
+                    topic_words = topic.split()[:3]  # use first 3 words max
+                    conditions = " OR ".join(["LOWER(m.content) LIKE ?" for _ in topic_words])
+                    topic_params = [f"%{w.lower()}%" for w in topic_words]
+                    rows = await self.conversations_db.execute_query(
+                        f"SELECT m.timestamp, m.content FROM messages m "
+                        f"JOIN conversations c ON m.conversation_id = c.conversation_id "
+                        f"WHERE ({conditions}) "
+                        f"ORDER BY m.timestamp DESC LIMIT 1",
+                        topic_params,
+                    )
+                    if not rows:
+                        # No topic-specific message found — fall back to most recent
+                        rows = await self.conversations_db.execute_query(
+                            "SELECT m.timestamp, m.content FROM messages m "
+                            "JOIN conversations c ON m.conversation_id = c.conversation_id "
+                            "ORDER BY m.timestamp DESC LIMIT 1"
+                        )
+                else:
+                    rows = await self.conversations_db.execute_query(
+                        "SELECT m.timestamp, m.content FROM messages m "
+                        "JOIN conversations c ON m.conversation_id = c.conversation_id "
+                        "ORDER BY m.timestamp DESC LIMIT 1"
+                    )
                 if rows:
                     row = dict(rows[0])
                     ts = (row.get("timestamp") or "")[:10]
@@ -5283,6 +5305,16 @@ class PersistentAIMemorySystem:
             # Search AI memories with text matching and filters
             sql = "SELECT * FROM curated_memories WHERE 1=1"
             params = []
+
+            # SQL-level tags filter (belt): when tags_include is specified,
+            # restrict at the DB level so unrelated-project rows are never fetched.
+            # SQLite tags column stores JSON arrays like '["DVE","water"]'; we
+            # match case-insensitively with LIKE on the lowercased column value.
+            if tags_include:
+                tag_conditions = ["LOWER(tags) LIKE ?" for _ in tags_include]
+                sql += f" AND ({' OR '.join(tag_conditions)})"
+                for t in tags_include:
+                    params.append(f"%{t.lower()}%")
             
             # Add content search
             content_conditions = []
