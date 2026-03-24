@@ -1850,49 +1850,83 @@ class DatabaseMaintenance:
             "schema_upgrades": []
         }
         
+        # Each step is wrapped individually so a failure in one never prevents the others.
+        # VACUUM/REINDEX runs first so fragmentation is always reclaimed regardless of
+        # whether the heavier cleanup/rotation steps succeed.
+
+        # 0. Optimize database performance (VACUUM + REINDEX + ANALYZE) — always runs first
+        logger.info("⚡ Optimizing database performance (VACUUM/REINDEX)...")
         try:
-            # 0. Check and rotate databases (as a safety net)
-            logger.info("🔄 Checking all databases for rotation needs...")
-            results["rotation_results"] = await self.check_and_rotate_all_databases()
-            
-            # 0.5 Archive rotation to sharded structure (month-based grouping)
-            logger.info("📦 Performing archive rotation to sharded structure...")
-            results["archive_rotation"] = await self.archive_rotate_to_sharded_structure()
-            
-            # 1. Apply any needed schema upgrades
-            logger.info("🔄 Checking and applying schema upgrades...")
-            schema_upgrades = await self._upgrade_schemas()
-            results["schema_upgrades"] = schema_upgrades
-            
-            # 2. Clean up old data based on retention policies
-            logger.info("📅 Applying retention policies...")
-            results["cleanup_results"] = await self._apply_retention_policies(force)
-            
-            # 3. Remove duplicate entries (shouldn't be many with our new system)
-            logger.info("🔍 Removing any remaining duplicates...")
-            results["cleanup_results"]["duplicates"] = await self._remove_duplicates()
-            
-            # 4. Optimize database performance
-            logger.info("⚡ Optimizing database performance...")
             results["optimization_results"] = await self._optimize_databases()
-            
-            # 5. Collect post-cleanup statistics
-            logger.info("📊 Collecting statistics...")
-            results["statistics"] = await self._collect_statistics()
-            
-            # 6. Build tag registries from all memories
-            logger.info("🏷️  Building tag registries...")
-            results["tag_registry"] = await self._build_tag_registries()
-            
-            # 7. Build memory_bank registries
-            logger.info("🏦 Building memory_bank registries...")
-            results["memory_bank_registry"] = await self._build_memory_bank_registries()
-            
-            logger.info("✅ Database maintenance completed successfully")
-            
         except Exception as e:
-            logger.error(f"❌ Database maintenance failed: {e}")
-            results["error"] = str(e)
+            logger.error(f"❌ Optimize step failed: {e}")
+            results["optimization_results"] = {"error": str(e)}
+
+        # 1. Check and rotate databases (as a safety net)
+        logger.info("🔄 Checking all databases for rotation needs...")
+        try:
+            results["rotation_results"] = await self.check_and_rotate_all_databases()
+        except Exception as e:
+            logger.error(f"❌ Rotation check failed: {e}")
+            results["rotation_results"] = {"error": str(e)}
+
+        # 1.5 Archive rotation to sharded structure (month-based grouping)
+        logger.info("📦 Performing archive rotation to sharded structure...")
+        try:
+            results["archive_rotation"] = await self.archive_rotate_to_sharded_structure()
+        except Exception as e:
+            logger.error(f"❌ Archive rotation failed: {e}")
+            results["archive_rotation"] = {"error": str(e)}
+
+        # 2. Apply any needed schema upgrades
+        logger.info("🔄 Checking and applying schema upgrades...")
+        try:
+            results["schema_upgrades"] = await self._upgrade_schemas()
+        except Exception as e:
+            logger.error(f"❌ Schema upgrade failed: {e}")
+            results["schema_upgrades"] = [f"error: {e}"]
+
+        # 3. Clean up old data based on retention policies
+        logger.info("📅 Applying retention policies...")
+        try:
+            results["cleanup_results"] = await self._apply_retention_policies(force)
+        except Exception as e:
+            logger.error(f"❌ Retention policy cleanup failed: {e}")
+            results["cleanup_results"] = {"error": str(e)}
+
+        # 4. Remove duplicate entries
+        logger.info("🔍 Removing any remaining duplicates...")
+        try:
+            results["cleanup_results"]["duplicates"] = await self._remove_duplicates()
+        except Exception as e:
+            logger.error(f"❌ Duplicate removal failed: {e}")
+            results.setdefault("cleanup_results", {})["duplicates"] = {"error": str(e)}
+
+        # 5. Collect post-cleanup statistics
+        logger.info("📊 Collecting statistics...")
+        try:
+            results["statistics"] = await self._collect_statistics()
+        except Exception as e:
+            logger.error(f"❌ Statistics collection failed: {e}")
+            results["statistics"] = {"error": str(e)}
+
+        # 6. Build tag registries from all memories
+        logger.info("🏷️  Building tag registries...")
+        try:
+            results["tag_registry"] = await self._build_tag_registries()
+        except Exception as e:
+            logger.error(f"❌ Tag registry build failed: {e}")
+            results["tag_registry"] = {"error": str(e)}
+
+        # 7. Build memory_bank registries
+        logger.info("🏦 Building memory_bank registries...")
+        try:
+            results["memory_bank_registry"] = await self._build_memory_bank_registries()
+        except Exception as e:
+            logger.error(f"❌ Memory bank registry build failed: {e}")
+            results["memory_bank_registry"] = {"error": str(e)}
+
+        logger.info("✅ Database maintenance completed")
         
         return results
     
