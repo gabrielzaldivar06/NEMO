@@ -158,12 +158,14 @@ class AIMemoryMCPServer:
                     "contradict past architectural decisions, and assert things that are wrong for this project. "
                     "Returns working memory in a single call: high-priority memories, pending reminders, last session summary. "
                     "Do NOT call search_memories or get_reminders until this has been called. "
-                    "Pass topic= to narrow memory retrieval to a specific project or subject."
+                    "Pass topic= to narrow memory retrieval to a specific project or subject. "
+                    "Pass tags_include= to restrict memories to specific project tags and avoid cross-workspace contamination."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "topic": {"type": "string", "description": "Optional topic to focus memory retrieval (e.g. 'NEMO dev sprint')"}
+                        "topic": {"type": "string", "description": "Optional topic to focus memory retrieval (e.g. 'NEMO dev sprint')"},
+                        "tags_include": {"type": "array", "items": {"type": "string"}, "description": "Only return memories that have at least one of these tags — useful to restrict results to the current project and avoid cross-workspace contamination."}
                     },
                     "additionalProperties": False
                 }
@@ -187,7 +189,8 @@ class AIMemoryMCPServer:
                         "min_importance": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Minimum importance level to include (1-10)"},
                         "max_importance": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Maximum importance level to include (1-10)"},
                         "memory_type": {"type": "string", "description": "Filter by memory type (e.g., 'safety', 'preference', 'skill', 'general')"},
-                        "compact": {"type": "boolean", "description": "Return compressed one-line strings instead of full JSON objects — saves ~90% tokens", "default": True}
+                        "compact": {"type": "boolean", "description": "Return compressed one-line strings instead of full JSON objects — saves ~90% tokens", "default": True},
+                        "tags_include": {"type": "array", "items": {"type": "string"}, "description": "Only return memories that have at least one of these tags — useful to restrict results to the current project."}
                     },
                     "required": ["query"]
                 }
@@ -761,7 +764,10 @@ class AIMemoryMCPServer:
 
             # Route to appropriate handler
             if tool_name == "prime_context":
-                result = await self.memory_system.prime_context(topic=arguments.get("topic"))
+                result = await self.memory_system.prime_context(
+                    topic=arguments.get("topic"),
+                    tags_include=arguments.get("tags_include"),
+                )
                 self._session_primed = True
                 self._primed_bundle = result
             elif tool_name == "search_memories":

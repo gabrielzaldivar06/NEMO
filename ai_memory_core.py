@@ -3590,12 +3590,13 @@ class PersistentAIMemorySystem:
                 "message": str(e)
             }
 
-    async def prime_context(self, topic: str = None) -> Dict:
+    async def prime_context(self, topic: str = None, tags_include: List[str] = None) -> Dict:
         """Sprint 1 T3 / Sprint 2 T3 — Compound context bundle for session start.
 
         Executes in parallel:
           1. Top-5 high-importance memories (compact, min_importance=7)
              Uses optional `topic` to narrow the query (e.g. "NEMO dev sprint")
+             Uses optional `tags_include` to restrict results to specific project tags.
           2. Active reminders (up to 3)
           3. Last session summary (most recent conversation timestamp + snippet)
 
@@ -3613,6 +3614,7 @@ class PersistentAIMemorySystem:
                     limit=5,
                     min_importance=7,
                     compact=True,
+                    tags_include=tags_include,
                 )
                 return result.get("results", [])
             except Exception:
@@ -4231,7 +4233,8 @@ class PersistentAIMemorySystem:
     async def search_memories(self, query: str, limit: int = 10, 
                             min_importance: int = None, max_importance: int = None,
                             memory_type: str = None, database_filter: str = "all",
-                            compact: bool = False) -> Dict:
+                            compact: bool = False,
+                            tags_include: List[str] = None) -> Dict:
         """Advanced semantic search across all databases with filtering"""
 
         # ------------------------------------------------------------------
@@ -4258,7 +4261,8 @@ class PersistentAIMemorySystem:
         _CACHE_SIM_THRESHOLD = 0.97
         _CACHE_TTL_SECONDS = 300        # 5-minute TTL per entry
         _CACHE_MAX = 32
-        cache_key_params = (database_filter, limit, min_importance, max_importance, memory_type)
+        _tags_key = tuple(sorted(tags_include)) if tags_include else None
+        cache_key_params = (database_filter, limit, min_importance, max_importance, memory_type, _tags_key)
         cache_hit_payload = None
         q_vec = np.array(query_embedding, dtype=np.float32)
         q_norm = float(np.linalg.norm(q_vec))
@@ -4352,6 +4356,14 @@ class PersistentAIMemorySystem:
         if database_filter in ["all", "projects"]:
             project_results = await self._search_project_insights(query_embedding, candidate_limit)
             all_results.extend(project_results)
+
+        # tags_include post-filter: keep only results whose tags list has any overlap
+        if tags_include:
+            _tag_set = {t.lower() for t in tags_include}
+            all_results = [
+                r for r in all_results
+                if any(str(t).lower() in _tag_set for t in r.get("data", {}).get("tags", []))
+            ]
 
         for result in all_results:
             result["similarity_score"] = self._apply_lightweight_hybrid_rescoring(query, result)
