@@ -550,6 +550,125 @@ class AIMemoryMCPServer:
                     }
                 }
             ),
+            # ----------------------------------------------------------------
+            # Sprint 14 — Cognitive Features
+            # ----------------------------------------------------------------
+            Tool(
+                name="salience_score",
+                annotations=_RONLY,
+                description=(
+                    "Compute 4-channel cognitive salience for content before storing. "
+                    "Returns importance_suggested (1-10) and per-channel breakdown: "
+                    "novelty (how different from existing memories), arousal (urgency), "
+                    "reward (achievement signal), attention (explicit importance markers). "
+                    "Use before create_memory or cognitive_ingest to let the system suggest importance."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "Content to score"},
+                        "context": {"type": "string", "description": "Optional surrounding context"}
+                    },
+                    "required": ["content"]
+                }
+            ),
+            Tool(
+                name="cognitive_ingest",
+                annotations=_WRITE,
+                description=(
+                    "Adaptive memory storage with Prediction-Error Gating — smarter than create_memory. "
+                    "Automatically decides: CREATE (content is novel), UPDATE (refines existing), "
+                    "or SUPERSEDE (replaces existing) based on cosine similarity to existing memories. "
+                    "Also auto-computes importance via salience_score. "
+                    "Use this instead of create_memory when you want intelligent deduplication."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "content":      {"type": "string",  "description": "Content to store"},
+                        "memory_type":  {"type": "string",  "description": "Memory type (fact, procedure, insight, etc.)"},
+                        "tags":         {"type": "array",   "items": {"type": "string"}, "description": "Tags"},
+                        "context":      {"type": "string",  "description": "Optional context for salience scoring"},
+                        "force_create": {"type": "boolean", "description": "Skip similarity check and always create", "default": False}
+                    },
+                    "required": ["content"]
+                }
+            ),
+            Tool(
+                name="memory_chronicle",
+                annotations=_RONLY,
+                description=(
+                    "Browse memories chronologically, grouped by day. "
+                    "Useful for auditing what was stored in a period, reviewing sprint history, "
+                    "or generating summaries. Defaults to the last 30 days."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "date_from":    {"type": "string",  "description": "Start date YYYY-MM-DD (default: 30 days ago)"},
+                        "date_to":      {"type": "string",  "description": "End date YYYY-MM-DD (default: today)"},
+                        "limit":        {"type": "integer", "description": "Max memories to return", "default": 50},
+                        "tags_include": {"type": "array",   "items": {"type": "string"}, "description": "Filter by tags"}
+                    }
+                }
+            ),
+            Tool(
+                name="detect_redundancy",
+                annotations=_WRITE,
+                description=(
+                    "Detect and optionally merge redundant memories by cosine similarity. "
+                    "Returns clusters of similar memories with similarity scores. "
+                    "Set auto_merge=true to automatically keep the highest-importance memory per cluster "
+                    "and soft-delete the rest. Useful for cleaning up after bulk ingestion sessions."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "threshold":    {"type": "number",  "description": "Cosine similarity threshold (default: 0.88)", "default": 0.88},
+                        "limit":        {"type": "integer", "description": "Max clusters to return", "default": 20},
+                        "auto_merge":   {"type": "boolean", "description": "Automatically merge redundant memories", "default": False},
+                        "tags_include": {"type": "array",   "items": {"type": "string"}, "description": "Restrict to memories with these tags"}
+                    }
+                }
+            ),
+            Tool(
+                name="anticipate",
+                annotations=_RONLY,
+                description=(
+                    "Proactive memory retrieval — predicts what you will need next based on current context. "
+                    "Returns ranked memories with a 'why_relevant' annotation explaining the prediction. "
+                    "Call this when starting a complex task to pre-load relevant memories before they are asked for."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "context":      {"type": "string",  "description": "Current work context or task description"},
+                        "limit":        {"type": "integer", "description": "Max predictions to return", "default": 5},
+                        "tags_include": {"type": "array",   "items": {"type": "string"}, "description": "Restrict to memories with these tags"}
+                    },
+                    "required": ["context"]
+                }
+            ),
+            Tool(
+                name="intent_anchor",
+                annotations=_WRITE,
+                description=(
+                    "Store a prospective memory: 'remind me when X happens'. "
+                    "Unlike time-based reminders, intent anchors fire when the trigger_condition is "
+                    "semantically matched in future queries or prime_context calls. "
+                    "Example: trigger_condition='about to push to production', action='run benchmark first'."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "trigger_condition": {"type": "string",  "description": "Semantic condition that activates this anchor"},
+                        "action":            {"type": "string",  "description": "What to do / remember when triggered"},
+                        "importance_level":  {"type": "integer", "description": "Importance 1-10 (default: 7)", "default": 7},
+                        "tags":              {"type": "array",   "items": {"type": "string"}, "description": "Optional tags"}
+                    },
+                    "required": ["trigger_condition", "action"]
+                }
+            ),
         ]
         except Exception as e:
             logger.error(f"Error creating common tools: {e}")
@@ -825,6 +944,19 @@ class AIMemoryMCPServer:
                 result = await self.memory_system.store_roleplay_memory(**arguments)
             elif tool_name == "search_roleplay_history":
                 result = await self.memory_system.search_roleplay_history(**arguments)
+            # Sprint 14 — Cognitive Features
+            elif tool_name == "salience_score":
+                result = await self.memory_system.salience_score(**arguments)
+            elif tool_name == "cognitive_ingest":
+                result = await self.memory_system.cognitive_ingest(**arguments)
+            elif tool_name == "memory_chronicle":
+                result = await self.memory_system.memory_chronicle(**arguments)
+            elif tool_name == "detect_redundancy":
+                result = await self.memory_system.detect_redundancy(**arguments)
+            elif tool_name == "anticipate":
+                result = await self.memory_system.anticipate(**arguments)
+            elif tool_name == "intent_anchor":
+                result = await self.memory_system.intent_anchor(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
             
