@@ -9,7 +9,7 @@
   <a href="https://creativecommons.org/licenses/by-nc/4.0/"><img src="https://img.shields.io/badge/Licencia-CC%20BY--NC%204.0-lightgrey.svg" alt="Licencia: CC BY-NC 4.0"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <img src="https://img.shields.io/badge/release-v1.2.0--Sprint12-green.svg" alt="Release">
-  <img src="https://img.shields.io/badge/herramientas_MCP-31-blueviolet.svg" alt="MCP Tools">
+  <img src="https://img.shields.io/badge/herramientas_MCP-37-blueviolet.svg" alt="MCP Tools">
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/precisión_Top--1-92%25-brightgreen.svg" alt="Top-1 Accuracy">
@@ -23,6 +23,108 @@
   <b>Memoria semántica de largo plazo para agentes de IA — 100% local, sin suscripciones, sin nube.</b><br>
   Compatible con VS Code Copilot · LM Studio · Ollama · OpenWebUI · SillyTavern · Claude Desktop · cualquier cliente MCP
 </p>
+
+---
+
+## Instalación en 3 pasos
+
+> Sin configurar nada, sin cuentas, sin nube. Solo Python y VS Code.
+
+### Paso 1 — Instalar NEMO
+
+**Windows** (copia y pega en CMD o PowerShell):
+```cmd
+curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.bat -o install.bat && install.bat
+```
+
+**Linux / macOS** (terminal):
+```bash
+curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.sh | bash
+```
+
+**Manual** (cualquier sistema):
+```bash
+git clone https://github.com/gabrielzaldivar06/persistent-ai-memory.git
+cd persistent-ai-memory
+pip install -r requirements.txt
+```
+
+---
+
+### Paso 2 — Conectar a tu IA
+
+Elige tu cliente:
+
+<details>
+<summary><b>VS Code Copilot</b> (recomendado)</summary>
+
+Abre `%APPDATA%\Code\User\mcp.json` (Windows) o `~/.config/Code/User/mcp.json` (Linux/macOS) y añade:
+
+```json
+{
+  "servers": {
+    "nemo": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["C:/ruta/a/persistent-ai-memory/ai_memory_mcp_server.py"]
+    }
+  }
+}
+```
+
+Copia también `.github/copilot-instructions.md` a tu proyecto para que el agente use NEMO automáticamente.
+</details>
+
+<details>
+<summary><b>Claude Desktop</b></summary>
+
+Abre `%APPDATA%\Claude\claude_desktop_config.json` (Windows) o `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) y añade:
+
+```json
+{
+  "mcpServers": {
+    "nemo": {
+      "command": "python",
+      "args": ["C:/ruta/a/persistent-ai-memory/ai_memory_mcp_server.py"]
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Cursor / Windsurf</b></summary>
+
+Añade en la configuración MCP del editor:
+
+```json
+{
+  "nemo": {
+    "command": "python",
+    "args": ["/ruta/a/persistent-ai-memory/ai_memory_mcp_server.py"]
+  }
+}
+```
+</details>
+
+---
+
+### Paso 3 — Verificar que funciona
+
+Reinicia tu editor. En Agent mode, pídele a la IA:
+
+> *"Guarda en memoria que mi nombre es [tu nombre] y que trabajo con Python"*
+
+Luego abre una sesión nueva y pregunta:
+
+> *"¿Cómo me llamo?"*
+
+Si lo sabe — NEMO está funcionando. ✓
+
+---
+
+> **Requisito opcional pero recomendado:** [LM Studio](https://lmstudio.ai/) con el modelo `text-embedding-qwen3-embedding-4b` para búsqueda semántica completa.  
+> Sin LM Studio, NEMO funciona igual con búsqueda de texto básica (Ollama o fallback interno).
 
 ---
 
@@ -380,7 +482,6 @@ Socio principal de implementación en todos los sprints. Motor central de (`ai_m
 
 > NEMO es uno de los primeros proyectos de código abierto construido explícitamente como una **colaboración de pair-programming humano ↔ IA**,  
 > donde las propias limitaciones de memoria de la IA eran el problema que se resolvía.  
-> Consideramos ese hecho digno de documentar.
 
 ### Comunidad Open Source
 
