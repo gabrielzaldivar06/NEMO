@@ -2745,17 +2745,17 @@ class EmbeddingService:
             "custom": None,
         }
         
-        # Log configuration
-        print("Intelligent Embedding Service Configuration")
+        # Log configuration (stderr only — stdout is reserved for MCP JSON-RPC)
+        import sys as _sys
         primary_provider = self.primary_config.get('provider', 'llama_cpp')
         primary_model = self.primary_config.get('model', 'qwen3-embedding-4b-q8_0.gguf')
         fallback_provider = self.fallback_config.get('provider', 'ollama')
         fallback_model = self.fallback_config.get('model', 'nomic-embed-text')
-        
-        print(f"Primary: {primary_provider} ({primary_model})")
-        print(f"Fallback: {fallback_provider} ({fallback_model})")
-        print(f"Preserving existing 768D embeddings, using best available for new ones")
-        print("To customize, edit embedding_config.json in the project directory")
+        print("Intelligent Embedding Service Configuration", file=_sys.stderr)
+        print(f"Primary: {primary_provider} ({primary_model})", file=_sys.stderr)
+        print(f"Fallback: {fallback_provider} ({fallback_model})", file=_sys.stderr)
+        print("Preserving existing 768D embeddings, using best available for new ones", file=_sys.stderr)
+        print("To customize, edit embedding_config.json in the project directory", file=_sys.stderr)
 
     def _build_embeddings_endpoint(self, config: Dict[str, Any]) -> str:
         """Build the effective embeddings endpoint for health checks and diagnostics."""
@@ -2810,9 +2810,10 @@ class EmbeddingService:
     @classmethod
     def create_with_user_config(cls) -> 'EmbeddingService':
         """Create embedding service with user configuration prompt"""
+        import sys as _sys
         try:
-            print("[Embedding Service Configuration]")
-            print("Loading configuration from embedding_config.json...")
+            print("[Embedding Service Configuration]", file=_sys.stderr)
+            print("Loading configuration from embedding_config.json...", file=_sys.stderr)
             return cls()  # Use config file
             
         except Exception as e:
@@ -3163,12 +3164,14 @@ class RerankingService:
         self.last_reranking_applied = False
         self._generative_reranker_detected = False
 
-        print("Reranking Service Configuration")
+        import sys as _sys
+        print("Reranking Service Configuration", file=_sys.stderr)
         print(
             f"Primary: {self.primary_config.get('provider', 'disabled')} "
-            f"({self.primary_config.get('model', 'none')})"
+            f"({self.primary_config.get('model', 'none')})",
+            file=_sys.stderr
         )
-        print(f"Enabled: {self.primary_config.get('enabled', False)}")
+        print(f"Enabled: {self.primary_config.get('enabled', False)}", file=_sys.stderr)
 
     def _load_full_config(self) -> dict:
         """Load complete reranking configuration from the shared JSON file."""
