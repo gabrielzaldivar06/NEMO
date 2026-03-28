@@ -669,6 +669,27 @@ class AIMemoryMCPServer:
                     "required": ["trigger_condition", "action"]
                 }
             ),
+            Tool(
+                name="synaptic_tagging",
+                annotations=_WRITE,
+                description=(
+                    "Retroactively elevate importance of memories semantically related to a high-salience memory. "
+                    "Models neuroscience synaptic tagging: consolidating a strong memory also strengthens "
+                    "related contextual memories. Also fires automatically when create_memory is called with "
+                    "importance_level >= 9. Call manually to propagate importance from any memory_id."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "memory_id":      {"type": "string",  "description": "Source memory ID to propagate from"},
+                        "boost":          {"type": "integer", "description": "Importance points to add (default: 1)", "default": 1},
+                        "max_importance": {"type": "integer", "description": "Cap importance at this value (default: 9)", "default": 9},
+                        "limit":          {"type": "integer", "description": "Max related memories to boost (default: 5)", "default": 5},
+                        "tags_include":   {"type": "array",   "items": {"type": "string"}, "description": "Only boost memories with these tags"}
+                    },
+                    "required": ["memory_id"]
+                }
+            ),
         ]
         except Exception as e:
             logger.error(f"Error creating common tools: {e}")
@@ -957,6 +978,8 @@ class AIMemoryMCPServer:
                 result = await self.memory_system.anticipate(**arguments)
             elif tool_name == "intent_anchor":
                 result = await self.memory_system.intent_anchor(**arguments)
+            elif tool_name == "synaptic_tagging":
+                result = await self.memory_system.synaptic_tagging(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
             

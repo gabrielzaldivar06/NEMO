@@ -3925,6 +3925,17 @@ class PersistentAIMemorySystem:
                     f"vs {best_match['memory_id']} — consider merging"
                 )
 
+            # Synaptic tagging: if this memory is high-importance (≥9),
+            # propagate importance boost to semantically related memories.
+            imp_rows = await self.ai_memory_db.execute_query(
+                "SELECT importance_level FROM curated_memories WHERE memory_id = ?",
+                (memory_id,)
+            )
+            if imp_rows and int(imp_rows[0]["importance_level"] or 0) >= 9:
+                asyncio.create_task(
+                    self.synaptic_tagging(memory_id, boost=1, max_importance=9)
+                )
+
         except Exception as e:
             logger.error(f"Background embed/dedup failed for {memory_id}: {e}")
 
@@ -6529,6 +6540,122 @@ class PersistentAIMemorySystem:
             }
         except Exception as e:
             logger.error(f"intent_anchor error: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def synaptic_tagging(self, memory_id: str, boost: int = 1,
+                               max_importance: int = 9, limit: int = 5,
+                               tags_include: List[str] = None) -> Dict:
+        """Retroactively elevate importance of memories related to a high-salience memory.
+
+        When a memory is stored with high importance (≥9), this method finds the
+        top semantically related memories and boosts their importance_level by
+        `boost` points (default +1), capped at `max_importance` (default 9).
+
+        This models the neuroscience concept of synaptic tagging: consolidating
+        a strong memory also strengthens related contextual memories.
+
+        Can be called manually for any memory_id, or fires automatically in
+        background when create_memory is called with importance_level >= 9.
+
+        Returns: {status, memory_id, boosted: [{id, old_importance, new_importance, content_preview}]}
+        """
+        try:
+            # Load the source memory and its embedding
+            rows = await self.ai_memory_db.execute_query(
+                "SELECT memory_id, content, embedding, importance_level "
+                "FROM curated_memories WHERE memory_id = ?",
+                (memory_id,)
+            )
+            if not rows:
+                return {"status": "error", "message": f"Memory {memory_id} not found"}
+
+            source = dict(rows[0])
+            if not source.get("embedding"):
+                return {"status": "error", "message": "Source memory has no embedding yet — retry after background embed completes"}
+
+            src_vec = np.frombuffer(source["embedding"], dtype=np.float32).copy()
+            src_norm = float(np.linalg.norm(src_vec))
+            if src_norm == 0:
+                return {"status": "error", "message": "Source embedding is zero vector"}
+            src_vec /= src_norm
+
+            # Load candidate memories with embeddings (exclude source)
+            query = (
+                "SELECT memory_id, content, embedding, importance_level, tags "
+                "FROM curated_memories "
+                "WHERE embedding IS NOT NULL AND memory_id != ? AND "
+                "COALESCE(importance_level, 1) < ?"
+            )
+            params = [memory_id, max_importance]
+            candidates = await self.ai_memory_db.execute_query(query, tuple(params))
+
+            if not candidates:
+                return {"status": "success", "memory_id": memory_id, "boosted": [], "message": "No candidates found"}
+
+            # Apply tags_include filter
+            if tags_include:
+                filtered = []
+                for c in candidates:
+                    try:
+                        ctags = [t.lower() for t in json.loads(c["tags"] or "[]")]
+                    except Exception:
+                        ctags = []
+                    if any(t.lower() in ctags for t in tags_include):
+                        filtered.append(c)
+                candidates = filtered
+
+            if not candidates:
+                return {"status": "success", "memory_id": memory_id, "boosted": [], "message": "No candidates after tag filter"}
+
+            # Compute cosine similarities
+            def _compute_sims():
+                blobs = [c["embedding"] for c in candidates]
+                matrix = np.vstack([np.frombuffer(b, dtype=np.float32) for b in blobs])
+                norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+                norms = np.where(norms == 0, 1.0, norms)
+                return (matrix / norms) @ src_vec  # (N,)
+
+            sims = await asyncio.to_thread(_compute_sims)
+
+            # Pick top-K above threshold 0.65
+            THRESHOLD = 0.65
+            indexed = sorted(enumerate(sims), key=lambda x: x[1], reverse=True)
+            top = [(candidates[i], float(s)) for i, s in indexed if s >= THRESHOLD][:limit]
+
+            if not top:
+                return {"status": "success", "memory_id": memory_id, "boosted": [],
+                        "message": f"No related memories above threshold {THRESHOLD}"}
+
+            # Boost importance
+            boosted = []
+            for cand, sim in top:
+                old_imp = int(cand["importance_level"] or 5)
+                new_imp = min(old_imp + boost, max_importance)
+                if new_imp > old_imp:
+                    await self.ai_memory_db.execute_update(
+                        "UPDATE curated_memories SET importance_level = ? WHERE memory_id = ?",
+                        (new_imp, cand["memory_id"])
+                    )
+                    boosted.append({
+                        "id":               cand["memory_id"][:8],
+                        "old_importance":   old_imp,
+                        "new_importance":   new_imp,
+                        "similarity":       round(sim, 4),
+                        "content_preview":  (cand["content"] or "")[:80],
+                    })
+
+            logger.info(
+                f"synaptic_tagging: source={memory_id[:8]} boosted {len(boosted)} related memories"
+            )
+            return {
+                "status":    "success",
+                "memory_id": memory_id,
+                "source_importance": int(source.get("importance_level") or 0),
+                "boosted":   boosted,
+                "candidates_evaluated": len(top),
+            }
+        except Exception as e:
+            logger.error(f"synaptic_tagging error: {e}")
             return {"status": "error", "message": str(e)}
 
 
