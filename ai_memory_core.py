@@ -3687,10 +3687,58 @@ class PersistentAIMemorySystem:
             except Exception:
                 return None
 
-        memories, reminders, last_session = await _asyncio.gather(
+        async def _get_session_stats():
+            try:
+                from datetime import timedelta
+                now = datetime.now(get_local_timezone())
+                week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+                rows = await self.ai_memory_db.execute_query(
+                    "SELECT COUNT(*) as total, "
+                    "SUM(CASE WHEN DATE(timestamp_created) >= ? THEN 1 ELSE 0 END) as recent_7d "
+                    "FROM curated_memories WHERE importance_level > 0",
+                    (week_ago,)
+                )
+                if rows:
+                    r = dict(rows[0])
+                    return {"total_memories": r.get("total", 0), "added_last_7d": r.get("recent_7d", 0)}
+                return {}
+            except Exception:
+                return {}
+
+        async def _get_intent_anchors():
+            """Surface intent_anchor memories relevant to this topic."""
+            try:
+                if not topic:
+                    return []
+                result = await self.search_memories(
+                    query=topic,
+                    limit=3,
+                    memory_type="intent_anchor",
+                    compact=False,
+                    tags_include=tags_include,
+                )
+                anchors = []
+                for r in result.get("results", []):
+                    data = r.get("data", {})
+                    try:
+                        parsed = json.loads(data.get("content", "{}"))
+                        anchors.append({
+                            "trigger": parsed.get("trigger", ""),
+                            "action":  parsed.get("action", ""),
+                            "id":      data.get("memory_id", "")[:8],
+                        })
+                    except Exception:
+                        pass
+                return anchors
+            except Exception:
+                return []
+
+        memories, reminders, last_session, session_stats, intent_anchors = await _asyncio.gather(
             _get_top_memories(),
             _get_reminders(),
             _get_last_session(),
+            _get_session_stats(),
+            _get_intent_anchors(),
         )
 
         return {
@@ -3699,6 +3747,8 @@ class PersistentAIMemorySystem:
             "memories": memories,
             "reminders": reminders,
             "last_session": last_session,
+            "session_stats": session_stats,
+            "intent_anchors": intent_anchors,
             "hint": "Context loaded. You may now answer or call search_memories(compact=true) for topic-specific retrieval.",
         }
 
@@ -6067,6 +6117,418 @@ class PersistentAIMemorySystem:
 
         except Exception as e:
             logger.error(f"Error getting weather: {e}")
+            return {"status": "error", "message": str(e)}
+
+    # =========================================================================
+    # SPRINT 14 — COGNITIVE FEATURES
+    # Renamed from VESTIGE concepts to avoid license conflicts.
+    # =========================================================================
+
+    async def salience_score(self, content: str, context: str = None) -> Dict:
+        """Compute 4-channel cognitive salience for incoming content.
+
+        Channels (each 0.0–1.0, combined to importance 1-10):
+          novelty   — how different from nearest existing memory (1 - top cosine)
+          arousal   — urgency/emotional intensity (keyword heuristic)
+          reward    — achievement / positive signal (keyword heuristic)
+          attention — explicit importance markers in the text
+
+        Returns composite importance_suggested (1-10) plus per-channel breakdown.
+        """
+        try:
+            AROUSAL_TERMS  = {"urgent","critical","error","fail","bug","broken","crash","blocker","deadline","asap","emergency"}
+            REWARD_TERMS   = {"success","done","fixed","solved","deployed","merged","shipped","achieved","completed","win"}
+            ATTENTION_TERMS= {"important","remember","never forget","always","required","mandatory","key","essential","note"}
+
+            lower = content.lower()
+            words = set(lower.split())
+
+            arousal   = min(1.0, sum(1 for t in AROUSAL_TERMS  if t in lower) * 0.25)
+            reward    = min(1.0, sum(1 for t in REWARD_TERMS   if t in lower) * 0.25)
+            attention = min(1.0, sum(1 for t in ATTENTION_TERMS if t in lower) * 0.30)
+
+            # novelty — compare against existing memories
+            novelty = 0.7  # default if no embedding available
+            try:
+                emb = await self.embedding_service.generate_query_embedding(content)
+                if emb:
+                    top = await self._search_ai_memories(emb, limit=1)
+                    if top:
+                        raw_sim = top[0].get("_raw_similarity", top[0].get("similarity_score", 0.3))
+                        novelty = max(0.0, 1.0 - float(raw_sim))
+            except Exception:
+                pass
+
+            composite = (novelty * 0.35 + arousal * 0.25 + reward * 0.15 + attention * 0.25)
+            importance_suggested = max(1, min(10, round(composite * 9) + 1))
+
+            return {
+                "status": "success",
+                "importance_suggested": importance_suggested,
+                "channels": {
+                    "novelty":   round(novelty,   3),
+                    "arousal":   round(arousal,   3),
+                    "reward":    round(reward,    3),
+                    "attention": round(attention, 3),
+                },
+                "composite": round(composite, 3),
+            }
+        except Exception as e:
+            logger.error(f"salience_score error: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def cognitive_ingest(self, content: str, memory_type: str = None,
+                               tags: List[str] = None, context: str = None,
+                               force_create: bool = False) -> Dict:
+        """Adaptive memory ingestion with Prediction-Error Gating.
+
+        Replaces naive create_memory with a 3-path decision:
+          CREATE    — content is novel  (nearest cosine < 0.75)
+          UPDATE    — content refines   (cosine 0.75–0.949)
+          SUPERSEDE — content replaces  (cosine >= 0.95)
+
+        Setting force_create=True skips the comparison and always creates.
+
+        Returns: action, memory_id, similarity (float), nearest_memory_id
+        """
+        try:
+            action = "CREATE"
+            nearest_id = None
+            similarity = 0.0
+
+            if not force_create:
+                try:
+                    emb = await self.embedding_service.generate_query_embedding(content)
+                    if emb:
+                        top = await self._search_ai_memories(emb, limit=1)
+                        if top:
+                            similarity = float(top[0].get("_raw_similarity",
+                                                          top[0].get("similarity_score", 0.0)))
+                            nearest_id = top[0].get("data", {}).get("memory_id")
+                            if similarity >= 0.95:
+                                action = "SUPERSEDE"
+                            elif similarity >= 0.75:
+                                action = "UPDATE"
+                except Exception:
+                    pass  # fallback to CREATE
+
+            # Compute salience for auto-importance
+            sal = await self.salience_score(content, context)
+            auto_importance = sal.get("importance_suggested", 6)
+
+            if action == "CREATE":
+                result = await self.create_memory(
+                    content=content,
+                    memory_type=memory_type or "fact",
+                    importance_level=auto_importance,
+                    tags=tags or [],
+                )
+                return {
+                    "status": "success",
+                    "action": "CREATE",
+                    "memory_id": result.get("memory_id"),
+                    "similarity": similarity,
+                    "importance_assigned": auto_importance,
+                }
+
+            elif action in ("UPDATE", "SUPERSEDE") and nearest_id:
+                # Merge tags
+                existing_rows = await self.ai_memory_db.execute_query(
+                    "SELECT tags, importance_level FROM curated_memories WHERE memory_id = ?",
+                    (nearest_id,)
+                )
+                existing_tags = []
+                existing_importance = auto_importance
+                if existing_rows:
+                    row = dict(existing_rows[0])
+                    try:
+                        existing_tags = json.loads(row.get("tags") or "[]")
+                    except Exception:
+                        pass
+                    existing_importance = row.get("importance_level", auto_importance)
+
+                merged_tags = list(set(existing_tags + (tags or [])))
+                new_importance = max(existing_importance, auto_importance)
+
+                await self.ai_memory_db.execute_update(
+                    "UPDATE curated_memories SET content=?, importance_level=?, tags=?, "
+                    "last_accessed_at=? WHERE memory_id=?",
+                    (content, new_importance, json.dumps(merged_tags),
+                     get_current_timestamp(), nearest_id)
+                )
+                return {
+                    "status": "success",
+                    "action": action,
+                    "memory_id": nearest_id,
+                    "similarity": similarity,
+                    "importance_assigned": new_importance,
+                }
+
+            # Fallback
+            result = await self.create_memory(content=content,
+                                              memory_type=memory_type or "fact",
+                                              importance_level=auto_importance,
+                                              tags=tags or [])
+            return {"status": "success", "action": "CREATE",
+                    "memory_id": result.get("memory_id"), "similarity": 0.0,
+                    "importance_assigned": auto_importance}
+
+        except Exception as e:
+            logger.error(f"cognitive_ingest error: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def memory_chronicle(self, date_from: str = None, date_to: str = None,
+                               limit: int = 50, tags_include: List[str] = None) -> Dict:
+        """Browse memories chronologically grouped by day.
+
+        date_from / date_to: ISO date strings (YYYY-MM-DD). Defaults to last 30 days.
+        Returns a dict keyed by date with lists of compact memory entries.
+        """
+        try:
+            from datetime import timedelta
+
+            now = datetime.now(get_local_timezone())
+            if not date_to:
+                date_to = now.strftime("%Y-%m-%d")
+            if not date_from:
+                date_from = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+
+            rows = await self.ai_memory_db.execute_query(
+                "SELECT memory_id, content, memory_type, importance_level, tags, "
+                "timestamp_created FROM curated_memories "
+                "WHERE SUBSTR(timestamp_created, 1, 10) >= ? AND SUBSTR(timestamp_created, 1, 10) <= ? "
+                "ORDER BY timestamp_created DESC LIMIT ?",
+                (date_from, date_to, limit)
+            )
+
+            grouped: Dict[str, list] = {}
+            for row in (rows or []):
+                row = dict(row)
+                # tags filter
+                if tags_include:
+                    try:
+                        row_tags = [t.lower() for t in json.loads(row.get("tags") or "[]")]
+                    except Exception:
+                        row_tags = []
+                    if not any(t.lower() in row_tags for t in tags_include):
+                        continue
+
+                day_key = (row.get("timestamp_created") or "unknown")[:10]
+                grouped.setdefault(day_key, []).append({
+                    "id":         row.get("memory_id", "")[:8],
+                    "type":       row.get("memory_type", ""),
+                    "importance": row.get("importance_level", 5),
+                    "content":    (row.get("content") or "")[:120],
+                    "tags":       json.loads(row.get("tags") or "[]"),
+                })
+
+            return {
+                "status": "success",
+                "date_from": date_from,
+                "date_to": date_to,
+                "total": sum(len(v) for v in grouped.values()),
+                "days": grouped,
+            }
+        except Exception as e:
+            logger.error(f"memory_chronicle error: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def detect_redundancy(self, threshold: float = 0.88, limit: int = 20,
+                                auto_merge: bool = False,
+                                tags_include: List[str] = None) -> Dict:
+        """Detect and optionally merge redundant memories.
+
+        Loads embeddings for all memories (up to 500), computes pairwise cosine,
+        groups pairs above `threshold` into clusters.
+
+        When auto_merge=True: keeps the highest-importance memory per cluster
+        and soft-deletes the rest (sets importance_level=0 and tags it 'merged').
+        Returns the detected clusters with similarity scores.
+        """
+        try:
+            rows = await self.ai_memory_db.execute_query(
+                "SELECT memory_id, content, importance_level, tags, embedding "
+                "FROM curated_memories WHERE embedding IS NOT NULL "
+                "ORDER BY importance_level DESC, timestamp_created DESC LIMIT 500"
+            )
+            if not rows:
+                return {"status": "success", "clusters": [], "total_redundant": 0}
+
+            rows = list(rows)
+
+            # tags filter
+            if tags_include:
+                _tag_set = {t.lower() for t in tags_include}
+                filtered = []
+                for row in rows:
+                    try:
+                        row_tags = {t.lower() for t in json.loads(row["tags"] or "[]")}
+                    except Exception:
+                        row_tags = set()
+                    if row_tags & _tag_set:
+                        filtered.append(row)
+                rows = filtered
+
+            if len(rows) < 2:
+                return {"status": "success", "clusters": [], "total_redundant": 0}
+
+            def _find_clusters(rows_inner, thresh):
+                valid = [(r, np.frombuffer(r["embedding"], dtype=np.float32)) for r in rows_inner]
+                n = len(valid)
+                matrix = np.vstack([e for _, e in valid])
+                norms = np.linalg.norm(matrix, axis=1)
+                norms = np.where(norms < 1e-9, 1.0, norms)
+                normed = matrix / norms[:, None]
+                sim_matrix = normed @ normed.T
+
+                visited = set()
+                clusters = []
+                for i in range(n):
+                    if i in visited:
+                        continue
+                    cluster = [i]
+                    for j in range(i + 1, n):
+                        if j not in visited and float(sim_matrix[i, j]) >= thresh:
+                            cluster.append(j)
+                            visited.add(j)
+                    if len(cluster) > 1:
+                        visited.add(i)
+                        clusters.append([
+                            {"index": idx,
+                             "memory_id": valid[idx][0]["memory_id"],
+                             "importance": valid[idx][0]["importance_level"],
+                             "content_preview": (valid[idx][0]["content"] or "")[:80],
+                             "sim_to_centroid": round(float(sim_matrix[cluster[0]][idx]), 3)}
+                            for idx in cluster
+                        ])
+                return clusters
+
+            clusters = await asyncio.to_thread(_find_clusters, rows, threshold)
+
+            merged_count = 0
+            if auto_merge:
+                for cluster in clusters:
+                    sorted_c = sorted(cluster, key=lambda x: x["importance"], reverse=True)
+                    to_delete = sorted_c[1:]  # keep highest importance
+                    for item in to_delete:
+                        await self.ai_memory_db.execute_update(
+                            "UPDATE curated_memories SET importance_level=0, tags=JSON_INSERT(COALESCE(tags,'[]'), '$[#]', 'merged') "
+                            "WHERE memory_id=?",
+                            (item["memory_id"],)
+                        )
+                        merged_count += 1
+
+            return {
+                "status": "success",
+                "clusters": clusters[:limit],
+                "total_clusters": len(clusters),
+                "total_redundant": sum(len(c) - 1 for c in clusters),
+                "auto_merged": merged_count,
+                "threshold_used": threshold,
+            }
+        except Exception as e:
+            logger.error(f"detect_redundancy error: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def anticipate(self, context: str, limit: int = 5,
+                         tags_include: List[str] = None) -> Dict:
+        """Proactive memory retrieval — predict what is needed next.
+
+        Combines current context with recent conversation to build a forward-looking
+        query, then returns ranked memories with a brief 'why_relevant' annotation.
+        Useful for pre-loading context before the user asks.
+        """
+        try:
+            # Augment context with last conversation snippet
+            recent = ""
+            try:
+                recent_rows = await self.conversations_db.execute_query(
+                    "SELECT content FROM messages ORDER BY timestamp DESC LIMIT 3"
+                )
+                if recent_rows:
+                    recent = " ".join((dict(r).get("content") or "")[:60] for r in recent_rows)
+            except Exception:
+                pass
+
+            predictive_query = f"upcoming next needed: {context} {recent}".strip()
+
+            result = await self.search_memories(
+                query=predictive_query,
+                limit=limit,
+                compact=False,
+                tags_include=tags_include,
+            )
+
+            memories = result.get("results", [])
+            annotated = []
+            for mem in memories:
+                data = mem.get("data", {})
+                score = mem.get("similarity_score", 0.0)
+                content = (data.get("content") or "")[:100]
+                mtype = data.get("memory_type", "")
+                tags_list = data.get("tags", [])
+
+                # Heuristic: explain why it's predicted relevant
+                why = "matches current context"
+                if score > 0.85:
+                    why = "highly relevant to active context"
+                elif mtype == "correction":
+                    why = "past correction — likely to apply again"
+                elif "decision" in mtype or "procedure" in mtype:
+                    why = "known procedure for this task"
+                elif tags_list and any(t.lower() in context.lower() for t in tags_list):
+                    why = f"tagged with relevant topic: {tags_list[0]}"
+
+                annotated.append({
+                    "memory_id":    data.get("memory_id", "")[:8],
+                    "content":      content,
+                    "type":         mtype,
+                    "score":        round(score, 3),
+                    "why_relevant": why,
+                    "tags":         tags_list,
+                })
+
+            return {
+                "status":  "success",
+                "context": context[:100],
+                "predictions": annotated,
+                "count":   len(annotated),
+            }
+        except Exception as e:
+            logger.error(f"anticipate error: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def intent_anchor(self, trigger_condition: str, action: str,
+                            importance_level: int = 7,
+                            tags: List[str] = None) -> Dict:
+        """Store a prospective memory: fires when trigger condition is semantically matched.
+
+        Unlike time-based reminders, intent anchors are recalled when their
+        trigger_condition is semantically similar to the current query/context.
+        They surface automatically during prime_context and anticipate().
+
+        Example: trigger_condition="about to push to production", action="run benchmark first"
+        """
+        try:
+            content = json.dumps({
+                "trigger": trigger_condition,
+                "action":  action,
+            }, ensure_ascii=False)
+
+            result = await self.create_memory(
+                content=content,
+                memory_type="intent_anchor",
+                importance_level=importance_level,
+                tags=["intent_anchor"] + (tags or []),
+            )
+            return {
+                "status":            "success",
+                "intent_anchor_id":  result.get("memory_id"),
+                "trigger_condition": trigger_condition,
+                "action":            action,
+            }
+        except Exception as e:
+            logger.error(f"intent_anchor error: {e}")
             return {"status": "error", "message": str(e)}
 
 
