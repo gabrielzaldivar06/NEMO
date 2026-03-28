@@ -591,107 +591,96 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
   .nodeOpacity(0.92)
   .nodeResolution(24)
   .nodeThreeObject(n => {
-    // ── Plasma Icon node: symbol + animated plasma ring ──────────────
+    // ── Célula Neural (Cyberpunk / Deus Ex) ──────────────────────────
+    // 3 concentric layers, minimal animation (slow scan only), legible, calm.
     const TYPE_SYMBOL = {
-      fact:       '\u25c8',   // ◈
-      insight:    '\u2726',   // ✦
-      correction: '\u2298',   // ⊘
-      preference: '\u25c6',   // ◆
-      episodic:   '\u25ce',   // ◎
-      procedure:  '\u2b21',   // ⬡
-      skill:      '\u2727',   // ✧
-      ai_memory:  '\u29bf',   // ⦿
+      fact:       'FA',
+      insight:    'IN',
+      correction: 'CO',
+      preference: 'PR',
+      episodic:   'EP',
+      procedure:  'PC',
+      skill:      'SK',
+      ai_memory:  'AM',
     };
-    const SZ = 96;
+    // Roman numerals for importance
+    const ROMAN = ['','I','II','III','IV','V','VI','VII','VIII','IX','X'];
+
+    const SZ = 128;
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = SZ;
     const ctx = canvas.getContext('2d');
     const col = n.color || '#C084FC';
     const r = parseInt(col.slice(1,3),16), g = parseInt(col.slice(3,5),16), b = parseInt(col.slice(5,7),16);
-    const sym = TYPE_SYMBOL[n.mtype] || '\u25cb';
-    const imp = n.importance || 5;
+    const sym  = TYPE_SYMBOL[n.mtype] || '??';
+    const imp  = Math.max(1, Math.min(10, n.importance || 5));
+    const rom  = ROMAN[imp] || String(imp);
 
-    // Store reusable draw fn on node for animation
-    // Unique phase offset per node so each pulses independently
-    const _phase = (r * 0.017 + g * 0.011 + b * 0.007) % (2 * Math.PI);
+    // Unique slow-scan angle offset per node (no two nodes in sync)
+    const _phaseOffset = (r * 0.031 + g * 0.019 + b * 0.013) % (2 * Math.PI);
 
     n.__drawNode = function(t) {
-      ctx.clearRect(0,0,SZ,SZ);
-      const cx = SZ/2, cy = SZ/2;
-      // Dramatic pulse: 0→1 over ~1.6s cycle
-      const pulse  = 0.5 + 0.5 * Math.sin(t * 0.0040 + _phase);
-      // Slow secondary breathe for halo
-      const breathe = 0.5 + 0.5 * Math.sin(t * 0.0015 + _phase + 1.2);
+      ctx.clearRect(0, 0, SZ, SZ);
+      const cx = SZ / 2, cy = SZ / 2;
 
-      // Layer 1 — outer plasma halo (breathes strongly)
-      const halo = ctx.createRadialGradient(cx,cy,14,cx,cy,76);
-      halo.addColorStop(0,   'rgba('+r+','+g+','+b+','+(0.10 + 0.30*breathe).toFixed(3)+')');
-      halo.addColorStop(0.55,'rgba('+r+','+g+','+b+','+(0.06 + 0.14*breathe).toFixed(3)+')');
-      halo.addColorStop(1,   'rgba('+r+','+g+','+b+',0)');
-      ctx.beginPath(); ctx.arc(cx,cy,76,0,2*Math.PI);
-      ctx.fillStyle = halo; ctx.fill();
+      // Scanline angle: one full turn every ~70 seconds — barely perceptible drift
+      const scanA = t * 0.000090 + _phaseOffset;
 
-      // Layer 2 — frosted glass body
-      const body = ctx.createRadialGradient(cx-10,cy-12,4,cx,cy,46);
-      body.addColorStop(0,   'rgba(255,255,255,0.22)');
-      body.addColorStop(0.4, 'rgba('+r+','+g+','+b+',0.13)');
-      body.addColorStop(1,   'rgba('+r+','+g+','+b+',0.04)');
-      ctx.beginPath(); ctx.arc(cx,cy,46,0,2*Math.PI);
-      ctx.fillStyle = body; ctx.fill();
-      ctx.beginPath(); ctx.arc(cx,cy,46,0,2*Math.PI);
-      ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(0.40+0.30*pulse).toFixed(3)+')';
+      // ── Layer 1: dim outer dot-ring (static look) ──────────────────
+      const dotRing = 56;
+      const dotCount = 24;
+      for (let i = 0; i < dotCount; i++) {
+        const a = (i / dotCount) * Math.PI * 2;
+        // every 3rd dot is brighter — creates subtle rhythm without flicker
+        const bright = (i % 3 === 0) ? 0.55 : 0.20;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * dotRing, cy + Math.sin(a) * dotRing, 1.3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + bright + ')';
+        ctx.fill();
+      }
+
+      // ── Layer 2: solid middle ring with scan-highlight ─────────────
+      ctx.beginPath(); ctx.arc(cx, cy, 40, 0, 2 * Math.PI);
+      ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.30)';
       ctx.lineWidth = 1.2; ctx.setLineDash([]); ctx.stroke();
 
-      // Layer 3 — fast rotating dashed plasma ring (~1 full turn / 2.5s)
-      const ringAngle = t * 0.0025;
-      ctx.save(); ctx.translate(cx,cy); ctx.rotate(ringAngle);
-      ctx.beginPath(); ctx.arc(0,0,56,0,2*Math.PI);
-      ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(0.45+0.35*pulse).toFixed(3)+')';
-      ctx.lineWidth = 1.8; ctx.setLineDash([8, 4]); ctx.stroke();
-      ctx.restore();
-
-      // Layer 3b — counter-rotating ring, thinner (~1 turn / 4s opposite)
-      ctx.save(); ctx.translate(cx,cy); ctx.rotate(-ringAngle * 0.6);
-      ctx.beginPath(); ctx.arc(0,0,63,0,2*Math.PI);
-      ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(0.20+0.20*breathe).toFixed(3)+')';
-      ctx.lineWidth = 1.0; ctx.setLineDash([3, 10]); ctx.stroke();
-      ctx.restore();
-
-      // Layer 3c — energy arc sweep (bright arc that rotates fully)
-      ctx.save(); ctx.translate(cx,cy); ctx.rotate(ringAngle * 2.1);
-      ctx.beginPath(); ctx.arc(0,0,56, 0, Math.PI * 0.55);
-      ctx.strokeStyle = 'rgba(255,255,255,'+(0.30+0.40*pulse).toFixed(3)+')';
+      // Scan highlight arc (60° arc, rotates once per ~70s)
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(scanA);
+      ctx.beginPath(); ctx.arc(0, 0, 40, -0.52, 0.52);
+      ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.80)';
       ctx.lineWidth = 2.2; ctx.setLineDash([]);
-      ctx.shadowColor = col; ctx.shadowBlur = 8;
+      ctx.shadowColor = col; ctx.shadowBlur = 5;
       ctx.stroke(); ctx.shadowBlur = 0;
       ctx.restore();
 
-      // Layer 4 — type symbol with strong pulsing glow
-      ctx.setLineDash([]);
-      ctx.font = '700 28px "Space Grotesk", system-ui, sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.shadowColor = col;
-      ctx.shadowBlur = 5 + 14 * pulse;   // 5→19
-      ctx.fillStyle = 'rgba(255,255,255,'+(0.70 + 0.28*pulse).toFixed(3)+')';
-      ctx.fillText(sym, cx, cy);
-      ctx.shadowBlur = 0;
+      // ── Layer 3: inner filled core ─────────────────────────────────
+      const core = ctx.createRadialGradient(cx - 8, cy - 9, 2, cx, cy, 28);
+      core.addColorStop(0,   'rgba(255,255,255,0.18)');
+      core.addColorStop(0.5, 'rgba(' + r + ',' + g + ',' + b + ',0.14)');
+      core.addColorStop(1,   'rgba(' + r + ',' + g + ',' + b + ',0.05)');
+      ctx.beginPath(); ctx.arc(cx, cy, 28, 0, 2 * Math.PI);
+      ctx.fillStyle = core; ctx.fill();
+      // inner ring border
+      ctx.beginPath(); ctx.arc(cx, cy, 28, 0, 2 * Math.PI);
+      ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.50)';
+      ctx.lineWidth = 1.0; ctx.stroke();
 
-      // Layer 5 — importance badge
-      const badgeX = cx + 20, badgeY = cy + 20;
-      ctx.beginPath(); ctx.arc(badgeX,badgeY,11,0,2*Math.PI);
-      ctx.fillStyle = 'rgba(12,10,20,0.85)'; ctx.fill();
-      ctx.strokeStyle = col; ctx.lineWidth = 1.0;
-      ctx.setLineDash([]); ctx.stroke();
-      ctx.font = '500 8px "DM Mono", monospace';
+      // ── Layer 4: type abbreviation (2-letter, DM Mono, top-center) ─
+      ctx.font = '700 11px "DM Mono", monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillStyle = col;
-      ctx.fillText(String(imp), badgeX, badgeY);
+      ctx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.75)';
+      ctx.fillText(sym, cx, cy - 9);
 
-      // Layer 6 — specular highlight
-      const spec = ctx.createRadialGradient(cx-8,cy-9,0,cx-8,cy-9,9);
-      spec.addColorStop(0,'rgba(255,255,255,0.55)');
-      spec.addColorStop(1,'rgba(255,255,255,0)');
-      ctx.beginPath(); ctx.arc(cx-8,cy-9,9,0,2*Math.PI);
+      // ── Layer 5: importance in roman numerals (center) ─────────────
+      ctx.font = '400 13px "DM Mono", monospace';
+      ctx.fillStyle = 'rgba(255,255,255,0.90)';
+      ctx.fillText(rom, cx, cy + 6);
+
+      // ── Layer 6: fixed specular top-left ───────────────────────────
+      const spec = ctx.createRadialGradient(cx - 10, cy - 11, 0, cx - 10, cy - 11, 10);
+      spec.addColorStop(0, 'rgba(255,255,255,0.25)');
+      spec.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.beginPath(); ctx.arc(cx - 10, cy - 11, 10, 0, 2 * Math.PI);
       ctx.fillStyle = spec; ctx.fill();
     };
 
@@ -765,13 +754,13 @@ function refresh() {
 }
 refresh();
 
-// ── Standalone plasma animation loop (independent of Three.js render) ───────
-// Batch: max 20 nodes per frame round-robin, 50ms throttle to protect FPS
+// ── Standalone neural-cell animation loop ────────────────────────────────────
+// Batch: max 20 nodes per frame round-robin, 120ms throttle (scan is very slow)
 (function plasmaLoop() {
   let lastT = 0, batchIdx = 0;
   const BATCH = 20;
   function tick(t) {
-    if (t - lastT >= 50) {      // ~20fps \u2014 animated but FPS-friendly
+    if (t - lastT >= 120) {   // ~8fps — scan so slow, no need for more
       lastT = t;
       const nodes = Graph.graphData ? Graph.graphData().nodes : [];
       const total = nodes.length;
