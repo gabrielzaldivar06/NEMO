@@ -7,7 +7,7 @@ This guide provides multiple installation methods for the Persistent AI Memory S
 ### Method 1: One-Command Installation (Linux/macOS)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/NEMO/main/install.sh | bash
 ```
 
 This will:
@@ -19,12 +19,12 @@ This will:
 ### Method 2: Windows One-Click Installation
 
 ```cmd
-curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.bat -o install.bat && install.bat
+curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/NEMO/main/install.bat -o install.bat && install.bat
 ```
 
 Or download and run manually:
 ```cmd
-curl -O https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.bat
+curl -O https://raw.githubusercontent.com/gabrielzaldivar06/NEMO/main/install.bat
 install.bat
 ```
 
@@ -32,7 +32,7 @@ install.bat
 
 ```bash
 # Clone the repository
-git clone https://github.com/gabrielzaldivar06/persistent-ai-memory.git
+git clone https://github.com/gabrielzaldivar06/NEMO.git
 cd persistent-ai-memory
 
 # Install dependencies
@@ -48,7 +48,7 @@ python tests/test_health_check.py
 ### Method 4: Direct pip Installation
 
 ```bash
-pip install git+https://github.com/gabrielzaldivar06/persistent-ai-memory.git
+pip install git+https://github.com/gabrielzaldivar06/NEMO.git
 ```
 
 ## 📋 Prerequisites
@@ -77,7 +77,7 @@ python -c "import asyncio; from ai_memory_core import PersistentAIMemorySystem; 
 For contributing or development:
 
 ```bash
-git clone https://github.com/gabrielzaldivar06/persistent-ai-memory.git
+git clone https://github.com/gabrielzaldivar06/NEMO.git
 cd persistent-ai-memory
 pip install -e ".[dev]"
 ```

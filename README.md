@@ -34,17 +34,17 @@
 
 **Windows** (copia y pega en CMD o PowerShell):
 ```cmd
-curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.bat -o install.bat && install.bat
+curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/NEMO/main/install.bat -o install.bat && install.bat
 ```
 
 **Linux / macOS** (terminal):
 ```bash
-curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/NEMO/main/install.sh | bash
 ```
 
 **Manual** (cualquier sistema):
 ```bash
-git clone https://github.com/gabrielzaldivar06/persistent-ai-memory.git
+git clone https://github.com/gabrielzaldivar06/NEMO.git
 cd persistent-ai-memory
 pip install -r requirements.txt
 ```
@@ -240,7 +240,7 @@ Consulta
 ### 2. Instalación
 
 ```bash
-git clone https://github.com/gabrielzaldivar06/persistent-ai-memory.git
+git clone https://github.com/gabrielzaldivar06/NEMO.git
 cd persistent-ai-memory
 pip install -r requirements.txt
 ```

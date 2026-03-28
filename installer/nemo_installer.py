@@ -35,7 +35,7 @@ EMBED_MODEL = "nomic-embed-text"
 DEFAULT_DIR = str(Path.home() / "AppData" / "Local" / "NEMO")
 
 # Only the runtime files needed — no docs, tests, examples, scripts
-RAW_BASE = "https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/"
+RAW_BASE = "https://raw.githubusercontent.com/gabrielzaldivar06/NEMO/main/"
 CORE_FILES = [
     "ai_memory_mcp_server.py",
     "ai_memory_core.py",
@@ -1102,7 +1102,7 @@ class NemoInstaller(Tk):
             self._set_step("editors", "done" if self._configured_editors else "skip")
             if not self._configured_editors:
                 self._log("  ⊘ Ningún editor configurado — puedes hacerlo manualmente.")
-                self._log("    Consulta: https://github.com/gabrielzaldivar06/persistent-ai-memory#instalación")
+                self._log("    Consulta: https://github.com/gabrielzaldivar06/NEMO#instalación")
 
             # ── 8. Shortcuts ───────────────────────────────────────────────
             self._set_step("shortcuts", "running")
@@ -1174,7 +1174,7 @@ class NemoInstaller(Tk):
                 winreg.SetValueEx(key, "UninstallString",0, winreg.REG_SZ,    str(uninstall_bat))
                 winreg.SetValueEx(key, "InstallLocation",0, winreg.REG_SZ,    str(idir))
                 winreg.SetValueEx(key, "URLInfoAbout",   0, winreg.REG_SZ,
-                                  "https://github.com/gabrielzaldivar06/persistent-ai-memory")
+                                  "https://github.com/gabrielzaldivar06/NEMO")
                 winreg.SetValueEx(key, "NoModify",       0, winreg.REG_DWORD, 1)
                 winreg.SetValueEx(key, "NoRepair",       0, winreg.REG_DWORD, 1)
         except OSError:

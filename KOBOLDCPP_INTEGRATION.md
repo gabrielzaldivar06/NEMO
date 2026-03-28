@@ -144,7 +144,7 @@ async def smart_context_for_koboldcpp(user_input, session_id):
 
 1. **Install Friday's Memory System**:
    ```bash
-   git clone https://github.com/gabrielzaldivar06/persistent-ai-memory.git
+   git clone https://github.com/gabrielzaldivar06/NEMO.git
    cd persistent-ai-memory
    pip install -r requirements.txt
    ```
@@ -165,7 +165,7 @@ async def smart_context_for_koboldcpp(user_input, session_id):
 
 ## 💬 **Community & Support**
 
-- **GitHub**: [persistent-ai-memory](https://github.com/gabrielzaldivar06/persistent-ai-memory)
+- **GitHub**: [persistent-ai-memory](https://github.com/gabrielzaldivar06/NEMO)
 - **Compatible with**: Koboldcpp, LM Studio, VS Code, Ollama, and more
 - **Open Source**: MIT licensed, fully extensible
 

@@ -34,7 +34,7 @@ APP_VERSION = "1.1.0"
 EMBED_MODEL = "nomic-embed-text"
 DEFAULT_DIR = str(Path.home() / "Library" / "Application Support" / "NEMO")
 
-RAW_BASE = "https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/"
+RAW_BASE = "https://raw.githubusercontent.com/gabrielzaldivar06/NEMO/main/"
 CORE_FILES = [
     "ai_memory_mcp_server.py",
     "ai_memory_core.py",
@@ -1054,7 +1054,7 @@ class NemoInstaller(Tk):
             self._set_step("editors", "done" if self._configured_editors else "skip")
             if not self._configured_editors:
                 self._log("  ⊘ Ningún editor configurado — puedes hacerlo manualmente.")
-                self._log("    Consulta: https://github.com/gabrielzaldivar06/persistent-ai-memory")
+                self._log("    Consulta: https://github.com/gabrielzaldivar06/NEMO")
 
             # ── 8. Shortcuts & LaunchAgent ─────────────────────────────────
             self._set_step("shortcuts", "running")

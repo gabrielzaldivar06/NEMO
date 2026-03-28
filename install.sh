@@ -18,7 +18,7 @@ echo "✅ Found Python $python_version"
 
 # Clone the repository
 echo "📥 Cloning repository..."
-git clone https://github.com/gabrielzaldivar06/persistent-ai-memory.git
+git clone https://github.com/gabrielzaldivar06/NEMO.git
 cd persistent-ai-memory
 
 # Install dependencies
