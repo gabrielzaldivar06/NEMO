@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://creativecommons.org/licenses/by-nc/4.0/"><img src="https://img.shields.io/badge/Licencia-CC%20BY--NC%204.0-lightgrey.svg" alt="Licencia: CC BY-NC 4.0"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
-  <img src="https://img.shields.io/badge/release-v1.2.0--Sprint12-green.svg" alt="Release">
+  <img src="https://img.shields.io/badge/release-v1.3.0--Sprint15-green.svg" alt="Release">
   <img src="https://img.shields.io/badge/herramientas_MCP-37-blueviolet.svg" alt="MCP Tools">
 </p>
 <p align="center">
@@ -190,6 +190,17 @@ Consulta
 
 ---
 
+## Novedades en v1.3.0 (Sprint 15)
+
+### Sprint 15 — Synaptic Tagging · Dashboard 3D · Panel VS Code · Circuit Breaker
+- **`synaptic_tagging`**: nueva herramienta MCP que conecta automáticamente memorias relacionadas (importancia ≥ 9 activa el tagging automático)
+- **Dashboard neural 3D**: `dashboard.py` genera `dashboard.html` con grafo 3D interactivo (3d-force-graph + three.js), bloom glow, tooltips, búsqueda en vivo y slider de similaridad
+- **Panel lateral VS Code `nemo-vscode`**: extensión local con diseño premium oscuro-dorado — estado del sistema en tiempo real, botones de lanzamiento del dashboard 3D, polling automático cada 30 s
+- **Circuit Breaker en EmbeddingService**: timeout 10 s (antes 30 s), semáforo 1 concurrente, cooldown 45 s — elimina los freezes del PC al llamar herramientas con LM Studio ocupado
+- **Ícono de grafo neuronal** en la activity bar de VS Code (reemplaza el ícono de señal)
+
+---
+
 ## Novedades en v1.2.0 (Sprint 11 & 12)
 
 ### Sprint 11 — Recuperación Híbrida FTS5 + Dense
@@ -221,7 +232,8 @@ Consulta
 | **Importación multiplataforma** | LM Studio · Ollama · OpenWebUI · SillyTavern · Gemini CLI · VS Code |
 | **Agenda y recordatorios** | Calendario completo con recurrencia diaria/semanal/mensual/anual |
 | **Degradación elegante** | Cae a Ollama → búsqueda de texto si los embeddings no están disponibles |
-| **Panel lateral VS Code** | Panel de estado en vivo — muestra salud del stack, modelos cargados, tamaños de DB |
+| **Panel lateral VS Code** | Panel premium oscuro-dorado — estado en vivo de LM Studio, Reranker, DBs y MCP · botones para lanzar Dashboard 3D · polling cada 30 s |
+| **Dashboard Neural 3D** | Grafo 3D interactivo generado localmente — bloom glow, hover tooltips, búsqueda en vivo, slider de similaridad |
 | **Autostart en Windows** | Inicia LM Studio + carga modelos automáticamente al iniciar sesión |
 | **100% local** | Sin claves de API, sin nube, sin suscripciones |
 

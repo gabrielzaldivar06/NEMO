@@ -1,4 +1,11 @@
-// NEMO V1.0 — Neural Engine Memory Observer
+// build_ext.js — writes extension.js (premium UI)
+const fs   = require('fs');
+const path = require('path');
+
+const OUT_SRC  = path.join(__dirname, 'extension.js');
+const OUT_INST = path.join(process.env.USERPROFILE, '.vscode', 'extensions', 'nemo-memory-1.0.0', 'extension.js');
+
+const JS = `// NEMO V1.0 — Neural Engine Memory Observer
 // VS Code Extension — Premium dark-gold WebviewView
 
 const vscode = require('vscode');
@@ -62,7 +69,7 @@ function spawnDashboard(noOpen) {
     cp.spawn(python, args, { cwd, detached: true, stdio: 'ignore' }).unref();
 }
 
-const CSS = `
+const CSS = \`
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{height:100%;background:#141210}
 body{
@@ -180,7 +187,7 @@ body{
 
 .btn-row{display:flex;gap:7px}
 .btn-row .btn-ghost{flex:1}
-`;
+\`;
 
 function buildHtml(state) {
     const { lmOk, rkOk, memOk, convOk, ts } = state;
@@ -210,22 +217,22 @@ function buildHtml(state) {
     const rowsHtml = services.map(s => {
         const c = dot(s.ok, s.warn);
         const t = lbl(s.ok, s.warn);
-        return `<div class="row">
-  <span class="r-icon">${s.icon}</span>
+        return \`<div class="row">
+  <span class="r-icon">\${s.icon}</span>
   <div class="r-body">
-    <span class="r-name">${s.name}</span>
-    <span class="r-detail">${s.detail}</span>
+    <span class="r-name">\${s.name}</span>
+    <span class="r-detail">\${s.detail}</span>
   </div>
-  <span class="badge" style="color:${c};border-color:${c}30;background:${c}12">${t}</span>
-</div>`;
+  <span class="badge" style="color:\${c};border-color:\${c}30;background:\${c}12">\${t}</span>
+</div>\`;
     }).join('');
 
-    return `<!DOCTYPE html>
+    return \`<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
-<style>${CSS}</style>
+<style>\${CSS}</style>
 </head>
 <body>
 <div class="wrap">
@@ -239,14 +246,14 @@ function buildHtml(state) {
 
 <div class="strip">
   <div class="strip-left">
-    <span class="pulse" style="background:${sysColor};box-shadow:0 0 8px ${sysColor}"></span>
-    <span style="color:${sysColor}">${allOk ? 'Sistema nominal' : 'Requiere atención'}</span>
+    <span class="pulse" style="background:\${sysColor};box-shadow:0 0 8px \${sysColor}"></span>
+    <span style="color:\${sysColor}">\${allOk ? 'Sistema nominal' : 'Requiere atención'}</span>
   </div>
-  <span class="strip-ts">${ts}</span>
+  <span class="strip-ts">\${ts}</span>
 </div>
 
 <div class="lbl">Servicios</div>
-<div class="rows">${rowsHtml}</div>
+<div class="rows">\${rowsHtml}</div>
 
 <hr class="sep">
 
@@ -259,7 +266,7 @@ function buildHtml(state) {
 
 </div>
 <script>const vscode=acquireVsCodeApi();function post(c){vscode.postMessage({command:c})}</script>
-</body></html>`;
+</body></html>\`;
 }
 
 const NEMO_VIEW_TYPE = 'nemo.statusView';
@@ -303,3 +310,8 @@ function activate(context) {
 
 function deactivate() {}
 module.exports = { activate, deactivate };
+`;
+
+fs.writeFileSync(OUT_SRC,  JS, 'utf8');
+fs.writeFileSync(OUT_INST, JS, 'utf8');
+console.log('OK — lines:', JS.split('\n').length);

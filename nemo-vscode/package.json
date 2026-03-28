@@ -24,9 +24,9 @@
     "views": {
       "nemo-container": [
         {
+          "type": "webview",
           "id": "nemo.statusView",
-          "name": "Estado del Sistema",
-          "icon": "media/nemo.svg"
+          "name": "Estado del Sistema"
         }
       ]
     },
@@ -35,14 +35,34 @@
         "command": "nemo.refresh",
         "title": "NEMO: Actualizar Estado",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "nemo.launchDashboard",
+        "title": "NEMO: Lanzar Dashboard 3D",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "nemo.regenerateDashboard",
+        "title": "NEMO: Regenerar Dashboard (sin abrir)",
+        "icon": "$(sync)"
       }
     ],
     "menus": {
       "view/title": [
         {
+          "command": "nemo.launchDashboard",
+          "when": "view == nemo.statusView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "nemo.regenerateDashboard",
+          "when": "view == nemo.statusView",
+          "group": "navigation@2"
+        },
+        {
           "command": "nemo.refresh",
           "when": "view == nemo.statusView",
-          "group": "navigation"
+          "group": "navigation@3"
         }
       ]
     }
