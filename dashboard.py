@@ -611,17 +611,23 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
     const imp = n.importance || 5;
 
     // Store reusable draw fn on node for animation
+    // Unique phase offset per node so each pulses independently
+    const _phase = (r * 0.017 + g * 0.011 + b * 0.007) % (2 * Math.PI);
+
     n.__drawNode = function(t) {
       ctx.clearRect(0,0,SZ,SZ);
       const cx = SZ/2, cy = SZ/2;
-      const pulse = 0.5 + 0.5 * Math.sin(t * 0.0018 + (r+g+b) * 0.01);
+      // Dramatic pulse: 0→1 over ~1.6s cycle
+      const pulse  = 0.5 + 0.5 * Math.sin(t * 0.0040 + _phase);
+      // Slow secondary breathe for halo
+      const breathe = 0.5 + 0.5 * Math.sin(t * 0.0015 + _phase + 1.2);
 
-      // Layer 1 — outer plasma halo (pulses)
-      const halo = ctx.createRadialGradient(cx,cy,20,cx,cy,72);
-      halo.addColorStop(0,   'rgba('+r+','+g+','+b+','+(0.08 + 0.10*pulse).toFixed(3)+')');
-      halo.addColorStop(0.6, 'rgba('+r+','+g+','+b+','+(0.04 + 0.04*pulse).toFixed(3)+')');
+      // Layer 1 — outer plasma halo (breathes strongly)
+      const halo = ctx.createRadialGradient(cx,cy,14,cx,cy,76);
+      halo.addColorStop(0,   'rgba('+r+','+g+','+b+','+(0.10 + 0.30*breathe).toFixed(3)+')');
+      halo.addColorStop(0.55,'rgba('+r+','+g+','+b+','+(0.06 + 0.14*breathe).toFixed(3)+')');
       halo.addColorStop(1,   'rgba('+r+','+g+','+b+',0)');
-      ctx.beginPath(); ctx.arc(cx,cy,72,0,2*Math.PI);
+      ctx.beginPath(); ctx.arc(cx,cy,76,0,2*Math.PI);
       ctx.fillStyle = halo; ctx.fill();
 
       // Layer 2 — frosted glass body
@@ -631,50 +637,56 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
       body.addColorStop(1,   'rgba('+r+','+g+','+b+',0.04)');
       ctx.beginPath(); ctx.arc(cx,cy,46,0,2*Math.PI);
       ctx.fillStyle = body; ctx.fill();
-      // glass border
       ctx.beginPath(); ctx.arc(cx,cy,46,0,2*Math.PI);
-      ctx.strokeStyle = 'rgba('+r+','+g+','+b+',0.55)';
-      ctx.lineWidth = 1.0; ctx.setLineDash([]); ctx.stroke();
+      ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(0.40+0.30*pulse).toFixed(3)+')';
+      ctx.lineWidth = 1.2; ctx.setLineDash([]); ctx.stroke();
 
-      // Layer 3 — rotating dashed plasma ring
-      const angle = t * 0.0006;
-      ctx.save(); ctx.translate(cx,cy); ctx.rotate(angle);
+      // Layer 3 — fast rotating dashed plasma ring (~1 full turn / 2.5s)
+      const ringAngle = t * 0.0025;
+      ctx.save(); ctx.translate(cx,cy); ctx.rotate(ringAngle);
       ctx.beginPath(); ctx.arc(0,0,56,0,2*Math.PI);
-      ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(0.25+0.18*pulse).toFixed(3)+')';
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([7, 5]);
-      ctx.stroke();
+      ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(0.45+0.35*pulse).toFixed(3)+')';
+      ctx.lineWidth = 1.8; ctx.setLineDash([8, 4]); ctx.stroke();
       ctx.restore();
 
-      // Layer 3b — second ring counter-rotating, thinner
-      ctx.save(); ctx.translate(cx,cy); ctx.rotate(-angle * 1.4);
-      ctx.beginPath(); ctx.arc(0,0,62,0,2*Math.PI);
-      ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(0.10+0.08*pulse).toFixed(3)+')';
-      ctx.lineWidth = 0.7; ctx.setLineDash([3, 9]); ctx.stroke();
+      // Layer 3b — counter-rotating ring, thinner (~1 turn / 4s opposite)
+      ctx.save(); ctx.translate(cx,cy); ctx.rotate(-ringAngle * 0.6);
+      ctx.beginPath(); ctx.arc(0,0,63,0,2*Math.PI);
+      ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(0.20+0.20*breathe).toFixed(3)+')';
+      ctx.lineWidth = 1.0; ctx.setLineDash([3, 10]); ctx.stroke();
       ctx.restore();
 
-      // Layer 4 — type symbol (Space Grotesk via system fallback)
+      // Layer 3c — energy arc sweep (bright arc that rotates fully)
+      ctx.save(); ctx.translate(cx,cy); ctx.rotate(ringAngle * 2.1);
+      ctx.beginPath(); ctx.arc(0,0,56, 0, Math.PI * 0.55);
+      ctx.strokeStyle = 'rgba(255,255,255,'+(0.30+0.40*pulse).toFixed(3)+')';
+      ctx.lineWidth = 2.2; ctx.setLineDash([]);
+      ctx.shadowColor = col; ctx.shadowBlur = 8;
+      ctx.stroke(); ctx.shadowBlur = 0;
+      ctx.restore();
+
+      // Layer 4 — type symbol with strong pulsing glow
       ctx.setLineDash([]);
-      ctx.font = '700 42px "Space Grotesk", system-ui, sans-serif';
+      ctx.font = '700 40px "Space Grotesk", system-ui, sans-serif';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      // shadow glow
-      ctx.shadowColor = col; ctx.shadowBlur = 12 + 8*pulse;
-      ctx.fillStyle = 'rgba(255,255,255,'+(0.78 + 0.15*pulse).toFixed(3)+')';
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 8 + 22 * pulse;   // 8→30 dramatic
+      ctx.fillStyle = 'rgba(255,255,255,'+(0.70 + 0.28*pulse).toFixed(3)+')';
       ctx.fillText(sym, cx, cy);
       ctx.shadowBlur = 0;
 
-      // Layer 5 — importance badge (DM Mono, bottom-right arc)
+      // Layer 5 — importance badge
       const badgeX = cx + 28, badgeY = cy + 28;
       ctx.beginPath(); ctx.arc(badgeX,badgeY,11,0,2*Math.PI);
-      ctx.fillStyle = 'rgba(12,10,20,0.80)'; ctx.fill();
-      ctx.strokeStyle = 'rgba('+r+','+g+','+b+',0.70)'; ctx.lineWidth = 0.8;
+      ctx.fillStyle = 'rgba(12,10,20,0.85)'; ctx.fill();
+      ctx.strokeStyle = col; ctx.lineWidth = 1.0;
       ctx.setLineDash([]); ctx.stroke();
       ctx.font = '500 10px "DM Mono", monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillStyle = col;
       ctx.fillText(String(imp), badgeX, badgeY);
 
-      // Layer 6 — specular highlight top-left
+      // Layer 6 — specular highlight
       const spec = ctx.createRadialGradient(cx-14,cy-15,0,cx-14,cy-15,14);
       spec.addColorStop(0,'rgba(255,255,255,0.55)');
       spec.addColorStop(1,'rgba(255,255,255,0)');
@@ -752,6 +764,27 @@ function refresh() {
 }
 refresh();
 
+// ── Standalone plasma animation loop (independent of Three.js render) ───────
+// Runs at display refresh rate, throttles texture upload to ~30fps
+(function plasmaLoop() {
+  let lastT = 0;
+  function tick(t) {
+    if (t - lastT >= 30) {      // ~33fps cap
+      lastT = t;
+      const nodes = Graph.graphData ? Graph.graphData().nodes : [];
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i];
+        if (n.__drawNode && n.__tex) {
+          n.__drawNode(t);
+          n.__tex.needsUpdate = true;
+        }
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+
 // Bloom post-processing
 setTimeout(() => {
   try {
@@ -767,25 +800,10 @@ setTimeout(() => {
     );
     composer.addPass(bloom);
     window._bloomPass = bloom;  // expose for SSE animations
-    // Intercept 3d-force-graph's per-frame render call
+    // Intercept 3d-force-graph's per-frame render call — bloom only
     const _orig = renderer.render.bind(renderer);
-    // ── Plasma node animation: redraw canvas textures every frame ────
-    let _lastNodeRedraw = 0;
     function _intercept(s, c) {
       if (s === scene) {
-        // Animate node textures at ~30fps to save GPU
-        const now = performance.now();
-        if (now - _lastNodeRedraw > 33) {
-          _lastNodeRedraw = now;
-          const nodes = Graph.graphData().nodes;
-          for (let i = 0; i < nodes.length; i++) {
-            const n = nodes[i];
-            if (n.__drawNode && n.__tex) {
-              n.__drawNode(now);
-              n.__tex.needsUpdate = true;
-            }
-          }
-        }
         renderer.render = _orig;
         composer.render();
         renderer.render = _intercept;
