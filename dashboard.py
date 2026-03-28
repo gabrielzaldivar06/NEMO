@@ -121,7 +121,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NEMO · Neural Memory Graph</title>
+<!-- Real premium fonts from Google Fonts CDN -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
 <!-- three.min.js must load FIRST so window.THREE is available for 3d-force-graph (peer dep, not bundled) -->
 <script src="https://unpkg.com/three@0.155.0/build/three.min.js"></script>
 <!-- Postprocessing passes (attached to THREE.* by these legacy scripts) -->
@@ -145,6 +150,31 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     --text:      #e8e8f4;
     --muted:     #68668a;
     --panel-w:   320px;
+    /* Premium font stack */
+    --font-ui:   'Space Grotesk', 'SF Pro Display', system-ui, sans-serif;
+    --font-mono: 'DM Mono', 'SF Mono', 'Fira Code', monospace;
+  }
+
+  /* SVG grain noise — gives frosted-glass texture to panels */
+  @keyframes grain {
+    0%,100%  { transform: translate(0,0); }
+    10%      { transform: translate(-2%,-3%); }
+    20%      { transform: translate(3%, 1%); }
+    30%      { transform: translate(-1%, 4%); }
+    40%      { transform: translate(2%,-2%); }
+    50%      { transform: translate(-3%, 3%); }
+    60%      { transform: translate(1%,-4%); }
+    70%      { transform: translate(-2%, 2%); }
+    80%      { transform: translate(4%,-1%); }
+    90%      { transform: translate(-1%,-2%); }
+  }
+  #grain {
+    position: fixed; inset: -50%; z-index: 100; width: 200%; height: 200%;
+    pointer-events: none;
+    opacity: 0.032;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    animation: grain 0.4s steps(1) infinite;
+    mix-blend-mode: overlay;
   }
 
   html, body {
@@ -155,8 +185,28 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       radial-gradient(ellipse 50% 80% at 50% 100%, #110d1e 0%, transparent 60%),
       #0c0c14;
     color: var(--text);
-    font-family: 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+    font-family: var(--font-ui);
     overflow: hidden;
+    /* Custom crosshair cursor */
+    cursor: none;
+  }
+
+  /* Custom minimal cursor */
+  #cursor-dot {
+    position: fixed; z-index: 9999; pointer-events: none;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+    transform: translate(-50%,-50%);
+    transition: width 0.15s, height 0.15s, opacity 0.15s;
+    box-shadow: 0 0 10px var(--accent), 0 0 24px rgba(192,132,252,0.5);
+    mix-blend-mode: screen;
+  }
+  #cursor-ring {
+    position: fixed; z-index: 9998; pointer-events: none;
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 0.5px solid rgba(192,132,252,0.5);
+    transform: translate(-50%,-50%);
+    transition: width 0.35s cubic-bezier(0.34,1.56,0.64,1), height 0.35s cubic-bezier(0.34,1.56,0.64,1), opacity 0.2s;
   }
 
   #nebula {
@@ -173,7 +223,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #hud {
     position: fixed; top: 0; left: 0; right: 0; z-index: 10;
     display: flex; align-items: center; gap: 18px;
-    padding: 12px 22px;
+    padding: 10px 22px;
     background: rgba(12,12,20,0.60);
     backdrop-filter: blur(28px) saturate(180%);
     -webkit-backdrop-filter: blur(28px) saturate(180%);
@@ -181,14 +231,37 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     box-shadow: 0 1px 0 rgba(192,132,252,0.08);
     animation: slideDown 0.5s ease;
   }
+  /* Scanline shimmer effect on HUD */
+  #hud::after {
+    content: ''; position: absolute; left: 0; right: 0; top: 0; bottom: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 3px,
+      rgba(255,255,255,0.012) 3px,
+      rgba(255,255,255,0.012) 4px
+    );
+    pointer-events: none; z-index: 1;
+  }
   @keyframes slideDown { from { transform: translateY(-100%); opacity:0; } to { transform: none; opacity:1; } }
   #hud-title {
-    font-size: 17px; font-weight: 700; letter-spacing: 2.5px;
+    font-size: 15px; font-weight: 600; letter-spacing: 3px;
+    font-family: var(--font-ui);
     background: linear-gradient(90deg, #C084FC 0%, #a78bfa 40%, #67E8F9 100%);
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     text-transform: uppercase;
   }
-  #hud-stats { font-size: 12px; color: var(--muted); letter-spacing: 0.5px; }
+  /* Version badge */
+  #hud-badge {
+    font-family: var(--font-mono); font-size: 9px; letter-spacing: 1px;
+    padding: 2px 8px; border-radius: 20px;
+    border: 0.5px solid rgba(192,132,252,0.35);
+    color: rgba(192,132,252,0.7);
+    background: rgba(192,132,252,0.06);
+    text-transform: uppercase; flex-shrink: 0;
+    box-shadow: 0 0 10px rgba(192,132,252,0.15), inset 0 0 0 0.5px rgba(192,132,252,0.12);
+  }
+  #hud-stats { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; font-family: var(--font-mono); }
   #hud-pulse {
     width: 8px; height: 8px; border-radius: 50%; background: #C084FC; flex-shrink: 0;
     animation: pulse 2.5s ease-in-out infinite;
@@ -226,12 +299,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
   #panel-inner { padding: 18px; overflow-y: auto; flex: 1; }
   .panel-section { margin-bottom: 20px; }
-  .panel-section h3 {
-    font-size: 10px; font-weight: 700; letter-spacing: 2px;
-    text-transform: uppercase; color: var(--muted);
-    margin-bottom: 10px; padding-bottom: 6px;
-    border-bottom: 1px solid var(--border);
-  }
 
   /* Legend */
   .leg-row {
@@ -239,7 +306,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     padding: 5px 6px; font-size: 12px; cursor: pointer;
     border-radius: 4px; transition: background 0.15s;
   }
-  .leg-row:hover { background: rgba(0,180,216,0.08); }
+  .leg-row:hover { background: rgba(192,132,252,0.06); }
+  .leg-row:hover .leg-dot { opacity: 1; filter: brightness(1.3); }
   .leg-row.inactive { opacity: 0.35; }
   .leg-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 6px currentColor, 0 0 12px currentColor; opacity: 0.85; }
   .leg-count { margin-left: auto; font-size: 10px; color: var(--muted); }
@@ -255,7 +323,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%;
     background: var(--accent); box-shadow: 0 0 8px var(--accent), 0 0 16px rgba(192,132,252,0.4); cursor: pointer;
   }
-  .ctrl-val { min-width: 26px; text-align: right; color: var(--accent); font-weight: 600; }
+  .ctrl-val { min-width: 26px; text-align: right; color: var(--accent); font-weight: 500; font-family: var(--font-mono); font-size: 11px; }
   select {
     background: rgba(0,0,0,0.4); color: var(--text); border: 1px solid var(--border);
     border-radius: 5px; padding: 4px 8px; font-size: 12px; width: 100%;
@@ -263,22 +331,41 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   select option { background: #0d1117; }
 
   /* Info card */
+  /* Info card with animated gradient border */
   #info-card {
     position: fixed; bottom: 24px; left: 24px;
     width: 360px; max-height: 260px; z-index: 20;
-    background: rgba(14,12,28,0.72);
+    background: rgba(14,12,28,0.82);
     backdrop-filter: blur(32px) saturate(160%);
     -webkit-backdrop-filter: blur(32px) saturate(160%);
-    border: 0.5px solid rgba(255,255,255,0.12);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 0 0.5px rgba(192,132,252,0.1);
+    /* multi-layer box-shadow for depth */
+    box-shadow:
+      0 2px 4px rgba(0,0,0,0.4),
+      0 8px 24px rgba(0,0,0,0.5),
+      0 24px 64px rgba(0,0,0,0.3),
+      inset 0 1px 0 rgba(255,255,255,0.07),
+      0 0 0 0.5px rgba(192,132,252,0.15);
     border-radius: 16px;
     padding: 16px 18px; overflow-y: auto; display: none;
     animation: cardIn 0.3s cubic-bezier(0.34,1.56,0.64,1);
+    /* Corner bracket decoration via outline gradient */
+    outline: none;
+  }
+  /* Animated gradient border on info card */
+  @keyframes borderSpin {
+    from { --border-angle: 0turn; }
+    to   { --border-angle: 1turn; }
+  }
+  /* Corner brackets for premium feel — using ::before/::after on wrapper */
+  #info-card-wrap {
+    position: fixed; bottom: 24px; left: 24px;
+    width: 360px; z-index: 20;
+    pointer-events: none;
   }
   @keyframes cardIn { from { opacity:0; transform: translateY(14px) scale(0.97); } to { opacity:1; transform: none; } }
   @keyframes cardIn { from { opacity:0; transform: translateY(12px); } to { opacity:1; transform: none; } }
-  #info-card .card-type { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; font-weight: 700; margin-bottom: 6px; }
-  #info-card .card-imp  { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  #info-card .card-type { font-size: 9px; letter-spacing: 3px; text-transform: uppercase; font-weight: 600; font-family: var(--font-mono); margin-bottom: 6px; }
+  #info-card .card-imp  { font-size: 11px; color: var(--muted); margin-bottom: 8px; font-family: var(--font-mono); }
   #info-card .card-tags { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 10px; }
   #info-card .tag { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: rgba(192,132,252,0.08); border: 0.5px solid rgba(192,132,252,0.30); color: var(--accent); letter-spacing: 0.3px; }
   #info-card .card-content { font-size: 12px; line-height: 1.65; }
@@ -286,8 +373,42 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #info-close:hover { color: var(--text); }
   .imp-stars { color: var(--accent2); letter-spacing: 1px; }
 
-  /* Search */
-  #search {
+  /* Premium scrollbar */
+  ::-webkit-scrollbar { width: 3px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(192,132,252,0.25); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(192,132,252,0.5); }
+
+  /* Panel section heading uppercase mono */
+  .panel-section h3 {
+    font-size: 9px; font-weight: 500; letter-spacing: 2.5px;
+    text-transform: uppercase; color: var(--muted);
+    font-family: var(--font-mono);
+    margin-bottom: 10px; padding-bottom: 6px;
+    border-bottom: 0.5px solid var(--border);
+  }
+
+  /* Legend micro-glow on hover */
+  .leg-row:hover { background: rgba(192,132,252,0.06); }
+  .leg-row:hover .leg-dot { opacity: 1; filter: brightness(1.3); }
+
+  /* Corner brackets on panel using CSS */
+  #panel::before {
+    content: '';
+    position: absolute; top: 12px; left: 12px;
+    width: 14px; height: 14px;
+    border-top: 0.5px solid rgba(192,132,252,0.35);
+    border-left: 0.5px solid rgba(192,132,252,0.35);
+    pointer-events: none;
+  }
+  #panel::after {
+    content: '';
+    position: absolute; bottom: 12px; left: 12px;
+    width: 14px; height: 14px;
+    border-bottom: 0.5px solid rgba(192,132,252,0.35);
+    border-left: 0.5px solid rgba(192,132,252,0.35);
+    pointer-events: none;
+  }
     background: rgba(255,255,255,0.05); color: var(--text);
     border: 0.5px solid rgba(255,255,255,0.12); border-radius: 20px;
     padding: 5px 14px; font-size: 12px; width: 220px; outline: none;
@@ -310,13 +431,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 
+<div id="grain"></div>
+<div id="cursor-dot"></div>
+<div id="cursor-ring"></div>
 <div id="nebula"></div>
 <canvas id="starfield"></canvas>
 <div id="graph-root"></div>
 
 <div id="hud">
   <div id="hud-pulse"></div>
-  <span id="hud-title">NEMO &middot; Neural Memory</span>
+  <span id="hud-title">&#11044;&nbsp; NEMO</span>
+  <span id="hud-badge">v2.0 · live</span>
   <span id="hud-stats">loading&hellip;</span>
   <div id="hud-spacer"></div>
   <input id="search" type="text" placeholder="&#x1F50D; Search memories…" autocomplete="off" spellcheck="false">
@@ -374,6 +499,23 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 const RAW_NODES = __NODES_JSON__;
 const RAW_EDGES = __EDGES_JSON__;
 const TYPE_COLORS = __TYPE_COLORS_JSON__;
+
+// ── Custom cursor ────────────────────────────────────────────────
+(function() {
+  const dot  = document.getElementById('cursor-dot');
+  const ring = document.getElementById('cursor-ring');
+  let mx = -100, my = -100, rx = -100, ry = -100;
+  document.addEventListener('mousemove', e => { mx = e.clientX; my = e.clientY; });
+  document.addEventListener('mousedown', () => { dot.style.transform = 'translate(-50%,-50%) scale(1.8)'; ring.style.transform = 'translate(-50%,-50%) scale(0.8)'; });
+  document.addEventListener('mouseup',   () => { dot.style.transform = 'translate(-50%,-50%) scale(1)';   ring.style.transform = 'translate(-50%,-50%) scale(1)'; });
+  function loop() {
+    rx += (mx - rx) * 0.14; ry += (my - ry) * 0.14;
+    dot.style.left  = mx + 'px'; dot.style.top  = my + 'px';
+    ring.style.left = rx + 'px'; ring.style.top = ry + 'px';
+    requestAnimationFrame(loop);
+  }
+  loop();
+})();
 
 // Starfield + nebula dust
 (function() {
