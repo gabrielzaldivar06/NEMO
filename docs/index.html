@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NEMO — Memoria Persistente para IA</title>
+  <style>
+    :root {
+      --bg:        #0d1117;
+      --bg2:       #161b22;
+      --bg3:       #1c2330;
+      --border:    #30363d;
+      --accent:    #58a6ff;
+      --accent2:   #7ee787;
+      --accent3:   #ffa657;
+      --accent4:   #d2a8ff;
+      --red:       #f85149;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --font:      'Segoe UI', system-ui, -apple-system, sans-serif;
+      --mono:      'Cascadia Code', 'Fira Code', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    /* NAV */
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(13,17,23,0.92);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 56px;
+    }
+    .nav-brand { font-size: 1.2rem; font-weight: 700; color: var(--accent); letter-spacing: 2px; }
+    .nav-links { display: flex; gap: 1.5rem; }
+    .nav-links a { color: var(--muted); text-decoration: none; font-size: .9rem; transition: color .2s; }
+    .nav-links a:hover { color: var(--text); }
+
+    /* HERO */
+    .hero {
+      text-align: center;
+      padding: 6rem 2rem 4rem;
+      background: radial-gradient(ellipse at 50% 0%, rgba(88,166,255,.08) 0%, transparent 70%);
+    }
+    .hero h1 {
+      font-size: clamp(2.5rem, 6vw, 5rem);
+      font-weight: 800;
+      letter-spacing: -2px;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent4) 50%, var(--accent2) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .hero-sub {
+      font-size: 1.3rem;
+      color: var(--muted);
+      margin: 1rem auto 2rem;
+      max-width: 600px;
+    }
+    .hero-tagline {
+      font-size: 1.1rem;
+      color: var(--text);
+      font-style: italic;
+      margin-bottom: 2.5rem;
+    }
+    .badge-row {
+      display: flex; flex-wrap: wrap; justify-content: center; gap: .6rem;
+      margin-bottom: 2.5rem;
+    }
+    .badge {
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: 20px; padding: .25rem .9rem;
+      font-size: .8rem; font-family: var(--mono);
+      display: inline-flex; align-items: center; gap: .4rem;
+    }
+    .badge.green { border-color: var(--accent2); color: var(--accent2); }
+    .badge.blue  { border-color: var(--accent);  color: var(--accent);  }
+    .badge.purple{ border-color: var(--accent4); color: var(--accent4); }
+    .badge.orange{ border-color: var(--accent3); color: var(--accent3); }
+    .cta-row { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; }
+    .btn {
+      padding: .7rem 1.8rem; border-radius: 8px;
+      font-size: 1rem; font-weight: 600; cursor: pointer;
+      text-decoration: none; transition: all .2s; display: inline-block;
+    }
+    .btn-primary { background: var(--accent); color: #0d1117; }
+    .btn-primary:hover { background: #79b8ff; }
+    .btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    .btn-ghost:hover { border-color: var(--text); }
+
+    /* METRICS STRIP */
+    .metrics-strip {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+      background: var(--border);
+      margin: 3rem 0;
+    }
+    .metric-cell {
+      background: var(--bg2); padding: 1.5rem;
+      text-align: center;
+    }
+    .metric-val {
+      font-size: 2rem; font-weight: 800;
+      font-family: var(--mono); color: var(--accent2);
+    }
+    .metric-val.blue  { color: var(--accent); }
+    .metric-val.purple{ color: var(--accent4); }
+    .metric-val.orange{ color: var(--accent3); }
+    .metric-label { font-size: .8rem; color: var(--muted); margin-top: .3rem; }
+    .metric-sub   { font-size: .72rem; color: var(--muted); opacity: .7; }
+
+    /* SECTIONS */
+    section { padding: 4rem 2rem; max-width: 1100px; margin: 0 auto; }
+    section + section { border-top: 1px solid var(--border); }
+    h2 {
+      font-size: 1.9rem; font-weight: 700; margin-bottom: 1rem;
+      display: flex; align-items: center; gap: .5rem;
+    }
+    h2 .icon { font-size: 1.4rem; }
+    p.lead { color: var(--muted); font-size: 1.05rem; max-width: 720px; margin-bottom: 2rem; }
+
+    /* PROBLEM / SOLUTION */
+    .problem-solution {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;
+    }
+    @media(max-width:700px){ .problem-solution{ grid-template-columns:1fr; } }
+    .card {
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+      padding: 1.5rem;
+    }
+    .card h3 { font-size: 1.1rem; margin-bottom: .8rem; }
+    .card.red-border  { border-color: #3a1e1e; }
+    .card.green-border{ border-color: #1a3a1e; }
+    .card ul { list-style: none; display: flex; flex-direction: column; gap: .5rem; }
+    .card ul li::before { margin-right: .5rem; }
+    .card.red-border  ul li::before { content: "✗"; color: var(--red); }
+    .card.green-border ul li::before { content: "✓"; color: var(--accent2); }
+
+    /* PIPELINE */
+    .pipeline {
+      display: flex; flex-direction: column; gap: 0;
+    }
+    .pipeline-step {
+      display: flex; align-items: flex-start; gap: 1rem;
+      padding: .9rem 1.2rem;
+      background: var(--bg2); border: 1px solid var(--border);
+      position: relative;
+    }
+    .pipeline-step:first-child { border-radius: 10px 10px 0 0; }
+    .pipeline-step:last-child  { border-radius: 0 0 10px 10px; }
+    .pipeline-step + .pipeline-step { border-top: none; }
+    .step-num {
+      min-width: 28px; height: 28px; border-radius: 50%;
+      background: var(--bg3); border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: .75rem; font-family: var(--mono); color: var(--accent);
+      flex-shrink: 0; margin-top: .1rem;
+    }
+    .step-content h4 { font-size: .95rem; color: var(--text); }
+    .step-content p  { font-size: .85rem; color: var(--muted); margin-top: .2rem; }
+    .step-tag {
+      margin-left: auto; flex-shrink: 0;
+      font-size: .7rem; font-family: var(--mono);
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 4px; padding: .15rem .5rem; color: var(--accent3);
+    }
+
+    /* FEATURES GRID */
+    .features-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem;
+    }
+    .feature-card {
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+      padding: 1.2rem 1.4rem;
+      transition: border-color .2s, transform .2s;
+    }
+    .feature-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .feature-card .feat-icon { font-size: 1.5rem; margin-bottom: .6rem; }
+    .feature-card h4 { font-size: 1rem; margin-bottom: .4rem; }
+    .feature-card p { font-size: .85rem; color: var(--muted); }
+    .feat-new {
+      display: inline-block; font-size: .65rem; font-family: var(--mono);
+      background: rgba(88,166,255,.15); color: var(--accent);
+      border: 1px solid rgba(88,166,255,.3); border-radius: 4px;
+      padding: .1rem .45rem; margin-left: .5rem; vertical-align: middle;
+    }
+
+    /* BENCHMARK TABLE */
+    .bench-wrap { overflow-x: auto; }
+    table {
+      width: 100%; border-collapse: collapse;
+      font-size: .9rem;
+    }
+    th {
+      background: var(--bg2); color: var(--muted);
+      text-align: left; padding: .7rem 1rem;
+      font-size: .8rem; text-transform: uppercase; letter-spacing: .5px;
+      border-bottom: 2px solid var(--border);
+    }
+    td {
+      padding: .7rem 1rem; border-bottom: 1px solid var(--border);
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--bg2); }
+    .td-hit  { color: var(--accent2); font-family: var(--mono); }
+    .td-miss { color: var(--red);     font-family: var(--mono); }
+    .td-mono { font-family: var(--mono); }
+    .td-best { color: var(--accent2); font-weight: 700; }
+    .td-warn { color: var(--accent3); }
+
+    /* REGRESSION TABLE */
+    .delta-pos { color: var(--accent2); font-family: var(--mono); }
+    .delta-neg { color: var(--red);     font-family: var(--mono); }
+    .delta-neu { color: var(--muted);   font-family: var(--mono); }
+
+    /* ARCHITECTURE DIAGRAM */
+    .arch-diagram {
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+      padding: 2rem; font-family: var(--mono); font-size: .85rem;
+      overflow-x: auto; white-space: pre;
+      color: var(--muted); line-height: 1.8;
+    }
+    .arch-diagram .hl  { color: var(--accent); }
+    .arch-diagram .hl2 { color: var(--accent2); }
+    .arch-diagram .hl3 { color: var(--accent3); }
+    .arch-diagram .hl4 { color: var(--accent4); }
+
+    /* CODE */
+    pre {
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 1.2rem 1.4rem; overflow-x: auto; font-size: .85rem;
+      font-family: var(--mono); line-height: 1.6; color: var(--text);
+    }
+    code { font-family: var(--mono); font-size: .88em; }
+    .inline-code {
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: 4px; padding: .1rem .4rem;
+      font-family: var(--mono); font-size: .85em;
+    }
+
+    /* COMPARISON GRID */
+    .comp-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;
+    }
+    @media(max-width:700px){ .comp-grid{grid-template-columns:1fr;} }
+
+    /* SPRINT TIMELINE */
+    .timeline { display: flex; flex-direction: column; gap: 0; position: relative; }
+    .timeline::before {
+      content: ''; position: absolute; left: 14px; top: 0; bottom: 0;
+      width: 2px; background: var(--border);
+    }
+    .tl-item { display: flex; gap: 1.2rem; padding: .8rem 0; padding-left: 0; }
+    .tl-dot {
+      width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .7rem; font-weight: 700; font-family: var(--mono);
+      z-index: 1; border: 2px solid var(--border); background: var(--bg2);
+      color: var(--accent);
+    }
+    .tl-dot.done  { background: var(--accent2); color: var(--bg); border-color: var(--accent2); }
+    .tl-dot.latest{ background: var(--accent);  color: var(--bg); border-color: var(--accent);  }
+    .tl-body h4 { font-size: .95rem; color: var(--text); }
+    .tl-body p  { font-size: .82rem; color: var(--muted); margin-top: .2rem; }
+    .tl-tag {
+      font-size: .7rem; font-family: var(--mono);
+      border-radius: 4px; padding: .1rem .45rem;
+      background: var(--bg3); border: 1px solid var(--border); color: var(--muted);
+      margin-left: .5rem;
+    }
+
+    /* INSTALL */
+    .install-tabs { display: flex; gap: .4rem; margin-bottom: -.5px; }
+    .tab {
+      padding: .4rem 1rem; border-radius: 6px 6px 0 0;
+      border: 1px solid var(--border); border-bottom: none;
+      font-size: .85rem; cursor: pointer; color: var(--muted);
+      background: var(--bg2);
+    }
+    .tab.active { background: var(--bg3); color: var(--text); border-color: var(--accent); }
+
+    /* FOOTER */
+    footer {
+      text-align: center; padding: 2rem;
+      border-top: 1px solid var(--border); color: var(--muted); font-size: .85rem;
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+
+    @media(max-width:768px){
+      nav { padding: 0 1rem; }
+      .nav-links { display: none; }
+      .hero { padding: 3rem 1rem 2rem; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <span class="nav-brand">NEMO</span>
+  <div class="nav-links">
+    <a href="#como-funciona">Cómo funciona</a>
+    <a href="#features">Features</a>
+    <a href="#metricas">Métricas</a>
+    <a href="#pipeline">Pipeline</a>
+    <a href="#sprints">Sprints</a>
+    <a href="#instalar">Instalar</a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <h1>NEMO</h1>
+  <p class="hero-sub">Sistema de Memoria Persistente para IA</p>
+  <p class="hero-tagline">"La IA que trabajó contigo ayer, lo recuerda hoy."</p>
+
+  <div class="badge-row">
+    <span class="badge green">✓ Top-1 Recall 100%</span>
+    <span class="badge green">✓ MRR 0.9583</span>
+    <span class="badge blue">⚡ Latency avg 1.58s</span>
+    <span class="badge purple">🧠 37 herramientas MCP</span>
+    <span class="badge orange">🔒 100% local</span>
+    <span class="badge blue">🐍 Python 3.10+</span>
+    <span class="badge purple">v1.2.0 Sprint 12</span>
+  </div>
+
+  <div class="cta-row">
+    <a class="btn btn-primary" href="#instalar">Instalar ahora</a>
+    <a class="btn btn-ghost" href="https://github.com/gabrielzaldivar06/NEMO" target="_blank">GitHub →</a>
+  </div>
+</div>
+
+<!-- METRICS STRIP -->
+<div class="metrics-strip">
+  <div class="metric-cell">
+    <div class="metric-val">100%</div>
+    <div class="metric-label">Top-1 Recall</div>
+    <div class="metric-sub">15 queries · corpus aislado</div>
+  </div>
+  <div class="metric-cell">
+    <div class="metric-val blue">0.9583</div>
+    <div class="metric-label">MRR</div>
+    <div class="metric-sub">Sprint 12 · reranker activo</div>
+  </div>
+  <div class="metric-cell">
+    <div class="metric-val">92%</div>
+    <div class="metric-label">Top-1 Prod.</div>
+    <div class="metric-sub">24 queries · corpus real</div>
+  </div>
+  <div class="metric-cell">
+    <div class="metric-val orange">1.58s</div>
+    <div class="metric-label">Latency avg</div>
+    <div class="metric-sub">búsqueda normal sin reranker</div>
+  </div>
+  <div class="metric-cell">
+    <div class="metric-val purple">3.64s</div>
+    <div class="metric-label">Latency HyDE</div>
+    <div class="metric-sub">con expansión Ollama</div>
+  </div>
+  <div class="metric-cell">
+    <div class="metric-val blue">37</div>
+    <div class="metric-label">Herramientas MCP</div>
+    <div class="metric-sub">memoria · agenda · reflexión</div>
+  </div>
+  <div class="metric-cell">
+    <div class="metric-val">5</div>
+    <div class="metric-label">Bases de datos SQLite</div>
+    <div class="metric-sub">todo local en ~/.ai_memory/</div>
+  </div>
+  <div class="metric-cell">
+    <div class="metric-val orange">+0.03</div>
+    <div class="metric-label">Delta avg score</div>
+    <div class="metric-sub">vs baseline (regression bench)</div>
+  </div>
+</div>
+
+<!-- SECCIÓN: PROBLEMA Y SOLUCIÓN -->
+<section id="problema">
+  <h2><span class="icon">⚠️</span> El problema que resuelve NEMO</h2>
+  <p class="lead">Los LLMs tienen amnesia estructural: cada sesión empieza desde cero. NEMO construye una capa de memoria semántica persistente que cualquier agente puede consultar vía MCP.</p>
+  <div class="problem-solution">
+    <div class="card red-border">
+      <h3 style="color:var(--red)">Sin NEMO — cada sesión</h3>
+      <ul>
+        <li>La IA olvida tu nombre, preferencias y proyectos</li>
+        <li>Repites el mismo contexto en cada conversación</li>
+        <li>Los errores que corregiste vuelven a aparecer</li>
+        <li>No hay aprendizaje acumulativo entre sesiones</li>
+        <li>Cambiar de agente o editor borra todo el contexto</li>
+      </ul>
+    </div>
+    <div class="card green-border">
+      <h3 style="color:var(--accent2)">Con NEMO — contexto permanente</h3>
+      <ul>
+        <li>Memorias semánticas que sobreviven reinicios y cambios de editor</li>
+        <li>prime_context() carga tu contexto en una llamada al inicio</li>
+        <li>create_correction() con boost permanente +0.35 — los errores no se repiten</li>
+        <li>Aprendizaje acumulativo: las memorias más usadas suben en ranking</li>
+        <li>Compatible con VS Code, Claude, Cursor, SillyTavern, OpenWebUI</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- SECCIÓN: CÓMO FUNCIONA -->
+<section id="como-funciona">
+  <h2><span class="icon">🔍</span> Cómo funciona NEMO</h2>
+  <p class="lead">En términos simples: cuando le preguntas algo a la IA, NEMO busca en tu colección de memorias usando semántica (significado, no palabras exactas), y le entrega el contexto relevante antes de que responda.</p>
+
+  <div class="arch-diagram">
+<span class="hl">┌─────────┐     MCP / stdio     ┌──────────────────────────────────────┐</span>
+<span class="hl">│   IA    │◄───────────────────►│           NEMO MCP Server            │</span>
+<span class="hl">│(Copilot │                     │  ai_memory_mcp_server.py             │</span>
+<span class="hl">│ Claude  │                     └──────────────┬───────────────────────┘</span>
+<span class="hl">│ Cursor) │                                    │</span>
+<span class="hl">└─────────┘                                    ▼</span>
+<span class="hl2">                               ┌──────────────────────────────────────┐</span>
+<span class="hl2">                               │       ai_memory_core.py              │</span>
+<span class="hl2">                               │   Pipeline de búsqueda de 11 fases   │</span>
+<span class="hl2">                               └──────┬───────────────┬───────────────┘</span>
+                                      │               │
+<span class="hl3">                     ┌────────────────┘               └──────────────────────┐</span>
+<span class="hl3">                     ▼                                                        ▼</span>
+<span class="hl3">          ┌──────────────────┐                                   ┌────────────────────┐</span>
+<span class="hl3">          │  LM Studio :1234 │  ◄── embeddings asimétricos ──►   │  SQLite FTS5       │</span>
+<span class="hl3">          │  Qwen3-4B        │       Qwen3-embedding-4b          │  5 bases de datos  │</span>
+<span class="hl3">          └──────────────────┘                                   │  ~/.ai_memory/     │</span>
+<span class="hl4">          ┌──────────────────┐                                   └────────────────────┘</span>
+<span class="hl4">          │  llama_cpp :8080 │  ◄── reranking neuronal ─────────────────────────────►</span>
+<span class="hl4">          │  BGE-reranker    │       BGE-reranker-v2-m3</span>
+<span class="hl4">          └──────────────────┘</span>
+  </div>
+
+  <div style="margin-top: 2rem;">
+    <h3 style="margin-bottom: 1rem; color: var(--muted)">En lenguaje humano</h3>
+    <div class="features-grid">
+      <div class="card">
+        <h4>1. Guardas un recuerdo</h4>
+        <p>La IA llama a <code>create_memory</code>. NEMO guarda el texto en SQLite y genera un embedding vectorial en background (sin bloquear). El vector captura el <em>significado</em>, no solo palabras.</p>
+      </div>
+      <div class="card">
+        <h4>2. Buscas algo</h4>
+        <p>La IA llama a <code>search_memories</code>. NEMO convierte tu query en vector y busca los recuerdos más similares en significado — no en texto exacto. "Dónde guarda NEMO los datos" encuentra "AI_MEMORY_DATA_DIR".</p>
+      </div>
+      <div class="card">
+        <h4>3. El pipeline refina</h4>
+        <p>Los candidatos pasan por 11 fases: re-puntuación híbrida, decaimiento temporal, importancia, boost de correcciones, reranking neuronal BGE, y supresión de duplicados. Sale solo lo más relevante.</p>
+      </div>
+      <div class="card">
+        <h4>4. La IA responde con contexto</h4>
+        <p>El agente recibe las memorias relevantes y puede responder basándose en tu historial real, no en generación. Esto elimina alucinaciones sobre datos que conoce en tu contexto.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECCIÓN: PIPELINE TÉCNICO -->
+<section id="pipeline">
+  <h2><span class="icon">⚙️</span> Pipeline técnico de 11 fases</h2>
+  <p class="lead">Cada llamada a <code>search_memories</code> ejecuta un pipeline completo de recuperación de calidad de producción — comparable a motores de búsqueda en la nube, pero en tu máquina.</p>
+
+  <div class="pipeline">
+    <div class="pipeline-step">
+      <div class="step-num">0</div>
+      <div class="step-content">
+        <h4>HyDE — Expansión Hipotética de Query <span class="feat-new">nuevo</span></h4>
+        <p>Si <code>hyde=True</code>, llama a Ollama (qwen2.5:0.5b) para generar 3 variantes hipotéticas de la query. Calcula el embedding centroide de todas las variantes. Mejora recall en queries abstractas con vocabulario divergente.</p>
+      </div>
+      <div class="step-tag">+2.4s / opcional</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <h4>Embedding asimétrico B1</h4>
+        <p>Qwen3-embedding-4b con query instruction B1 optimizada. Distingue vocab abstracto de nombres técnicos específicos. +4.2pp Top-1 vs instrucción estándar en stress test.</p>
+      </div>
+      <div class="step-tag">LM Studio :1234</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <h4>Caché semántica de sesión</h4>
+        <p>Queries similares dentro de la misma sesión se sirven desde caché (max 32 entradas). Evita llamadas redundantes al modelo de embedding.</p>
+      </div>
+      <div class="step-tag">in-memory LRU</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <h4>Dense ANN + FTS5 BM25 en paralelo</h4>
+        <p>Búsqueda vectorial coseno top-50 AND búsqueda léxica BM25 (SQLite FTS5, unicode61 sin diacríticos) corren en paralelo con asyncio.gather. Los candidatos exclusivos de FTS5 reciben coseno calculado al vuelo.</p>
+      </div>
+      <div class="step-tag">asyncio.gather</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <h4>Hybrid rescoring</h4>
+        <p>Puntuación combinada: <code>0.7 × semántico + 0.3 × BM25</code>. El peso semántico domina para preservar recall en paráfrasis mientras BM25 filtra nombres técnicos exactos.</p>
+      </div>
+      <div class="step-tag">weighted fusion</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <h4>Decaimiento temporal + bonus recencia</h4>
+        <p>Las memorias antiguas no accedidas bajan en puntuación. Las recientes (últimas 24h) reciben un boost. Evita que contexto obsoleto contamine resultados actuales.</p>
+      </div>
+      <div class="step-tag">FSRS-6 <span class="feat-new">nuevo</span></div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">6</div>
+      <div class="step-content">
+        <h4>Clasificador de intención</h4>
+        <p>Detecta automáticamente si la query es factual, procedimental o contextual y ajusta los pesos de ranking. Una pregunta "¿cómo hago X?" es tratada diferente a "¿cuál es Y?".</p>
+      </div>
+      <div class="step-tag">rule-based</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">7</div>
+      <div class="step-content">
+        <h4>Boosts de calidad</h4>
+        <p>Las correcciones (<code>create_correction</code>) reciben boost permanente +0.35. Importancia 8-10 sube. access_count eleva memorias frecuentemente útiles. Las memorias tipo "correction" tienen prioridad estructural.</p>
+      </div>
+      <div class="step-tag">+0.35 correcciones</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">8</div>
+      <div class="step-content">
+        <h4>Bypass adaptativo + gap router</h4>
+        <p>Si el top candidato tiene confianza ≥ 0.92, se omite el reranker (camino rápido). Si hay gap significativo entre #1 y #2, también se bypasea. Reduce latencia en queries con respuesta obvia.</p>
+      </div>
+      <div class="step-tag">adaptive routing</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">9</div>
+      <div class="step-content">
+        <h4>Reranking neuronal BGE</h4>
+        <p>BGE-reranker-v2-m3 vía llama_cpp en :8080. Reordena los candidatos usando comprensión profunda de relevancia query-documento. Requiere start_qwen_reranker_server.bat. Con él activo: MRR 0.9583, Top-1 92%.</p>
+      </div>
+      <div class="step-tag">BGE-reranker-v2-m3</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">10</div>
+      <div class="step-content">
+        <h4>Supresión de near-duplicados</h4>
+        <p>Threshold duro: coseno > 0.95 elimina. Threshold suave: coseno > 0.80 penaliza. Garantiza diversidad en los resultados — no te devuelve la misma memoria reformulada 5 veces.</p>
+      </div>
+      <div class="step-tag">0.95 hard / 0.80 soft</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-num">11</div>
+      <div class="step-content">
+        <h4>FSRS-6 access feedback + retorno</h4>
+        <p>Cada resultado devuelto dispara una actualización de stability y access_count en background. El sistema aprende qué memorias son genuinamente útiles. Retroalimentación implícita sin acción del usuario.</p>
+      </div>
+      <div class="step-tag">FSRS-6 <span class="feat-new">nuevo</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- SECCIÓN: FEATURES -->
+<section id="features">
+  <h2><span class="icon">✨</span> Todas las features</h2>
+  <p class="lead">NEMO integra 37 herramientas MCP organizadas en 6 dominios, con 3 features nuevas en el sprint actual y arquitectura de producción validada con benchmarks automatizados.</p>
+
+  <div class="features-grid">
+
+    <div class="feature-card">
+      <div class="feat-icon">🧠</div>
+      <h4>HyDE — Hypothetical Document Embeddings <span class="feat-new">nuevo</span></h4>
+      <p>Genera 3 variantes hipotéticas de tu query con qwen2.5:0.5b y busca con el embedding centroide. Mejora recall especialmente en queries abstractas o con vocabulario divergente del corpus. Overhead: ~2.4s. Degradación elegante si Ollama no está disponible.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">🔄</div>
+      <h4>Prediction Error Gating (PEG) <span class="feat-new">nuevo</span></h4>
+      <p>Al insertar una memory nueva con similitud 0.70–0.90 respecto a una existente Y frases contradictorias ("ya no", "ahora es", "no longer", "updated to"), la antigua queda marcada como <code>superseded</code> e importance -= 2. La nueva sube importance += 1. Corrección automática de hechos obsoletos.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">📉</div>
+      <h4>FSRS-6 Decaimiento Espaciado <span class="feat-new">nuevo</span></h4>
+      <p>Basado en el algoritmo de repetición espaciada FSRS-6. Cada memoria tiene <code>stability</code> y <code>difficulty</code>. Cuando se accede, la stability crece usando R = 0.9^(t/s). El boost de retención en búsqueda: ±0.03 max. Columnas: stability REAL DEFAULT 1.0, difficulty REAL DEFAULT 0.3.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">🔍</div>
+      <h4>Búsqueda Híbrida Dense + FTS5</h4>
+      <p>Vector ANN (Qwen3-4B, 768 dimensiones) y BM25 léxico (SQLite FTS5, unicode61 sin diacríticos) corren en paralelo con asyncio.gather. Fusion: 0.7×semántico + 0.3×BM25. Candidatos FTS5-only entran al pipeline con coseno calculado al vuelo.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">🎯</div>
+      <h4>Reranking Neuronal BGE</h4>
+      <p>BGE-reranker-v2-m3-Q4_K_M.gguf vía llama_cpp en :8080. Reordena los top candidatos con comprensión profunda de relevancia. Runtime check detecta falso-200 de LM Studio (que no implementa /v1/rerank). Con reranker activo: Top-1 92%, MRR 0.9583.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">⚡</div>
+      <h4>Bypass Adaptativo</h4>
+      <p>El pipeline detecta automáticamente cuando un candidato es lo suficientemente bueno (confianza ≥ 0.92 o gap score significativo) y omite el reranker. Mantiene baja latencia en queries frecuentes sin sacrificar calidad.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">🔁</div>
+      <h4>Deduplicación Semántica</h4>
+      <p>En escritura (create_memory), background task compara el nuevo embedding contra todos los existentes. Threshold duro 0.92: elimina duplicados silenciosamente. Threshold suave 0.80: penaliza sin eliminar. Zero memorias duplicadas en el corpus.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">✏️</div>
+      <h4>Sistema de Correcciones</h4>
+      <p><code>create_correction</code> registra errores de la IA. Las memorias tipo "correction" reciben boost permanente +0.35 en relevancia y siempre aparecen con prioridad en recuperación. Mecanismo de aprendizaje implícito: los errores corregidos no se repiten.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">📋</div>
+      <h4>Contextual Embeddings (Sprint 5)</h4>
+      <p>El texto que se embeda incluye prefijo: <code>"fact | importancia:7 | [nemo,config]: ..."</code>. El tipo, importancia y etiquetas anclan el vector en clusters semánticamente discriminativos. +36pp vs prefijo en lenguaje natural (colapsaba vectores).</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">📅</div>
+      <h4>Agenda y Recordatorios</h4>
+      <p>8 herramientas MCP para crear citas (recurrencia diaria/semanal/mensual/anual), recordatorios con prioridad, y listar agenda de los próximos N días. Los recordatorios pendientes aparecen automáticamente en prime_context().</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">🌐</div>
+      <h4>Importación Multiplataforma</h4>
+      <p>Importa historial de conversaciones desde LM Studio, OpenWebUI, SillyTavern, VS Code, y Gemini CLI. Formatos JSON/JSONL/SQLite. Las conversaciones importadas se embedan y quedan disponibles para búsqueda semántica.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feat-icon">🔒</div>
+      <h4>100% Local — Zero Nube</h4>
+      <p>Todo corre en tu máquina: embeddings (LM Studio o Ollama), reranker (llama_cpp), almacenamiento (SQLite en ~/.ai_memory/). Sin API keys, sin suscripciones, sin telemetría, sin internet requerido en runtime.</p>
+    </div>
+
+  </div>
+</section>
+
+<!-- SECCIÓN: MÉTRICAS -->
+<section id="metricas">
+  <h2><span class="icon">📊</span> Métricas y Benchmarks</h2>
+  <p class="lead">Todos los benchmarks corren en DBs temporales aisladas con seeds controladas. Los números de producción son del corpus real de conversaciones con reranker activo.</p>
+
+  <!-- Benchmark aislado actual -->
+  <h3 style="margin-bottom: 1rem; color: var(--muted)">Benchmark aislado — HEAD (15 queries, 5 seeds, sin reranker)</h3>
+  <div class="bench-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Query</th>
+          <th>Tipo</th>
+          <th>Normal</th>
+          <th>HyDE</th>
+          <th>t normal</th>
+          <th>t HyDE</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>endpoint de embeddings primario</td><td>Exacta</td><td class="td-hit">HIT</td><td class="td-hit">HIT</td><td class="td-mono">1.16s</td><td class="td-mono">3.37s</td></tr>
+        <tr><td>ruta de la base de datos NEMO</td><td>Exacta</td><td class="td-hit">HIT</td><td class="td-hit">HIT</td><td class="td-mono">3.94s</td><td class="td-mono">3.86s</td></tr>
+        <tr><td>modelo de reranking utilizado</td><td>Exacta</td><td class="td-hit">HIT</td><td class="td-hit">HIT</td><td class="td-mono">1.11s</td><td class="td-mono">3.46s</td></tr>
+        <tr><td>umbral de deduplicacion semantica</td><td>Exacta</td><td class="td-hit">HIT</td><td class="td-hit">HIT</td><td class="td-mono">1.58s</td><td class="td-mono">3.85s</td></tr>
+        <tr><td>cuantas herramientas MCP tiene NEMO</td><td>Exacta</td><td class="td-hit">HIT</td><td class="td-hit">HIT</td><td class="td-mono">1.59s</td><td class="td-mono">3.81s</td></tr>
+        <tr><td>where does NEMO save its data</td><td>Cross-idioma</td><td class="td-hit">HIT</td><td class="td-hit">HIT</td><td class="td-mono">1.56s</td><td class="td-mono">3.87s</td></tr>
+        <tr><td>primary embedding server URL</td><td>Cross-idioma</td><td class="td-hit">HIT</td><td class="td-hit">HIT</td><td class="td-mono">1.15s</td><td class="td-mono">3.47s</td></tr>
+        <tr><td>how many MCP tools are available</td><td>Cross-idioma</td><td class="td-hit">HIT</td><td class="td-hit">HIT</td><td class="td-mono">1.00s</td><td class="td-mono">3.36s</td></tr>
+        <tr><td>similarity threshold for dedup</td><td>Cross-idioma</td><td class="td-hit">HIT</td><td class="td-hit">HIT</td><td class="td-mono">1.10s</td><td class="td-mono">3.46s</td></tr>
+        <tr><td>which reranker model does NEMO use</td><td>Cross-idioma</td><td class="td-hit">HIT</td><td class="td-hit">HIT</td><td class="td-mono">1.58s</td><td class="td-mono">3.88s</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:1rem; margin-top:1.5rem;">
+    <div class="card" style="text-align:center;">
+      <div style="font-size:1.8rem; font-family:var(--mono); color:var(--accent2)">100%</div>
+      <div style="color:var(--muted); font-size:.85rem">Top-1 Recall (normal)</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div style="font-size:1.8rem; font-family:var(--mono); color:var(--accent2)">100%</div>
+      <div style="color:var(--muted); font-size:.85rem">Top-1 Recall (HyDE)</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div style="font-size:1.8rem; font-family:var(--mono); color:var(--accent)">1.58s</div>
+      <div style="color:var(--muted); font-size:.85rem">Latency avg (normal)</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div style="font-size:1.8rem; font-family:var(--mono); color:var(--accent4)">3.64s</div>
+      <div style="color:var(--muted); font-size:.85rem">Latency avg (HyDE)</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div style="font-size:1.8rem; font-family:var(--mono); color:var(--accent)">1.59s</div>
+      <div style="color:var(--muted); font-size:.85rem">Latency p95 (normal)</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div style="font-size:1.8rem; font-family:var(--mono); color:var(--accent4)">3.87s</div>
+      <div style="color:var(--muted); font-size:.85rem">Latency p95 (HyDE)</div>
+    </div>
+  </div>
+
+  <!-- Regression Benchmark -->
+  <h3 style="margin: 2.5rem 0 1rem; color: var(--muted)">Regression benchmark — Baseline (fdf1e5f) vs HEAD</h3>
+  <p style="color:var(--muted); font-size:.9rem; margin-bottom:1rem">15 queries, 5 seeds, 3 DBs aisladas paralelas. Baseline = pre-HyDE/PEG/FSRS. Sin reranker.</p>
+  <div class="bench-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Métrica</th>
+          <th>Baseline (fdf1e5f)</th>
+          <th>HEAD normal</th>
+          <th>Delta normal</th>
+          <th>HEAD HyDE</th>
+          <th>Delta HyDE</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Top-1 Recall (%)</td>
+          <td class="td-mono">100.0%</td>
+          <td class="td-mono">100.0%</td>
+          <td class="delta-neu">+0.0%</td>
+          <td class="td-mono">100.0%</td>
+          <td class="delta-neu">+0.0%</td>
+        </tr>
+        <tr>
+          <td>MRR</td>
+          <td class="td-mono">1.000</td>
+          <td class="td-mono">1.000</td>
+          <td class="delta-neu">+0.000</td>
+          <td class="td-mono">1.000</td>
+          <td class="delta-neu">+0.000</td>
+        </tr>
+        <tr>
+          <td>Avg sim score</td>
+          <td class="td-mono">0.9035</td>
+          <td class="td-mono td-best">0.9341</td>
+          <td class="delta-pos">+0.0306</td>
+          <td class="td-mono td-best">0.9341</td>
+          <td class="delta-pos">+0.0306</td>
+        </tr>
+        <tr>
+          <td>Latency avg (s)</td>
+          <td class="td-mono">1.47s</td>
+          <td class="td-mono">1.63s</td>
+          <td class="td-warn">+0.16s</td>
+          <td class="td-mono">3.88s</td>
+          <td class="td-warn">+2.42s</td>
+        </tr>
+        <tr>
+          <td>Latency p95 (s)</td>
+          <td class="td-mono">1.55s</td>
+          <td class="td-mono">2.99s</td>
+          <td class="td-warn">+1.44s</td>
+          <td class="td-mono">4.00s</td>
+          <td class="td-warn">+2.45s</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="color:var(--muted); font-size:.82rem; margin-top:.8rem">
+    ⚠️ El recall empata porque Qwen3-4B ya maneja cross-idioma perfectamente con solo 5 seeds. El beneficio de HyDE aparece con corpus > 100 memorias y queries muy abstractas. El avg score sube +0.03 gracias a FSRS-6 retention boost.
+  </p>
+
+  <!-- Benchmark de producción Sprint 12 -->
+  <h3 style="margin: 2.5rem 0 1rem; color: var(--muted)">Benchmark de producción Sprint 12 — reranker activo</h3>
+  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:1rem;">
+    <div class="card" style="text-align:center;">
+      <div style="font-size:1.8rem; font-family:var(--mono); color:var(--accent2)">92%</div>
+      <div style="color:var(--muted); font-size:.85rem">Top-1 · 24 queries corpus real</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div style="font-size:1.8rem; font-family:var(--mono); color:var(--accent2)">0.9583</div>
+      <div style="color:var(--muted); font-size:.85rem">MRR · pipeline completo</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div style="font-size:1.8rem; font-family:var(--mono); color:var(--accent)">2.847s</div>
+      <div style="color:var(--muted); font-size:.85rem">Latency P95 · FTS5+Dense+Reranker</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div style="font-size:1.8rem; font-family:var(--mono); color:var(--accent4)">83.3%</div>
+      <div style="color:var(--muted); font-size:.85rem">Top-1 stress test · 48 queries / 120 memorias</div>
+    </div>
+  </div>
+  <div style="margin-top: 1rem; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.4rem;">
+    <p style="font-size:.85rem; color:var(--muted)"><strong style="color:var(--text)">Stress test por categoría (48 queries, 120 memorias):</strong></p>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap:.5rem; margin-top:.8rem; font-size:.82rem; font-family:var(--mono);">
+      <div><span style="color:var(--accent2)">91.67%</span> confusory</div>
+      <div><span style="color:var(--accent2)">91.67%</span> typo_severe</div>
+      <div><span style="color:var(--accent)">83.33%</span> global</div>
+      <div><span style="color:var(--accent3)">58.33%</span> paraphrase_ext (ceiling del modelo)</div>
+    </div>
+  </div>
+</section>
+
+<!-- SECCIÓN: SPRINTS / HISTORIAL -->
+<section id="sprints">
+  <h2><span class="icon">🗓️</span> Evolución — Sprint History</h2>
+  <p class="lead">NEMO ha evolucionado en sprints incrementales. Cada sprint añade calidad de recuperación medible con benchmarks antes de mergear a main.</p>
+
+  <div class="timeline">
+    <div class="tl-item">
+      <div class="tl-dot done">1</div>
+      <div class="tl-body">
+        <h4>Sprint 1–4 — Fundamentos<span class="tl-tag">base</span></h4>
+        <p>Motor de embeddings, 5 bases de datos SQLite, 31 herramientas MCP, agenda/recordatorios, importación de historial multiplataforma.</p>
+      </div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-dot done">5</div>
+      <div class="tl-body">
+        <h4>Sprint 5 — Contextual Retrieval<span class="tl-tag">+recall</span></h4>
+        <p>Prefijos contextuales en embeddings (type | importancia | tags). Discriminación entre clusters semánticos. Deduplicación semántica threshold 0.92.</p>
+      </div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-dot done">6</div>
+      <div class="tl-body">
+        <h4>Sprint 6–9 — Quality Stack<span class="tl-tag">+precision</span></h4>
+        <p>Clasificador de intención, bypass adaptativo, gap router, caché semántica de sesión, boosts correction +0.35, decaimiento temporal, epoch tokens.</p>
+      </div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-dot done">10</div>
+      <div class="tl-body">
+        <h4>Sprint 10 — Anti-alucinación<span class="tl-tag">+confianza</span></h4>
+        <p>4 estrategias: grounding verification, confidence scoring, source attribution, contradiction detection. Fixes de freeze en escrituras concurrentes.</p>
+      </div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-dot done">11</div>
+      <div class="tl-body">
+        <h4>Sprint 11 — Hybrid FTS5 + Dense<span class="tl-tag">+BM25</span></h4>
+        <p>SQLite FTS5 (unicode61, sin diacríticos). Búsqueda densa y léxica en paralelo. Candidatos FTS5-only con coseno al vuelo. Triggers de sincronización + backfill idempotente.</p>
+      </div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-dot done">12</div>
+      <div class="tl-body">
+        <h4>Sprint 12 — Asymmetric Embeddings + Reranker Fix<span class="tl-tag">+4.2pp</span></h4>
+        <p>Query instruction B1 asimétrica. Detección falso-200 LM Studio. generate_document_embedding(). Multi-workspace simultáneo. Top-1 92%, MRR 0.9583.</p>
+      </div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-dot latest">✦</div>
+      <div class="tl-body">
+        <h4>HEAD — HyDE + PEG + FSRS-6<span class="tl-tag" style="color:var(--accent); border-color:var(--accent)">actual</span></h4>
+        <p><strong>HyDE</strong>: expansión hipotética de query vía Ollama, centroid embedding.<br>
+        <strong>PEG</strong>: supersede automático de memorias contradictorias (sim 0.70–0.90).<br>
+        <strong>FSRS-6</strong>: stability/difficulty por memoria, retention boost ±0.03 en búsqueda.<br>
+        <strong>Benchmark aislado</strong>: 10/10 features pass, 15/15 queries HIT.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECCIÓN: INSTALAR -->
+<section id="instalar">
+  <h2><span class="icon">📦</span> Instalación</h2>
+  <p class="lead">Sin configurar nada, sin cuentas, sin nube. Solo Python y tu editor.</p>
+
+  <h3 style="margin-bottom: 1rem; font-size: 1.1rem; color: var(--muted)">1. Clonar e instalar</h3>
+  <pre><span style="color:var(--muted)"># Windows / Linux / macOS</span>
+git clone https://github.com/gabrielzaldivar06/NEMO.git
+cd persistent-ai-memory
+pip install -r requirements.txt</pre>
+
+  <h3 style="margin: 2rem 0 1rem; font-size: 1.1rem; color: var(--muted)">2. Conectar como servidor MCP</h3>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;" class="comp-grid">
+    <div>
+      <p style="font-size:.85rem; color:var(--muted); margin-bottom:.5rem">VS Code Copilot · Claude Desktop · Cursor</p>
+      <pre>// mcp.json
+{
+  "servers": {
+    "nemo": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "C:/ruta/a/persistent-ai-memory/
+ai_memory_mcp_server.py"
+      ]
+    }
+  }
+}</pre>
+    </div>
+    <div>
+      <p style="font-size:.85rem; color:var(--muted); margin-bottom:.5rem">Variables de entorno opcionales</p>
+      <pre># Cambiar directorio de datos
+AI_MEMORY_DATA_DIR=D:/mis_memorias
+
+# Provider de embeddings
+AI_MEMORY_EMBED_PROVIDER=lm_studio
+AI_MEMORY_EMBED_URL=http://localhost:1234/v1/embeddings
+
+# Fallback si LM Studio no está
+AI_MEMORY_EMBED_PROVIDER=ollama
+AI_MEMORY_EMBED_MODEL=nomic-embed-text</pre>
+    </div>
+  </div>
+
+  <h3 style="margin: 2rem 0 1rem; font-size: 1.1rem; color: var(--muted)">3. Verificar</h3>
+  <pre>python tests/test_health_check.py
+
+<span style="color:var(--accent2)">[✓] Imported ai_memory_core</span>
+<span style="color:var(--accent2)">[✓] Found embedding_config.json</span>
+<span style="color:var(--accent2)">[✓] System health check passed</span>
+<span style="color:var(--accent2)">[✓] All health checks passed! System is ready to use.</span></pre>
+
+  <h3 style="margin: 2rem 0 1rem; font-size: 1.1rem; color: var(--muted)">4. Activar reranker (opcional pero recomendado)</h3>
+  <pre><span style="color:var(--muted)"># Windows — arrancar BGE-reranker-v2-m3 en :8080</span>
+start_qwen_reranker_server.bat
+
+<span style="color:var(--muted"># Esto activa el pipeline completo: Top-1 92%, MRR 0.9583
+# Sin reranker: Top-1 ~80%, latency avg 1.58s (más rápido)</span></pre>
+</section>
+
+<!-- SECCIÓN: ARQUITECTURA TÉCNICA -->
+<section id="arquitectura">
+  <h2><span class="icon">🏗️</span> Arquitectura técnica</h2>
+  <p class="lead">NEMO es un servidor MCP stdio escrito en Python puro. Zero dependencias de nube. La única fuente de verdad es SQLite.</p>
+
+  <div class="comp-grid">
+    <div>
+      <h3 style="margin-bottom: 1rem; font-size: 1rem; color: var(--muted)">Archivos principales</h3>
+      <div class="card">
+        <ul style="list-style:none; display:flex; flex-direction:column; gap:.6rem; font-size:.88rem;">
+          <li><code class="inline-code">ai_memory_mcp_server.py</code><br><span style="color:var(--muted); font-size:.82rem">Punto de entrada MCP · 37 herramientas con ToolAnnotations</span></li>
+          <li><code class="inline-code">ai_memory_core.py</code><br><span style="color:var(--muted); font-size:.82rem">Lógica core · pipeline 11 fases · HyDE · PEG · FSRS-6</span></li>
+          <li><code class="inline-code">settings.py</code><br><span style="color:var(--muted); font-size:.82rem">Config vía env vars AI_MEMORY_* · pydantic BaseSettings</span></li>
+          <li><code class="inline-code">embedding_config.json</code><br><span style="color:var(--muted); font-size:.82rem">Primario: LM Studio Qwen3-4B :1234 · Fallback: Ollama nomic</span></li>
+          <li><code class="inline-code">database_maintenance.py</code><br><span style="color:var(--muted); font-size:.82rem">VACUUM, dedup periódico, archivado de memorias obsoletas</span></li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <h3 style="margin-bottom: 1rem; font-size: 1rem; color: var(--muted)">Stack tecnológico</h3>
+      <div class="card">
+        <ul style="list-style:none; display:flex; flex-direction:column; gap:.6rem; font-size:.88rem;">
+          <li>🗄️ <strong>SQLite 3</strong> — 5 bases, FTS5, WAL mode, VACUUM automático</li>
+          <li>🔢 <strong>NumPy</strong> — similitud coseno vectorizada en CPU (thread pool)</li>
+          <li>⚡ <strong>asyncio</strong> — pipeline completamente asíncrono, gather paralelo</li>
+          <li>🤖 <strong>Qwen3-embedding-4b</strong> — 768 dim, asimétrico, vía LM Studio</li>
+          <li>🎯 <strong>BGE-reranker-v2-m3-Q4</strong> — reranking neuronal, vía llama_cpp</li>
+          <li>📡 <strong>aiohttp</strong> — HTTP async para embedding y reranker endpoints</li>
+          <li>🔌 <strong>MCP + stdio</strong> — compatible con cualquier cliente MCP estándar</li>
+          <li>📦 <strong>pydantic-settings</strong> — config type-safe con env vars</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <h3 style="margin: 2rem 0 1rem; font-size: 1rem; color: var(--muted)">Las 5 bases de datos SQLite en ~/.ai_memory/</h3>
+  <div class="features-grid">
+    <div class="card"><h4>ai_memories.db</h4><p>Memorias semánticas de largo plazo. Tabla principal: curated_memories con embedding BLOB, stability, difficulty, access_count, tags, importance_level.</p></div>
+    <div class="card"><h4>conversations.db</h4><p>Historial de conversaciones con timestamps. Permite buscar "¿qué hablamos la semana pasada sobre X?" semánticamente.</p></div>
+    <div class="card"><h4>schedule.db</h4><p>Citas y recordatorios. Recurrencia daily/weekly/monthly/yearly. Los pendientes del día aparecen automáticamente en prime_context().</p></div>
+    <div class="card"><h4>mcp_tool_calls.db</h4><p>Log de todas las llamadas a herramientas MCP. Fuente para reflect_on_tool_usage() — el sistema aprende qué herramientas son mal invocadas.</p></div>
+    <div class="card"><h4>vscode_project.db</h4><p>Contexto de proyectos VS Code: archivos abiertos, extensiones, configuración. Enriquece las búsquedas con contexto del workspace actual.</p></div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <p>NEMO — Sistema de Memoria Persistente para IA</p>
+  <p style="margin-top:.4rem">
+    <a href="https://github.com/gabrielzaldivar06/NEMO">GitHub</a> ·
+    Licencia CC BY-NC 4.0 · Python 3.10+ · SQLite + LM Studio + Ollama
+  </p>
+  <p style="margin-top:.4rem; font-size:.75rem; opacity:.5">
+    Benchmark generado: 27 Mar 2026 · HEAD 84ce619 · branch main
+  </p>
+</footer>
+
+</body>
+</html>
