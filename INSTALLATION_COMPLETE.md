@@ -7,24 +7,24 @@ The Persistent AI Memory System is now ready for the Reddit community and beyond
 ### 🚀 Multiple Installation Methods
 1. **One-Command Installation (Linux/macOS)**:
    ```bash
-   curl -sSL https://raw.githubusercontent.com/savantskie/persistent-ai-memory/main/install.sh | bash
+   curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.sh | bash
    ```
 
 2. **Windows One-Click Installation**:
    ```cmd
-   curl -sSL https://raw.githubusercontent.com/savantskie/persistent-ai-memory/main/install.bat -o install.bat && install.bat
+   curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.bat -o install.bat && install.bat
    ```
 
 3. **Manual Installation**:
    ```bash
-   git clone https://github.com/savantskie/persistent-ai-memory.git
+   git clone https://github.com/gabrielzaldivar06/persistent-ai-memory.git
    cd persistent-ai-memory
    pip install -e .
    ```
 
 4. **Direct pip Installation**:
    ```bash
-   pip install git+https://github.com/savantskie/persistent-ai-memory.git
+   pip install git+https://github.com/gabrielzaldivar06/persistent-ai-memory.git
    ```
 
 ### 📋 Installation Files Created
@@ -70,7 +70,7 @@ Someone asked about installation on Reddit? They now have:
 
 1. **Install in seconds**:
    ```bash
-   curl -sSL https://raw.githubusercontent.com/savantskie/persistent-ai-memory/main/install.sh | bash
+   curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.sh | bash
    ```
 
 2. **Verify it works**:

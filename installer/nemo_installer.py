@@ -35,7 +35,7 @@ EMBED_MODEL = "nomic-embed-text"
 DEFAULT_DIR = str(Path.home() / "AppData" / "Local" / "NEMO")
 
 # Only the runtime files needed — no docs, tests, examples, scripts
-RAW_BASE = "https://raw.githubusercontent.com/savantskie/persistent-ai-memory/main/"
+RAW_BASE = "https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/"
 CORE_FILES = [
     "ai_memory_mcp_server.py",
     "ai_memory_core.py",
@@ -1102,7 +1102,7 @@ class NemoInstaller(Tk):
             self._set_step("editors", "done" if self._configured_editors else "skip")
             if not self._configured_editors:
                 self._log("  ⊘ Ningún editor configurado — puedes hacerlo manualmente.")
-                self._log("    Consulta: https://github.com/savantskie/persistent-ai-memory#instalación")
+                self._log("    Consulta: https://github.com/gabrielzaldivar06/persistent-ai-memory#instalación")
 
             # ── 8. Shortcuts ───────────────────────────────────────────────
             self._set_step("shortcuts", "running")
@@ -1170,11 +1170,11 @@ class NemoInstaller(Tk):
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
                 winreg.SetValueEx(key, "DisplayName",    0, winreg.REG_SZ,    "NEMO Memory Server")
                 winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ,    APP_VERSION)
-                winreg.SetValueEx(key, "Publisher",      0, winreg.REG_SZ,    "savantskie")
+                winreg.SetValueEx(key, "Publisher",      0, winreg.REG_SZ,    "gabrielzaldivar06")
                 winreg.SetValueEx(key, "UninstallString",0, winreg.REG_SZ,    str(uninstall_bat))
                 winreg.SetValueEx(key, "InstallLocation",0, winreg.REG_SZ,    str(idir))
                 winreg.SetValueEx(key, "URLInfoAbout",   0, winreg.REG_SZ,
-                                  "https://github.com/savantskie/persistent-ai-memory")
+                                  "https://github.com/gabrielzaldivar06/persistent-ai-memory")
                 winreg.SetValueEx(key, "NoModify",       0, winreg.REG_DWORD, 1)
                 winreg.SetValueEx(key, "NoRepair",       0, winreg.REG_DWORD, 1)
         except OSError:

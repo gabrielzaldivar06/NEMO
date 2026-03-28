@@ -40,7 +40,7 @@ This project represents a groundbreaking collaboration between human creativity 
 
 ## 👨‍💻 Individual Contributions
 
-### Project Creator (@savantskie)
+### Project Creator (@gabrielzaldivar06)
 - **Vision & Leadership**: Conceived the need for persistent AI memory
 - **Architecture Planning**: Defined requirements and system boundaries  
 - **Testing & Validation**: Verified functionality and real-world usage

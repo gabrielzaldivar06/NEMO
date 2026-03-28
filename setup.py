@@ -16,7 +16,7 @@ setup(
     description="A comprehensive, real-time memory system for AI assistants",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/savantskie/persistent-ai-memory",
+    url="https://github.com/gabrielzaldivar06/persistent-ai-memory",
     packages=find_packages(),
     py_modules=[
         "ai_memory_core",

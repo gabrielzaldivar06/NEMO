@@ -17,7 +17,7 @@ echo ✅ Python found
 
 REM Clone the repository
 echo 📥 Cloning repository...
-git clone https://github.com/savantskie/persistent-ai-memory.git
+git clone https://github.com/gabrielzaldivar06/persistent-ai-memory.git
 cd persistent-ai-memory
 
 REM Install dependencies

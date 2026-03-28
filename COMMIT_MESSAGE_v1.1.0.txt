@@ -161,7 +161,7 @@ Users upgrading from v1.0.0 → v1.1.0:
 
 ## Contributors
 
-- **@savantskie** - Architecture improvements, path independence design
+- **@gabrielzaldivar06** - Architecture improvements, path independence design
 - **GitHub Copilot** - Implementation of path independence, config system, documentation
 - **ChatGPT** - Architectural guidance and design feedback
 

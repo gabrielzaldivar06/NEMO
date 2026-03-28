@@ -14,16 +14,16 @@ This gives your AI assistant (ChatGPT, Claude, etc.) a **persistent memory** tha
 
 ### If you're on Windows:
 ```cmd
-curl -sSL https://raw.githubusercontent.com/savantskie/persistent-ai-memory/main/install.bat -o install.bat && install.bat
+curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.bat -o install.bat && install.bat
 ```
 
 ### If you're on Mac/Linux:
 ```bash
-curl -sSL https://raw.githubusercontent.com/savantskie/persistent-ai-memory/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/gabrielzaldivar06/persistent-ai-memory/main/install.sh | bash
 ```
 
 ### Don't have curl? Manual way:
-1. Download the code: [Click here](https://github.com/savantskie/persistent-ai-memory/archive/main.zip)
+1. Download the code: [Click here](https://github.com/gabrielzaldivar06/persistent-ai-memory/archive/main.zip)
 2. Extract the zip file
 3. Open terminal/command prompt in that folder
 4. Run: `pip install -e .`

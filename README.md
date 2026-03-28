@@ -138,7 +138,7 @@ Consulta
 ### 2. Instalación
 
 ```bash
-git clone https://github.com/savantskie/persistent-ai-memory.git
+git clone https://github.com/gabrielzaldivar06/persistent-ai-memory.git
 cd persistent-ai-memory
 pip install -r requirements.txt
 ```
@@ -370,7 +370,7 @@ Ver [LICENSE](LICENSE) · [Texto completo CC BY-NC 4.0](https://creativecommons.
 
 NEMO es el resultado de una colaboración inusual — y creemos que vale la pena decirlo en voz alta.
 
-### Gabriel &nbsp;·&nbsp; [@savantskie](https://github.com/savantskie)
+### Gabriel &nbsp;·&nbsp; [@gabrielzaldivar06](https://github.com/gabrielzaldivar06)
 
 Arquitecto del proyecto y fuerza motriz detrás de NEMO.
 
