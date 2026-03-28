@@ -3827,10 +3827,15 @@ class PersistentAIMemorySystem:
 
             if (best_match and _CONTRADICTION_THRESHOLD_LOW <= best_sim < _CONTRADICTION_THRESHOLD_HIGH):
                 content_lower = content.lower()
-                old_content_lower = best_match.get("content", "").lower()
+                old_content_lower = (best_match["content"] or "").lower()
                 has_contradiction = any(phrase in content_lower for phrase in _CONTRADICTION_PHRASES)
                 if has_contradiction:
                     old_id = best_match["memory_id"]
+                    # old content via direct index (sqlite3.Row doesn't support .get())
+                    try:
+                        _ = best_match["content"]
+                    except Exception:
+                        pass
                     logger.info(
                         f"Prediction Error Gating: new={memory_id} supersedes old={old_id} "
                         f"(sim={best_sim:.4f}, contradiction signal detected)"
@@ -3844,7 +3849,7 @@ class PersistentAIMemorySystem:
                         old_tags = json.loads(old_tags_row[0]["tags"]) if old_tags_row[0]["tags"] else []
                         if "superseded" not in old_tags:
                             old_tags.append("superseded")
-                        new_imp = max(1, (old_tags_row[0]["importance_level"] or 5) - 2)
+                        new_imp = max(1, int(old_tags_row[0]["importance_level"] or 5) - 2)
                         await self.ai_memory_db.execute_update(
                             "UPDATE curated_memories SET tags=?, importance_level=?, timestamp_updated=? WHERE memory_id=?",
                             (json.dumps(old_tags), new_imp, get_current_timestamp(), old_id)
@@ -5037,6 +5042,10 @@ class PersistentAIMemorySystem:
         for result in results:
             mt = result["data"].get("memory_type", "general")
             imp = result["data"]["importance_level"]
+            try:
+                imp = int(imp) if imp is not None else 5
+            except (ValueError, TypeError):
+                imp = 5
             type_weight = _TYPE_QUALITY_WEIGHT.get(mt, 0.5)
             quality_boost = type_weight * (imp / 10.0) * _BOOST_SCALE
             result["similarity_score"] += quality_boost
