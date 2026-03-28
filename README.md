@@ -9,7 +9,7 @@
   <a href="https://creativecommons.org/licenses/by-nc/4.0/"><img src="https://img.shields.io/badge/Licencia-CC%20BY--NC%204.0-lightgrey.svg" alt="Licencia: CC BY-NC 4.0"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <img src="https://img.shields.io/badge/release-v1.3.0--Sprint15-green.svg" alt="Release">
-  <img src="https://img.shields.io/badge/herramientas_MCP-37-blueviolet.svg" alt="MCP Tools">
+  <img src="https://img.shields.io/badge/herramientas_MCP-44-blueviolet.svg" alt="MCP Tools">
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/precisión_Top--1-92%25-brightgreen.svg" alt="Top-1 Accuracy">
@@ -169,7 +169,7 @@ Benchmark stress (48 queries, 120 memorias, categorías extremas):
 
 ## Cómo Funciona
 
-NEMO expone **31 herramientas MCP** a través de un servidor Python stdio. Cuando un agente llama `search_memories`, NEMO ejecuta un pipeline de 11 fases:
+NEMO expone **44 herramientas MCP** a través de un servidor Python stdio. Cuando un agente llama `search_memories`, NEMO ejecuta un pipeline de 11 fases:
 
 ```
 Consulta
@@ -224,7 +224,7 @@ Consulta
 | Característica | Detalle |
 |----------------|---------|
 | **Búsqueda híbrida** | Dense (Qwen3-4B, asimétrico) + FTS5 BM25 léxico en paralelo + reranker BGE |
-| **31 herramientas MCP** | Memoria, conversaciones, agenda, correcciones, reflexiones, salud |
+| **44 herramientas MCP** | Memoria, conversaciones, agenda, correcciones, reflexiones, salud, roleplay, proyectos, cognición avanzada |
 | **5 bases de datos SQLite** | conversations · ai_memories · schedule · mcp_tool_calls · vscode_project |
 | **Deduplicación semántica** | Umbral duro 0.92 · umbral suave 0.82 (sin memorias duplicadas) |
 | **Autoridad temporal** | Decaimiento temporal evita que memorias obsoletas aparezcan |
@@ -233,7 +233,7 @@ Consulta
 | **Agenda y recordatorios** | Calendario completo con recurrencia diaria/semanal/mensual/anual |
 | **Degradación elegante** | Cae a Ollama → búsqueda de texto si los embeddings no están disponibles |
 | **Panel lateral VS Code** | Panel premium oscuro-dorado — estado en vivo de LM Studio, Reranker, DBs y MCP · botones para lanzar Dashboard 3D · polling cada 30 s |
-| **Dashboard Neural 3D** | Grafo 3D interactivo generado localmente — bloom glow, hover tooltips, búsqueda en vivo, slider de similaridad |
+| **Render Neural 3D** | 3D interactivo "mira tus memorias funcionar" — bloom glow, hover tooltips, búsqueda en vivo, slider de similaridad |
 | **Autostart en Windows** | Inicia LM Studio + carga modelos automáticamente al iniciar sesión |
 | **100% local** | Sin claves de API, sin nube, sin suscripciones |
 
@@ -306,7 +306,7 @@ No hace falta pedirle al agente que use NEMO — ocurre solo en Agent mode.
 
 ---
 
-## Las 31 Herramientas MCP
+## 44 Herramientas MCP
 
 <details>
 <summary><b>Memoria (5 herramientas)</b></summary>
@@ -391,7 +391,7 @@ No hace falta pedirle al agente que use NEMO — ocurre solo en Agent mode.
 └────────────────────────┬────────────────────────────┘
                          │ MCP stdio
 ┌────────────────────────▼────────────────────────────┐
-│       ai_memory_mcp_server.py  (31 herramientas)     │
+│       ai_memory_mcp_server.py  (44 herramientas)     │
 └────────────────────────┬────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────┐
@@ -482,17 +482,15 @@ Ver [LICENSE](LICENSE) · [Texto completo CC BY-NC 4.0](https://creativecommons.
 
 ## Créditos
 
-NEMO es el resultado de una colaboración inusual — y creemos que vale la pena decirlo en voz alta.
+### Gabriel Zaldívar&nbsp;·&nbsp; [@gabrielzaldivar06](https://github.com/gabrielzaldivar06)
 
-### Gabriel &nbsp;·&nbsp; [@gabrielzaldivar06](https://github.com/gabrielzaldivar06)
-
-Arquitecto del proyecto y fuerza motriz detrás de NEMO.
+Arquitecto detrás de NEMO.
 
 ### GitHub Copilot &nbsp;·&nbsp; Claude Sonnet (Anthropic)
 
 Socio principal de implementación en todos los sprints. Motor central de (`ai_memory_core.py`), diseñó el pipeline de recuperación de 11 fases, implementó la integración del reranker, el sistema de autoridad temporal, la deduplicación semántica y la extensión de VS Code — trabajando iterativamente con Gabriel desde la especificación hasta el código de producción.
 
-> NEMO es uno de los primeros proyectos de código abierto construido explícitamente como una **colaboración de pair-programming humano ↔ IA**,  
+> NEMO es uno de los primeros proyectos de código abierto construido como **colaboración de pair-programming humano ↔ IA** USANDO EL PROPIO NEMO,  
 > donde las propias limitaciones de memoria de la IA eran el problema que se resolvía.  
 
 ### Comunidad Open Source
