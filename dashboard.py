@@ -440,6 +440,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div id="hud">
   <div id="hud-pulse"></div>
+  <span id="hud-sse" style="font-size:9px;letter-spacing:.5px;opacity:.65;text-transform:uppercase;font-family:var(--font-mono)"></span>
   <span id="hud-title">&#11044;&nbsp; NEMO</span>
   <span id="hud-badge">v2.0 · live</span>
   <span id="hud-stats">loading&hellip;</span>
@@ -601,7 +602,7 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
       skill:      '\u2727',   // ✧
       ai_memory:  '\u29bf',   // ⦿
     };
-    const SZ = 160;
+    const SZ = 96;
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = SZ;
     const ctx = canvas.getContext('2d');
@@ -667,30 +668,30 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
 
       // Layer 4 — type symbol with strong pulsing glow
       ctx.setLineDash([]);
-      ctx.font = '700 40px "Space Grotesk", system-ui, sans-serif';
+      ctx.font = '700 28px "Space Grotesk", system-ui, sans-serif';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.shadowColor = col;
-      ctx.shadowBlur = 8 + 22 * pulse;   // 8→30 dramatic
+      ctx.shadowBlur = 5 + 14 * pulse;   // 5→19
       ctx.fillStyle = 'rgba(255,255,255,'+(0.70 + 0.28*pulse).toFixed(3)+')';
       ctx.fillText(sym, cx, cy);
       ctx.shadowBlur = 0;
 
       // Layer 5 — importance badge
-      const badgeX = cx + 28, badgeY = cy + 28;
+      const badgeX = cx + 20, badgeY = cy + 20;
       ctx.beginPath(); ctx.arc(badgeX,badgeY,11,0,2*Math.PI);
       ctx.fillStyle = 'rgba(12,10,20,0.85)'; ctx.fill();
       ctx.strokeStyle = col; ctx.lineWidth = 1.0;
       ctx.setLineDash([]); ctx.stroke();
-      ctx.font = '500 10px "DM Mono", monospace';
+      ctx.font = '500 8px "DM Mono", monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillStyle = col;
       ctx.fillText(String(imp), badgeX, badgeY);
 
       // Layer 6 — specular highlight
-      const spec = ctx.createRadialGradient(cx-14,cy-15,0,cx-14,cy-15,14);
+      const spec = ctx.createRadialGradient(cx-8,cy-9,0,cx-8,cy-9,9);
       spec.addColorStop(0,'rgba(255,255,255,0.55)');
       spec.addColorStop(1,'rgba(255,255,255,0)');
-      ctx.beginPath(); ctx.arc(cx-14,cy-15,14,0,2*Math.PI);
+      ctx.beginPath(); ctx.arc(cx-8,cy-9,9,0,2*Math.PI);
       ctx.fillStyle = spec; ctx.fill();
     };
 
@@ -765,19 +766,24 @@ function refresh() {
 refresh();
 
 // ── Standalone plasma animation loop (independent of Three.js render) ───────
-// Runs at display refresh rate, throttles texture upload to ~30fps
+// Batch: max 20 nodes per frame round-robin, 50ms throttle to protect FPS
 (function plasmaLoop() {
-  let lastT = 0;
+  let lastT = 0, batchIdx = 0;
+  const BATCH = 20;
   function tick(t) {
-    if (t - lastT >= 30) {      // ~33fps cap
+    if (t - lastT >= 50) {      // ~20fps \u2014 animated but FPS-friendly
       lastT = t;
       const nodes = Graph.graphData ? Graph.graphData().nodes : [];
-      for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i];
-        if (n.__drawNode && n.__tex) {
-          n.__drawNode(t);
-          n.__tex.needsUpdate = true;
+      const total = nodes.length;
+      if (total > 0) {
+        for (let i = 0; i < Math.min(BATCH, total); i++) {
+          const n = nodes[(batchIdx + i) % total];
+          if (n.__drawNode && n.__tex) {
+            n.__drawNode(t);
+            n.__tex.needsUpdate = true;
+          }
         }
+        batchIdx = (batchIdx + BATCH) % total;
       }
     }
     requestAnimationFrame(tick);
@@ -785,6 +791,7 @@ refresh();
   requestAnimationFrame(tick);
 })();
 
+// Bloom post-processing
 // Bloom post-processing
 setTimeout(() => {
   try {
@@ -1220,6 +1227,8 @@ document.getElementById('springSlider').addEventListener('input', function() {
     es.addEventListener('open', () => {
       LIVE_DOT.style.background = '#06d6a0';
       LIVE_DOT.title = 'Live \u2014 NEMO connected';
+      const sseLabel = document.getElementById('hud-sse');
+      if (sseLabel) { sseLabel.textContent = 'live'; sseLabel.style.color = '#06d6a0'; }
     });
 
     es.addEventListener('message', e => {
@@ -1279,10 +1288,12 @@ document.getElementById('springSlider').addEventListener('input', function() {
     });
 
     es.addEventListener('error', () => {
-      LIVE_DOT.style.background = '#ff4757';
-      LIVE_DOT.title = 'Offline \u2014 reconnecting\u2026';
+      LIVE_DOT.style.background = '#f59e0b';
+      LIVE_DOT.title = 'SSE offline \u2014 start NEMO server to enable live feed';
+      const sseLabel2 = document.getElementById('hud-sse');
+      if (sseLabel2) { sseLabel2.textContent = 'offline'; sseLabel2.style.color = '#f59e0b'; }
       es.close();
-      setTimeout(connectSSE, 5000);
+      setTimeout(connectSSE, 8000);
     });
   }
 
