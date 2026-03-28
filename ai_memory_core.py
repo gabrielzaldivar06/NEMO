@@ -6183,8 +6183,8 @@ class PersistentAIMemorySystem:
         """Adaptive memory ingestion with Prediction-Error Gating.
 
         Replaces naive create_memory with a 3-path decision:
-          CREATE    — content is novel  (nearest cosine < 0.80)
-          UPDATE    — content refines   (cosine 0.80–0.949)
+          CREATE    — content is novel  (nearest cosine < 0.75)
+          UPDATE    — content refines   (cosine 0.75–0.949)
           SUPERSEDE — content replaces  (cosine >= 0.95)
 
         Setting force_create=True skips the comparison and always creates.
@@ -6207,7 +6207,7 @@ class PersistentAIMemorySystem:
                             nearest_id = top[0].get("data", {}).get("memory_id")
                             if similarity >= 0.95:
                                 action = "SUPERSEDE"
-                            elif similarity >= 0.80:
+                            elif similarity >= 0.75:
                                 action = "UPDATE"
                 except Exception:
                     pass  # fallback to CREATE
@@ -6296,7 +6296,7 @@ class PersistentAIMemorySystem:
             rows = await self.ai_memory_db.execute_query(
                 "SELECT memory_id, content, memory_type, importance_level, tags, "
                 "timestamp_created FROM curated_memories "
-                "WHERE DATE(timestamp_created) >= ? AND DATE(timestamp_created) <= ? "
+                "WHERE SUBSTR(timestamp_created, 1, 10) >= ? AND SUBSTR(timestamp_created, 1, 10) <= ? "
                 "ORDER BY timestamp_created DESC LIMIT ?",
                 (date_from, date_to, limit)
             )
