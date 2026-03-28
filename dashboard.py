@@ -122,8 +122,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <title>NEMO · Neural Memory Graph</title>
-<!-- 3d-force-graph: WebGL/Three.js, works from file:// (UMD build) -->
-<script src="https://unpkg.com/three@0.170.0/build/three.min.js"></script>
+<!-- three.min.js must load FIRST so window.THREE is available for 3d-force-graph (peer dep, not bundled) -->
+<script src="https://unpkg.com/three@0.155.0/build/three.min.js"></script>
 <script src="https://unpkg.com/3d-force-graph@1.73.5/dist/3d-force-graph.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -357,7 +357,7 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
   .nodeColor(n => n.color)
   .nodeVal(n => 0.5 + n.importance * 0.8)
   .nodeOpacity(0.92)
-  .nodeResolution(14)
+  .nodeResolution(24)
   .nodeThreeObject(n => {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = 128;
@@ -374,7 +374,7 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
     ctx.fillStyle = '#ffffff55'; ctx.fill();
     const tex = new THREE.CanvasTexture(canvas);
     const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
-    const sp = new THREE.Sprite(mat);
+    const sp  = new THREE.Sprite(mat);
     const s = 3 + n.importance * 1.4;
     sp.scale.set(s, s, 1);
     return sp;
