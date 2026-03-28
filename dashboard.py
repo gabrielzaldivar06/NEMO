@@ -414,6 +414,7 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
     const sp  = new THREE.Sprite(mat);
     const s = 3 + n.importance * 1.4;
     sp.scale.set(s, s, 1);
+    n.__sprite = sp;   // store ref for direct material manipulation
     return sp;
   })
   .nodeThreeObjectExtend(false)
@@ -476,6 +477,7 @@ setTimeout(() => {
       0.05   // threshold (low = most objects glow)
     );
     composer.addPass(bloom);
+    window._bloomPass = bloom;  // expose for SSE animations
     // Intercept 3d-force-graph's per-frame render call
     const _orig = renderer.render.bind(renderer);
     function _intercept(s, c) {
@@ -618,15 +620,16 @@ document.getElementById('springSlider').addEventListener('input', function() {
 (function initSSE() {
   const SSE_URL = 'http://127.0.0.1:11434/events';
   const LIVE_DOT = document.getElementById('hud-pulse');
+
   // Toast container
   const toast = document.createElement('div');
   toast.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:999;' +
     'display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none';
   document.body.appendChild(toast);
 
-  function showToast(msg, color) {
+  function showToast(msg, color, icon) {
     const el = document.createElement('div');
-    el.textContent = msg;
+    el.textContent = (icon ? icon + ' ' : '') + msg;
     el.style.cssText = 'background:rgba(3,5,13,.92);border:1px solid '+color+';color:'+color+
       ';font-size:12px;padding:6px 16px;border-radius:20px;letter-spacing:.4px;opacity:1;' +
       'transition:opacity 1.5s ease;backdrop-filter:blur(8px)';
@@ -634,31 +637,154 @@ document.getElementById('springSlider').addEventListener('input', function() {
     setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 1500); }, 2500);
   }
 
+  // ── Roleplay persistent glow state ────────────────────────────────────
+  let _roleplayGlowFrame = null;
+  const _rpCol1 = new THREE.Color('#f06292');
+  const _rpCol2 = new THREE.Color('#ce93d8');
+  const _rpWhite = new THREE.Color('#ffffff');
+
+  function startRoleplayGlow() {
+    if (_roleplayGlowFrame) return;
+    function loop() {
+      const t = (Math.sin(Date.now() * 0.0025) + 1) / 2;
+      const col = _rpCol1.clone().lerp(_rpCol2, t);
+      try {
+        Graph.graphData().nodes.forEach(n => {
+          if (n.mtype === 'roleplay' && n.__sprite) n.__sprite.material.color.copy(col);
+        });
+      } catch(e) {}
+      _roleplayGlowFrame = requestAnimationFrame(loop);
+    }
+    _roleplayGlowFrame = requestAnimationFrame(loop);
+  }
+
+  function stopRoleplayGlow() {
+    if (_roleplayGlowFrame) { cancelAnimationFrame(_roleplayGlowFrame); _roleplayGlowFrame = null; }
+    try {
+      Graph.graphData().nodes.forEach(n => {
+        if (n.mtype === 'roleplay' && n.__sprite) n.__sprite.material.color.copy(_rpWhite);
+      });
+    } catch(e) {}
+  }
+
+  // ── Insight supernova animation ────────────────────────────────────────
+  function supernovaFlash(node) {
+    if (!node) return;
+    const scene = Graph.scene();
+    const ox = node.x || 0, oy = node.y || 0, oz = node.z || 0;
+
+    // Flash sprite to gold, then restore
+    if (node.__sprite) {
+      node.__sprite.material.color.set('#ffd166');
+      setTimeout(() => {
+        if (node.__sprite) node.__sprite.material.color.set('#ffffff');
+      }, 1400);
+    }
+
+    // 3 expanding light-ring waves with staggered delays
+    const ringColors = [0xffd166, 0xffb703, 0xff9f1c];
+    for (let i = 0; i < 3; i++) {
+      setTimeout(() => {
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(0.1, 0.6, 48),
+          new THREE.MeshBasicMaterial({
+            color: ringColors[i], transparent: true, opacity: 0.75,
+            side: THREE.DoubleSide, depthWrite: false
+          })
+        );
+        ring.position.set(ox, oy, oz);
+        // Tilt each ring slightly differently for a 3D burst feel
+        ring.rotation.x = Math.PI / 2 + i * 0.4;
+        ring.rotation.z = i * Math.PI / 3;
+        scene.add(ring);
+        const start = Date.now();
+        const maxScale = 14 + i * 7;
+        const dur = 1100 + i * 150;
+        (function expand() {
+          const t = (Date.now() - start) / dur;
+          if (t >= 1) {
+            scene.remove(ring);
+            ring.geometry.dispose(); ring.material.dispose();
+            return;
+          }
+          const eased = 1 - Math.pow(1 - t, 2);
+          ring.scale.setScalar(1 + eased * maxScale);
+          ring.material.opacity = 0.75 * (1 - t);
+          requestAnimationFrame(expand);
+        })();
+      }, i * 180);
+    }
+
+    // Radial particle burst — 12 small glowing dots shot outward
+    const particleCount = 12;
+    for (let p = 0; p < particleCount; p++) {
+      const angle  = (p / particleCount) * Math.PI * 2;
+      const phi    = (Math.random() - 0.5) * Math.PI;
+      const dir    = new THREE.Vector3(
+        Math.cos(angle) * Math.cos(phi),
+        Math.sin(phi),
+        Math.sin(angle) * Math.cos(phi)
+      );
+      const geo = new THREE.SphereGeometry(0.35, 6, 6);
+      const mat = new THREE.MeshBasicMaterial({
+        color: p % 2 === 0 ? 0xffd166 : 0xffffff,
+        transparent: true, opacity: 0.9
+      });
+      const dot = new THREE.Mesh(geo, mat);
+      dot.position.set(ox, oy, oz);
+      scene.add(dot);
+      const start = Date.now();
+      const speed = 18 + Math.random() * 10;
+      (function fly() {
+        const t = (Date.now() - start) / 900;
+        if (t >= 1) {
+          scene.remove(dot); geo.dispose(); mat.dispose(); return;
+        }
+        const eased = 1 - Math.pow(1 - t, 3);
+        dot.position.set(ox + dir.x * eased * speed, oy + dir.y * eased * speed, oz + dir.z * eased * speed);
+        mat.opacity = 0.9 * (1 - t * t);
+        requestAnimationFrame(fly);
+      })();
+    }
+
+    // Bloom strength spike
+    if (window._bloomPass) {
+      window._bloomPass.strength = 2.8;
+      const step = () => {
+        window._bloomPass.strength = Math.max(1.4, window._bloomPass.strength - 0.07);
+        if (window._bloomPass.strength > 1.4) requestAnimationFrame(step);
+      };
+      setTimeout(() => requestAnimationFrame(step), 300);
+    }
+  }
+
+  // ── Standard flash (non-insight) ──────────────────────────────────────
   function flashNode(nodeId, flashColor) {
     if (!nodeId) return;
     const node = Graph.graphData().nodes.find(n => n.id === nodeId);
     if (!node) return;
-    const original = node.color;
-    node.__flashColor = flashColor;
-    Graph.nodeColor(n => n.__flashColor || n.color);
-    setTimeout(() => { delete node.__flashColor; Graph.nodeColor(n => n.color); }, 1800);
+    if (node.__sprite) {
+      node.__sprite.material.color.set(flashColor);
+      setTimeout(() => { if (node.__sprite) node.__sprite.material.color.set('#ffffff'); }, 1800);
+    }
   }
 
   function highlightNodes(ids, flashColor) {
     if (!ids || !ids.length) return;
     const idSet = new Set(ids);
+    const col = new THREE.Color(flashColor);
+    const white = new THREE.Color('#ffffff');
     Graph.graphData().nodes.forEach(n => {
-      if (idSet.has(n.id)) n.__flashColor = flashColor;
+      if (idSet.has(n.id) && n.__sprite) n.__sprite.material.color.copy(col);
     });
-    Graph.nodeColor(n => n.__flashColor || n.color);
     setTimeout(() => {
-      Graph.graphData().nodes.forEach(n => delete n.__flashColor);
-      Graph.nodeColor(n => n.color);
+      Graph.graphData().nodes.forEach(n => {
+        if (idSet.has(n.id) && n.__sprite) n.__sprite.material.color.copy(white);
+      });
     }, 2000);
   }
 
   function addNodeLive(evt) {
-    // Add the new memory as a node to the live graph without regenerating
     const typeColors = __TYPE_COLORS_JSON__;
     const color = typeColors[evt.memory_type] || '#607d8b';
     const newNode = {
@@ -666,18 +792,12 @@ document.getElementById('springSlider').addEventListener('input', function() {
       mtype:      evt.memory_type || 'fact',
       importance: evt.importance || 5,
       color:      color,
-      label:      (evt.content || '').substring(0, 60) + (evt.content && evt.content.length > 60 ? '…' : ''),
+      label:      (evt.content || '').substring(0, 60) + (evt.content && evt.content.length > 60 ? '\u2026' : ''),
       tags:       evt.tags || [],
-      __flashColor: '#ffffff',
     };
     const { nodes, links } = Graph.graphData();
     nodes.push(newNode);
     Graph.graphData({ nodes, links });
-    // Remove flash after animation
-    setTimeout(() => {
-      delete newNode.__flashColor;
-      Graph.nodeColor(n => n.color);
-    }, 2000);
   }
 
   function connectSSE() {
@@ -685,38 +805,69 @@ document.getElementById('springSlider').addEventListener('input', function() {
 
     es.addEventListener('open', () => {
       LIVE_DOT.style.background = '#06d6a0';
-      LIVE_DOT.title = 'Live — NEMO connected';
+      LIVE_DOT.title = 'Live \u2014 NEMO connected';
     });
 
     es.addEventListener('message', e => {
       let evt;
       try { evt = JSON.parse(e.data); } catch { return; }
-
       if (evt.type === 'connected') return;
 
       if (evt.type === 'memory_created') {
         addNodeLive(evt);
-        showToast('✦ Memory created: ' + (evt.content || '').substring(0, 40), '#06d6a0');
-        flashNode(evt.id, '#ffffff');
+        const isInsight = evt.memory_type === 'insight';
+        if (isInsight) {
+          showToast('Insight: ' + (evt.content || '').substring(0, 40), '#ffd166', '\u2605');
+          // slight delay so addNodeLive can render the node first
+          setTimeout(() => {
+            const node = Graph.graphData().nodes.find(n => n.id === evt.id);
+            if (node) supernovaFlash(node);
+          }, 120);
+        } else {
+          showToast('Memory: ' + (evt.content || '').substring(0, 40), '#06d6a0', '\u2736');
+          setTimeout(() => flashNode(evt.id, '#ffffff'), 120);
+        }
+
       } else if (evt.type === 'memories_searched') {
         highlightNodes(evt.hit_ids, '#00b4d8');
-        showToast('⌕ Search: "' + (evt.query || '').substring(0, 40) + '" → ' + evt.count + ' hits', '#00b4d8');
+        showToast('Search: "' + (evt.query || '').substring(0, 40) + '" \u2192 ' + evt.count + ' hits', '#00b4d8', '\u2315');
+
       } else if (evt.type === 'context_primed') {
         highlightNodes(evt.memory_ids, '#ff9f1c');
-        showToast('◎ Context primed — ' + evt.count + ' memories activated', '#ff9f1c');
+        showToast('Context primed \u2014 ' + evt.count + ' memories activated', '#ff9f1c', '\u25ce');
+
       } else if (evt.type === 'synaptic_tagged') {
         flashNode(evt.memory_id, '#a855f7');
-        showToast('⟁ Synaptic tagging — ' + evt.related_count + ' connections', '#a855f7');
+        showToast('Synaptic tagging \u2014 ' + evt.related_count + ' connections', '#a855f7', '\u29d7');
+
       } else if (evt.type === 'conversation_stored') {
-        showToast('◑ Conversation stored: ' + (evt.title || ''), '#48cae4');
+        showToast('Conversation stored: ' + (evt.title || ''), '#48cae4', '\u25d1');
+
+      } else if (evt.type === 'character_active') {
+        // Roleplay mode ON — persistent pink/violet glow on all roleplay nodes
+        startRoleplayGlow();
+        showToast('Character active: ' + (evt.character_name || ''), '#f06292', '\u{1F3AD}');
+        if (evt.memory_ids && evt.memory_ids.length) highlightNodes(evt.memory_ids, '#f06292');
+
+      } else if (evt.type === 'roleplay_stored') {
+        addNodeLive(evt);
+        showToast('Roleplay stored: ' + (evt.character_name || ''), '#ce93d8', '\u{1F3AD}');
+        setTimeout(() => {
+          const node = Graph.graphData().nodes.find(n => n.id === evt.id);
+          if (node) flashNode(evt.id, '#f06292');
+        }, 120);
+
+      } else if (evt.type === 'character_session_ended') {
+        stopRoleplayGlow();
+        showToast('Character session ended', '#9e9e9e', '\u{1F3AD}');
       }
     });
 
     es.addEventListener('error', () => {
       LIVE_DOT.style.background = '#ff4757';
-      LIVE_DOT.title = 'Offline — reconnecting…';
+      LIVE_DOT.title = 'Offline \u2014 reconnecting\u2026';
       es.close();
-      setTimeout(connectSSE, 5000);  // auto-reconnect
+      setTimeout(connectSSE, 5000);
     });
   }
 

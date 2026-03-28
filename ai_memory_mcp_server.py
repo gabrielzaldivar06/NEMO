@@ -1038,6 +1038,23 @@ class AIMemoryMCPServer:
                     _emit("conversation_stored", {
                         "title": arguments.get("title", ""),
                     })
+                elif tool_name == "get_character_context":
+                    # roleplay mode ON — emit character_active so dashboard enters persistent glow
+                    char_name = arguments.get("character_name", "")
+                    memories = result.get("memories", []) if isinstance(result, dict) else []
+                    _emit("character_active", {
+                        "character_name": char_name,
+                        "memory_ids": [m.get("memory_id", "") for m in memories[:30] if isinstance(m, dict)],
+                    })
+                elif tool_name == "store_roleplay_memory":
+                    _emit("roleplay_stored", {
+                        "id": result.get("memory_id", "") if isinstance(result, dict) else "",
+                        "character_name": arguments.get("character_name", ""),
+                        "content": arguments.get("event_description", "")[:120],
+                        "memory_type": "roleplay",
+                        "importance": arguments.get("importance_level", 7),
+                        "tags": ["roleplay", arguments.get("character_name", "").lower()],
+                    })
             except Exception:
                 pass  # SSE is non-critical — never break tool execution
             # ── end SSE hooks ─────────────────────────────────────────────
