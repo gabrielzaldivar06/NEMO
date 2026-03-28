@@ -156,7 +156,7 @@ Luego abre una sesión nueva y pregunta:
 
 | | Otras soluciones | **NEMO** |
 |---|---|---|
-| **Búsqueda** | Similitud coseno simple | Pipeline de 11 fases: reranking, decaimiento temporal, clasificación de intención |
+| **Búsqueda** | Similitud coseno simple | Pipeline propietario de múltiples etapas: búsqueda híbrida, reranking neuronal, señales contextuales y temporales |
 | **Infraestructura** | Dependiente de la nube | 100% local — LM Studio + SQLite, sin internet |
 | **Rendimiento** | Recuperación uniforme | Bypass adaptativo: enruta al camino rápido O al reranker completo según confianza |
 | **Persistencia** | Olvida sesiones anteriores | SQLite — sobrevive reinicios, cambios de agente y reinstalaciones |
@@ -167,24 +167,14 @@ Luego abre una sesión nueva y pregunta:
 
 ## 🧠 Cómo Funciona
 
-NEMO expone **44 herramientas MCP** a través de un servidor Python stdio. Cuando un agente llama `search_memories`, ejecuta un pipeline de **11 fases**:
+NEMO expone **44 herramientas MCP** a través de un servidor Python stdio. Cuando un agente llama `search_memories`, la consulta pasa por un **pipeline de recuperación de múltiples etapas** desarrollado internamente:
 
-```
-Consulta recibida
-  │
-  ├─ 01  Embedding asimétrico  →  Qwen3-4B con query_instruction B1
-  ├─ 02  Caché semántica       →  omitir si hit de sesión
-  ├─ 03  Búsqueda paralela     →  Dense ANN coseno (top-50) + FTS5 BM25
-  │       └─ candidatos FTS-only reciben coseno y entran al pipeline
-  ├─ 04  Hybrid rescoring      →  0.7 × semántico + 0.3 × BM25
-  ├─ 05  Decaimiento temporal  →  bonus de recencia
-  ├─ 06  Clasificador intención→  factual / procedimental / contextual
-  ├─ 07  Quality boosts        →  importancia · corrección +0.35 · access_count
-  ├─ 08  Bypass adaptativo     →  gap router (rápido vs. reranker completo)
-  ├─ 09  Reranking neuronal    →  BGE-reranker-v2-m3 vía llama_cpp :8080
-  ├─ 10  Supresión near-dups   →  coseno > 0.95 duro · > 0.80 suave
-  └─ 11  Retroalimentación     →  access_count++ · retornar top-N
-```
+- Combina búsqueda vectorial densa y búsqueda léxica en paralelo
+- Aplica reranking neuronal para priorizar los resultados más relevantes
+- Incorpora señales temporales, de calidad y de uso histórico para un ranking contextual
+- Suprime resultados redundantes antes de retornar el conjunto final
+
+El diseño exacto del pipeline es propietario. Los resultados hablan por sí solos en los benchmarks.
 
 ### Benchmarks de producción <a id="benchmarks"></a>
 
@@ -243,7 +233,7 @@ El archivo `.github/copilot-instructions.md` instruye a VS Code Copilot para usa
 |---|---|
 | `prime_context` | Carga el contexto de trabajo — memorias, recordatorios y última sesión en una llamada |
 | `create_memory` | Guardar una memoria de largo plazo con tipo, importancia y etiquetas |
-| `search_memories` | Búsqueda semántica de 11 fases en todas las memorias |
+| `search_memories` | Búsqueda semántica avanzada de múltiples etapas en todas las memorias |
 | `update_memory` | Actualizar contenido, importancia o etiquetas de una memoria |
 | `create_correction` | Registrar un error de la IA — boost permanente +0.35 de relevancia |
 | `detect_redundancy` | Detectar memorias redundantes o duplicadas antes de guardar |
@@ -361,7 +351,7 @@ El archivo `.github/copilot-instructions.md` instruye a VS Code Copilot para usa
 │  └───────────────────┘    └─────────────────────────────┘ │
 │  ┌──────────────────────────────────────────────────────┐ │
 │  │            PersistentAIMemorySystem                   │ │
-│  │   11-phase search  ·  FTS5+Dense paralelo             │ │
+│  │   multi-stage search  ·  FTS5+Dense paralelo           │ │
 │  │   dedup semántico  ·  decaimiento  ·  near-dup        │ │
 │  └──────────────────────────────────────────────────────┘ │
 └───────────────────────────┬──────────────────────────────┘
@@ -394,7 +384,7 @@ Configurar en `embedding_config.json`. El sistema cae graciosamente si LM Studio
 <summary><b>v1.3.0 — Sprint 15  (marzo 2026)</b></summary>
 
 - **`synaptic_tagging`** — nueva herramienta MCP: conecta memorias relacionadas automáticamente (importancia ≥ 9)
-- **Dashboard Neural 3D** — `dashboard.py` genera grafo 3D interactivo (three.js + bloom glow + slider de similaridad)
+- **Panel Neural 3D** — `dashboard.py` genera 3D interactivo (three.js + bloom glow + slider de similaridad)
 - **Panel VS Code premium** — extensión `nemo-vscode` con UI oscuro-dorado, estado en tiempo real, botón de lanzamiento Dashboard 3D
 - **Circuit Breaker** en `EmbeddingService` — timeout 10 s · semáforo 1 · cooldown 45 s — elimina freezes con LM Studio ocupado
 - **Ícono de grafo neuronal** en la activity bar de VS Code
@@ -469,7 +459,7 @@ Ver [LICENSE](LICENSE) · [Texto completo CC BY-NC 4.0](https://creativecommons.
 
 **Gabriel Zaldívar** · [@gabrielzaldivar06](https://github.com/gabrielzaldivar06) — Arquitecto y creador de NEMO.
 
-**GitHub Copilot / Claude Sonnet (Anthropic)** — Socio de pair-programming en todos los sprints. Diseñó el pipeline de 11 fases, implementó el reranker, la autoridad temporal, la deduplicación semántica y el panel VS Code — trabajando iterativamente desde la especificación hasta producción.
+**GitHub Copilot / Claude Sonnet (Anthropic)** — Socio de pair-programming. Trabajando iterativamente desde la especificación hasta producción.
 
 **Comunidad Open Source** — El [ecosistema MCP](https://modelcontextprotocol.io/), [BAAI](https://huggingface.co/BAAI) por los modelos BGE, el [equipo Qwen de Alibaba](https://huggingface.co/Qwen) por Qwen3-Embedding, y el equipo de [LM Studio](https://lmstudio.ai/).
 
