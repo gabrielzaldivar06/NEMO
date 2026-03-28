@@ -1,0 +1,57 @@
+{
+  "name": "nemo-panel",
+  "displayName": "NEMO — Neural Memory",
+  "description": "NEMO memory graph panel for VS Code: launch the 3D neural dashboard from the sidebar.",
+  "version": "0.1.0",
+  "publisher": "nemo-local",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "nemo-container",
+          "title": "NEMO Memory",
+          "icon": "$(circuit-board)"
+        }
+      ]
+    },
+    "views": {
+      "nemo-container": [
+        {
+          "type": "webview",
+          "id": "nemo.sidePanel",
+          "name": "Neural Memory Graph"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "nemo.launchDashboard",
+        "title": "NEMO: Launch 3D Dashboard",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "nemo.regenerateDashboard",
+        "title": "NEMO: Regenerate Dashboard (no browser)",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "nemo.launchDashboard",
+          "when": "view == nemo.sidePanel",
+          "group": "navigation@1"
+        },
+        {
+          "command": "nemo.regenerateDashboard",
+          "when": "view == nemo.sidePanel",
+          "group": "navigation@2"
+        }
+      ]
+    }
+  }
+}
