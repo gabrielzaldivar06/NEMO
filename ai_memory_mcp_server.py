@@ -996,7 +996,52 @@ class AIMemoryMCPServer:
                 status="success",
                 result=result
             ))
-            
+
+            # ── SSE real-time dashboard events ────────────────────────────
+            try:
+                from sse_bus import emit_event as _emit
+                if tool_name == "create_memory":
+                    _emit("memory_created", {
+                        "id": result.get("memory_id", "") if isinstance(result, dict) else "",
+                        "content": arguments.get("content", "")[:120],
+                        "memory_type": arguments.get("memory_type", "fact"),
+                        "importance": arguments.get("importance_level", 5),
+                        "tags": arguments.get("tags", []),
+                    })
+                elif tool_name == "create_correction":
+                    _emit("memory_created", {
+                        "id": result.get("memory_id", "") if isinstance(result, dict) else "",
+                        "content": arguments.get("wrong_assumption", "")[:120],
+                        "memory_type": "correction",
+                        "importance": 10,
+                        "tags": ["correction"],
+                    })
+                elif tool_name == "search_memories":
+                    hits = result if isinstance(result, list) else (result.get("memories", []) if isinstance(result, dict) else [])
+                    _emit("memories_searched", {
+                        "query": arguments.get("query", ""),
+                        "hit_ids": [m.get("memory_id", "") for m in hits[:10] if isinstance(m, dict)],
+                        "count": len(hits),
+                    })
+                elif tool_name == "prime_context":
+                    memories = result.get("memories", []) if isinstance(result, dict) else []
+                    _emit("context_primed", {
+                        "memory_ids": [m.get("memory_id", "") for m in memories[:20] if isinstance(m, dict)],
+                        "count": len(memories),
+                    })
+                elif tool_name == "synaptic_tagging":
+                    _emit("synaptic_tagged", {
+                        "memory_id": arguments.get("memory_id", ""),
+                        "related_count": len(result.get("related_ids", [])) if isinstance(result, dict) else 0,
+                    })
+                elif tool_name == "store_conversation":
+                    _emit("conversation_stored", {
+                        "title": arguments.get("title", ""),
+                    })
+            except Exception:
+                pass  # SSE is non-critical — never break tool execution
+            # ── end SSE hooks ─────────────────────────────────────────────
+
             # Format the result as a proper TextContent object
             if isinstance(result, (dict, list)):
                 # Sprint 1 T4 — prepend session context on first call
@@ -1146,15 +1191,17 @@ class AIMemoryMCPServer:
 
 
 async def start_http_server(mcp_server: AIMemoryMCPServer, host: str = "127.0.0.1", port: int = 11434):
-    """Start the HTTP API server if needed"""
+    """Start the HTTP API server with SSE real-time events for the dashboard."""
     try:
-        from fastapi import FastAPI, HTTPException
+        from fastapi import FastAPI
         from fastapi.middleware.cors import CORSMiddleware
+        from fastapi.responses import StreamingResponse
         import uvicorn
-        
-        app = FastAPI(title="Friday Memory API")
-        
-        # Add CORS middleware
+        import sqlite3 as _sqlite3
+        from sse_bus import subscribe as _sse_subscribe
+
+        app = FastAPI(title="NEMO Memory API")
+
         app.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],
@@ -1162,13 +1209,48 @@ async def start_http_server(mcp_server: AIMemoryMCPServer, host: str = "127.0.0.
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        
+
         @app.get("/api/health")
         async def health_check():
-            return {"status": "healthy", "server": "ai-memory"}
-            
-        # Start server without blocking
-        config = uvicorn.Config(app, host=host, port=port, log_level="info")
+            return {"status": "healthy", "server": "nemo"}
+
+        @app.get("/events")
+        async def sse_events():
+            """Server-Sent Events stream — emits real-time memory activity to the dashboard."""
+            async def _generator():
+                # Send a heartbeat immediately so the browser knows we're alive
+                yield "data: {\"type\":\"connected\"}\n\n"
+                async for data in _sse_subscribe():
+                    yield f"data: {data}\n\n"
+            return StreamingResponse(
+                _generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        @app.get("/api/graph")
+        async def graph_snapshot():
+            """Return current memory graph as nodes+edges for dashboard initial load."""
+            try:
+                db_path = os.path.expanduser("~/.ai_memory/ai_memories.db")
+                conn = _sqlite3.connect(db_path)
+                conn.row_factory = _sqlite3.Row
+                rows = conn.execute(
+                    "SELECT memory_id, content, memory_type, importance_level, tags, "
+                    "timestamp_created FROM curated_memories "
+                    "WHERE (importance_level IS NULL OR importance_level > 0) "
+                    "ORDER BY importance_level DESC, timestamp_created DESC LIMIT 300"
+                ).fetchall()
+                conn.close()
+                nodes = [dict(r) for r in rows]
+                return {"nodes": nodes, "edges": []}
+            except Exception as e:
+                return {"nodes": [], "edges": [], "error": str(e)}
+
+        config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         server = uvicorn.Server(config)
         return await server.serve()
     except ImportError:
@@ -1191,6 +1273,9 @@ async def main():
     logger.debug("Server initialized, starting stdio interface for LM Studio...")
     
     try:
+        # Start HTTP server (SSE + /api/graph) in background if FastAPI available
+        asyncio.create_task(start_http_server(mcp_server))
+
         # Only use stdio for LM Studio - no HTTP server needed
         logger.info("Waiting for stdio connection from LM Studio...")
         async with stdio_server() as (read_stream, write_stream):

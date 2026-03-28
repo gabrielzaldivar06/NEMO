@@ -613,6 +613,116 @@ document.getElementById('springSlider').addEventListener('input', function() {
   Graph.d3Force('link') && Graph.d3Force('link').strength(v);
   Graph.d3ReheatSimulation();
 });
+
+// ── Real-time SSE feed ────────────────────────────────────────────────────
+(function initSSE() {
+  const SSE_URL = 'http://127.0.0.1:11434/events';
+  const LIVE_DOT = document.getElementById('hud-pulse');
+  // Toast container
+  const toast = document.createElement('div');
+  toast.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:999;' +
+    'display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none';
+  document.body.appendChild(toast);
+
+  function showToast(msg, color) {
+    const el = document.createElement('div');
+    el.textContent = msg;
+    el.style.cssText = 'background:rgba(3,5,13,.92);border:1px solid '+color+';color:'+color+
+      ';font-size:12px;padding:6px 16px;border-radius:20px;letter-spacing:.4px;opacity:1;' +
+      'transition:opacity 1.5s ease;backdrop-filter:blur(8px)';
+    toast.appendChild(el);
+    setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 1500); }, 2500);
+  }
+
+  function flashNode(nodeId, flashColor) {
+    if (!nodeId) return;
+    const node = Graph.graphData().nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    const original = node.color;
+    node.__flashColor = flashColor;
+    Graph.nodeColor(n => n.__flashColor || n.color);
+    setTimeout(() => { delete node.__flashColor; Graph.nodeColor(n => n.color); }, 1800);
+  }
+
+  function highlightNodes(ids, flashColor) {
+    if (!ids || !ids.length) return;
+    const idSet = new Set(ids);
+    Graph.graphData().nodes.forEach(n => {
+      if (idSet.has(n.id)) n.__flashColor = flashColor;
+    });
+    Graph.nodeColor(n => n.__flashColor || n.color);
+    setTimeout(() => {
+      Graph.graphData().nodes.forEach(n => delete n.__flashColor);
+      Graph.nodeColor(n => n.color);
+    }, 2000);
+  }
+
+  function addNodeLive(evt) {
+    // Add the new memory as a node to the live graph without regenerating
+    const typeColors = __TYPE_COLORS_JSON__;
+    const color = typeColors[evt.memory_type] || '#607d8b';
+    const newNode = {
+      id:         evt.id || ('live-' + Date.now()),
+      mtype:      evt.memory_type || 'fact',
+      importance: evt.importance || 5,
+      color:      color,
+      label:      (evt.content || '').substring(0, 60) + (evt.content && evt.content.length > 60 ? '…' : ''),
+      tags:       evt.tags || [],
+      __flashColor: '#ffffff',
+    };
+    const { nodes, links } = Graph.graphData();
+    nodes.push(newNode);
+    Graph.graphData({ nodes, links });
+    // Remove flash after animation
+    setTimeout(() => {
+      delete newNode.__flashColor;
+      Graph.nodeColor(n => n.color);
+    }, 2000);
+  }
+
+  function connectSSE() {
+    const es = new EventSource(SSE_URL);
+
+    es.addEventListener('open', () => {
+      LIVE_DOT.style.background = '#06d6a0';
+      LIVE_DOT.title = 'Live — NEMO connected';
+    });
+
+    es.addEventListener('message', e => {
+      let evt;
+      try { evt = JSON.parse(e.data); } catch { return; }
+
+      if (evt.type === 'connected') return;
+
+      if (evt.type === 'memory_created') {
+        addNodeLive(evt);
+        showToast('✦ Memory created: ' + (evt.content || '').substring(0, 40), '#06d6a0');
+        flashNode(evt.id, '#ffffff');
+      } else if (evt.type === 'memories_searched') {
+        highlightNodes(evt.hit_ids, '#00b4d8');
+        showToast('⌕ Search: "' + (evt.query || '').substring(0, 40) + '" → ' + evt.count + ' hits', '#00b4d8');
+      } else if (evt.type === 'context_primed') {
+        highlightNodes(evt.memory_ids, '#ff9f1c');
+        showToast('◎ Context primed — ' + evt.count + ' memories activated', '#ff9f1c');
+      } else if (evt.type === 'synaptic_tagged') {
+        flashNode(evt.memory_id, '#a855f7');
+        showToast('⟁ Synaptic tagging — ' + evt.related_count + ' connections', '#a855f7');
+      } else if (evt.type === 'conversation_stored') {
+        showToast('◑ Conversation stored: ' + (evt.title || ''), '#48cae4');
+      }
+    });
+
+    es.addEventListener('error', () => {
+      LIVE_DOT.style.background = '#ff4757';
+      LIVE_DOT.title = 'Offline — reconnecting…';
+      es.close();
+      setTimeout(connectSSE, 5000);  // auto-reconnect
+    });
+  }
+
+  connectSSE();
+})();
+// ── end SSE ───────────────────────────────────────────────────────────────
 </script>
 </body>
 </html>"""
