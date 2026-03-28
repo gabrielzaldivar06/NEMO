@@ -801,7 +801,9 @@ function refresh() {
 }
 refresh();
 
-// ── Sprite animation loop — 30fps, batch round-robin ─────────────────────────
+// ── Sprite animation loop — 30fps, continuous render ─────────────────────────
+// 3d-force-graph stops rendering when the physics simulation settles.
+// We re-drive the render loop ourselves so canvas textures actually appear animated.
 (function plasmaLoop() {
   let lastT = 0, batchIdx = 0;
   const BATCH = 30;
@@ -819,6 +821,8 @@ refresh();
           }
         }
         batchIdx = (batchIdx + BATCH) % total;
+        // Force the scene to re-render — bloom intercept handles composer routing
+        try { Graph.renderer().render(Graph.scene(), Graph.camera()); } catch(e) {}
       }
     }
     requestAnimationFrame(tick);
