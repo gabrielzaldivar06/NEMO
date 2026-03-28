@@ -124,6 +124,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <title>NEMO · Neural Memory Graph</title>
 <!-- three.min.js must load FIRST so window.THREE is available for 3d-force-graph (peer dep, not bundled) -->
 <script src="https://unpkg.com/three@0.155.0/build/three.min.js"></script>
+<!-- Postprocessing passes (attached to THREE.* by these legacy scripts) -->
+<script src="https://unpkg.com/three@0.155.0/examples/js/shaders/CopyShader.js"></script>
+<script src="https://unpkg.com/three@0.155.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+<script src="https://unpkg.com/three@0.155.0/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://unpkg.com/three@0.155.0/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://unpkg.com/three@0.155.0/examples/js/postprocessing/ShaderPass.js"></script>
+<script src="https://unpkg.com/three@0.155.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://unpkg.com/3d-force-graph@1.73.5/dist/3d-force-graph.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -253,6 +260,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #info-close { position: absolute; top: 10px; right: 12px; font-size: 16px; cursor: pointer; color: var(--muted); }
   #info-close:hover { color: var(--text); }
   .imp-stars { color: var(--accent2); letter-spacing: 1px; }
+
+  /* Search */
+  #search {
+    background: rgba(0,0,0,0.35); color: var(--text);
+    border: 1px solid var(--border); border-radius: 20px;
+    padding: 5px 14px; font-size: 12px; width: 220px; outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  #search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,180,216,0.25); }
+  #search::placeholder { color: var(--muted); }
+
+  /* Hover tooltip */
+  #tooltip {
+    position: fixed; z-index: 30; pointer-events: none; display: none;
+    background: rgba(3,5,13,0.92); backdrop-filter: blur(10px);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 12px; font-size: 11px; line-height: 1.55;
+    max-width: 260px; color: var(--text);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+  }
 </style>
 </head>
 <body>
@@ -265,6 +292,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <span id="hud-title">NEMO &middot; Neural Memory</span>
   <span id="hud-stats">loading&hellip;</span>
   <div id="hud-spacer"></div>
+  <input id="search" type="text" placeholder="&#x1F50D; Search memories…" autocomplete="off" spellcheck="false">
 </div>
 
 <div id="panel">
@@ -280,6 +308,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <label>Min importance</label>
         <input type="range" id="impSlider" min="1" max="10" value="1">
         <span class="ctrl-val" id="impVal">1</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Min similarity</label>
+        <input type="range" id="simSlider" min="0.60" max="0.99" step="0.01" value="0.70">
+        <span class="ctrl-val" id="simVal">0.70</span>
       </div>
       <div class="ctrl-row" style="margin-top:4px;"><label>Type</label></div>
       <select id="typeFilter"><option value="">All types</option></select>
@@ -299,6 +332,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
+
+<div id="tooltip"></div>
 
 <div id="info-card">
   <span id="info-close" title="Close">&#x2715;</span>
@@ -342,11 +377,13 @@ const TYPE_COLORS = __TYPE_COLORS_JSON__;
 const nodeMap = new Map(RAW_NODES.map(n => [n.id, n]));
 let activeTypes = new Set(RAW_NODES.map(n => n.mtype));
 let minImp = 1;
+let minSimilarity = 0.70;
+let searchHighlight = null; // Set of node ids matching current search
 
 function buildGraphData() {
   const ns = RAW_NODES.filter(n => activeTypes.has(n.mtype) && n.importance >= minImp);
   const ids = new Set(ns.map(n => n.id));
-  const es = RAW_EDGES.filter(e => ids.has(e.source) && ids.has(e.target));
+  const es = RAW_EDGES.filter(e => ids.has(e.source) && ids.has(e.target) && e.similarity >= minSimilarity);
   return { nodes: ns.map(n => Object.assign({}, n)), links: es.map(e => Object.assign({}, e)) };
 }
 
@@ -397,7 +434,25 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
     Graph.cameraPosition({ x: x+d, y: y+d/2, z: z+d }, { x, y, z }, 800);
     showCard(node);
   })
-  .onBackgroundClick(() => { document.getElementById('info-card').style.display = 'none'; });
+  .onBackgroundClick(() => { document.getElementById('info-card').style.display = 'none'; })
+  .onNodeHover(node => {
+    const tip = document.getElementById('tooltip');
+    if (!node) { tip.style.display = 'none'; return; }
+    const d = nodeMap.get(node.id) || node;
+    const preview = (d.content || '').slice(0, 90) + ((d.content||'').length > 90 ? '\u2026' : '');
+    tip.innerHTML = '<strong style="color:' + (d.color||'#00b4d8') + '">' + (d.mtype||'') + '</strong>' +
+      '  <span style="color:#6a80a7;font-size:10px">imp ' + (d.importance||0) + '/10</span>' +
+      (preview ? '<br><span style="color:#ccd6f6">' + preview + '</span>' : '');
+    tip.style.display = 'block';
+  });
+
+document.addEventListener('mousemove', e => {
+  const tip = document.getElementById('tooltip');
+  if (tip.style.display !== 'none') {
+    tip.style.left = Math.min(e.clientX + 16, innerWidth - 280) + 'px';
+    tip.style.top  = (e.clientY - 10) + 'px';
+  }
+});
 
 function refresh() {
   const data = buildGraphData();
@@ -406,6 +461,34 @@ function refresh() {
     data.nodes.length.toLocaleString() + ' neurons  \u00b7  ' + data.links.length.toLocaleString() + ' synapses';
 }
 refresh();
+
+// Bloom post-processing
+setTimeout(() => {
+  try {
+    const renderer = Graph.renderer();
+    const scene    = Graph.scene();
+    const composer = new THREE.EffectComposer(renderer);
+    composer.addPass(new THREE.RenderPass(scene, Graph.camera()));
+    const bloom = new THREE.UnrealBloomPass(
+      new THREE.Vector2(innerWidth, innerHeight),
+      1.4,   // strength
+      0.55,  // radius
+      0.05   // threshold (low = most objects glow)
+    );
+    composer.addPass(bloom);
+    // Intercept 3d-force-graph's per-frame render call
+    const _orig = renderer.render.bind(renderer);
+    function _intercept(s, c) {
+      if (s === scene) {
+        renderer.render = _orig;
+        composer.render();
+        renderer.render = _intercept;
+      } else { _orig(s, c); }
+    }
+    renderer.render = _intercept;
+    window.addEventListener('resize', () => composer.setSize(innerWidth, innerHeight));
+  } catch(e) { console.warn('Bloom init failed:', e); }
+}, 400);
 
 // Idle orbit
 let lastInteraction = Date.now(), angle = 0;
@@ -478,6 +561,44 @@ impSlider.addEventListener('input', () => {
   impSlider.style.setProperty('--pct', ((minImp-1)/9*100)+'%');
   refresh();
 });
+// Search
+document.getElementById('search').addEventListener('input', function() {
+  const q = this.value.trim().toLowerCase();
+  if (!q) {
+    searchHighlight = null;
+    Graph.nodeColor(n => n.color);
+    return;
+  }
+  searchHighlight = new Set(
+    RAW_NODES
+      .filter(n =>
+        (n.content||'').toLowerCase().includes(q) ||
+        (n.tags||[]).some(t => t.toLowerCase().includes(q)) ||
+        (n.mtype||'').toLowerCase().includes(q)
+      )
+      .map(n => n.id)
+  );
+  Graph.nodeColor(n => searchHighlight.has(n.id) ? '#ffffff' : (n.color + '22'));
+  // Fly to highest-importance match visible in current graph
+  const visIds = new Set(Graph.graphData().nodes.map(n => n.id));
+  const hit = Graph.graphData().nodes.find(n => searchHighlight.has(n.id) && n.x != null);
+  if (hit) {
+    const d = 70;
+    Graph.cameraPosition({ x: hit.x+d, y: hit.y+d/2, z: hit.z+d }, { x: hit.x, y: hit.y, z: hit.z }, 900);
+  }
+  document.getElementById('hud-stats').textContent =
+    searchHighlight.size + ' match' + (searchHighlight.size !== 1 ? 'es' : '') + ' for \u201c' + q + '\u201d';
+});
+
+// Similarity threshold
+document.getElementById('simSlider').addEventListener('input', function() {
+  const v = parseFloat(this.value);
+  document.getElementById('simVal').textContent = v.toFixed(2);
+  this.style.setProperty('--pct', ((v - +this.min) / (+this.max - +this.min) * 100) + '%');
+  minSimilarity = v;
+  refresh();
+});
+
 document.getElementById('repSlider').addEventListener('input', function() {
   const v = parseFloat(this.value);
   document.getElementById('repVal').textContent = v.toFixed(1);
