@@ -763,7 +763,8 @@ class AIMemoryDatabase(DatabaseManager):
             expected_columns = [
                 'memory_id', 'timestamp_created', 'timestamp_updated', 'source_conversation_id',
                 'source_message_ids', 'memory_type', 'content', 'importance_level', 'tags',
-                'embedding', 'created_at', 'access_count', 'last_accessed_at'
+                'embedding', 'created_at', 'access_count', 'last_accessed_at',
+                'stability', 'difficulty'
             ]
             cur = conn.execute("PRAGMA table_info(curated_memories)")
             current_columns = [row[1] for row in cur.fetchall()]
@@ -791,7 +792,9 @@ class AIMemoryDatabase(DatabaseManager):
                         embedding BLOB,
                         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                         access_count INTEGER DEFAULT 0,
-                        last_accessed_at TEXT
+                        last_accessed_at TEXT,
+                        stability REAL DEFAULT 1.0,
+                        difficulty REAL DEFAULT 0.3
                     )
                 """)
                 for row in old_rows:
@@ -819,7 +822,9 @@ class AIMemoryDatabase(DatabaseManager):
                         embedding BLOB,
                         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                         access_count INTEGER DEFAULT 0,
-                        last_accessed_at TEXT
+                        last_accessed_at TEXT,
+                        stability REAL DEFAULT 1.0,
+                        difficulty REAL DEFAULT 0.3
                     )
                 """)
                 # Sprint 9 — add access_count / last_accessed_at if missing (live migration)
@@ -829,6 +834,11 @@ class AIMemoryDatabase(DatabaseManager):
                     conn.execute("ALTER TABLE curated_memories ADD COLUMN access_count INTEGER DEFAULT 0")
                 if 'last_accessed_at' not in live_cols:
                     conn.execute("ALTER TABLE curated_memories ADD COLUMN last_accessed_at TEXT")
+                # FSRS-6 — stability and difficulty fields
+                if 'stability' not in live_cols:
+                    conn.execute("ALTER TABLE curated_memories ADD COLUMN stability REAL DEFAULT 1.0")
+                if 'difficulty' not in live_cols:
+                    conn.execute("ALTER TABLE curated_memories ADD COLUMN difficulty REAL DEFAULT 0.3")
             conn.commit()
 
     async def create_memory(self, content: str, memory_type: str = None, 
@@ -932,7 +942,9 @@ class AIMemoryDatabase(DatabaseManager):
                     embedding BLOB,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     access_count INTEGER DEFAULT 0,
-                    last_accessed_at TEXT
+                    last_accessed_at TEXT,
+                    stability REAL DEFAULT 1.0,
+                    difficulty REAL DEFAULT 0.3
                 )
             """)
             # Sprint 9 T2 — live-migration for databases created before this sprint
@@ -942,6 +954,11 @@ class AIMemoryDatabase(DatabaseManager):
                 conn.execute("ALTER TABLE curated_memories ADD COLUMN access_count INTEGER DEFAULT 0")
             if 'last_accessed_at' not in existing_cols:
                 conn.execute("ALTER TABLE curated_memories ADD COLUMN last_accessed_at TEXT")
+            # FSRS-6 — stability and difficulty fields
+            if 'stability' not in existing_cols:
+                conn.execute("ALTER TABLE curated_memories ADD COLUMN stability REAL DEFAULT 1.0")
+            if 'difficulty' not in existing_cols:
+                conn.execute("ALTER TABLE curated_memories ADD COLUMN difficulty REAL DEFAULT 0.3")
             # Sprint 11 — FTS5 virtual table for sparse BM25 retrieval (hybrid dense+sparse)
             conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS curated_memories_fts
@@ -3791,6 +3808,53 @@ class PersistentAIMemorySystem:
                 )
                 return
 
+            # ------------------------------------------------------------------
+            # Prediction Error Gating
+            # If the new memory is semantically near (0.70 ≤ sim < 0.92) but
+            # contains contradiction signals, supersede the old memory by tagging
+            # it as outdated and boosting the new one's importance.
+            # Contradiction signals: negation words adjacent to overlapping nouns,
+            # or explicit update phrases ("ya no", "ahora", "cambiado", "corregido",
+            # "actually", "instead", "no longer", "updated to", "changed to").
+            # ------------------------------------------------------------------
+            _CONTRADICTION_PHRASES = {
+                "ya no", "ahora es", "cambiado a", "corregido", "en realidad",
+                "actually", "instead", "no longer", "updated to", "changed to",
+                "replaced by", "reemplazado por", "nuevo valor", "now is",
+            }
+            _CONTRADICTION_THRESHOLD_LOW = 0.70
+            _CONTRADICTION_THRESHOLD_HIGH = 0.90
+
+            if (best_match and _CONTRADICTION_THRESHOLD_LOW <= best_sim < _CONTRADICTION_THRESHOLD_HIGH):
+                content_lower = content.lower()
+                old_content_lower = best_match.get("content", "").lower()
+                has_contradiction = any(phrase in content_lower for phrase in _CONTRADICTION_PHRASES)
+                if has_contradiction:
+                    old_id = best_match["memory_id"]
+                    logger.info(
+                        f"Prediction Error Gating: new={memory_id} supersedes old={old_id} "
+                        f"(sim={best_sim:.4f}, contradiction signal detected)"
+                    )
+                    # Mark old memory as superseded (lower importance, add tag)
+                    old_tags_row = await self.ai_memory_db.execute_query(
+                        "SELECT tags, importance_level FROM curated_memories WHERE memory_id = ?",
+                        (old_id,)
+                    )
+                    if old_tags_row:
+                        old_tags = json.loads(old_tags_row[0]["tags"]) if old_tags_row[0]["tags"] else []
+                        if "superseded" not in old_tags:
+                            old_tags.append("superseded")
+                        new_imp = max(1, (old_tags_row[0]["importance_level"] or 5) - 2)
+                        await self.ai_memory_db.execute_update(
+                            "UPDATE curated_memories SET tags=?, importance_level=?, timestamp_updated=? WHERE memory_id=?",
+                            (json.dumps(old_tags), new_imp, get_current_timestamp(), old_id)
+                        )
+                    # Boost the new memory's importance slightly
+                    await self.ai_memory_db.execute_update(
+                        "UPDATE curated_memories SET importance_level = MIN(10, COALESCE(importance_level,5)+1) WHERE memory_id=?",
+                        (memory_id,)
+                    )
+
             # No duplicate — store the embedding
             embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
             await self.ai_memory_db.execute_update(
@@ -4568,12 +4632,37 @@ class PersistentAIMemorySystem:
                 # Single batch UPDATE instead of N separate queries.
                 placeholders = ",".join("?" * len(mids))
                 try:
-                    await self.ai_memory_db.execute_update(
-                        f"UPDATE curated_memories SET access_count = COALESCE(access_count,0)+1, last_accessed_at=? WHERE memory_id IN ({placeholders})",
-                        (ts, *mids)
+                    # Read current stability + last_accessed_at for FSRS-6 update
+                    rows_fsrs = await self.ai_memory_db.execute_query(
+                        f"SELECT memory_id, stability, last_accessed_at FROM curated_memories WHERE memory_id IN ({placeholders})",
+                        tuple(mids)
                     )
+                    now_dt = datetime.now(get_local_timezone())
+                    for r in rows_fsrs:
+                        mid = r["memory_id"]
+                        s = float(r["stability"] or 1.0)
+                        last_str = r["last_accessed_at"]
+                        # FSRS-6 simplified: R(t,s) = 0.9^(t/s), new_s = s * (1 + 0.1*(1-R))
+                        try:
+                            last_dt = datetime.fromisoformat(last_str) if last_str else now_dt
+                            t_days = max(0.0, (now_dt - last_dt).total_seconds() / 86400.0)
+                        except Exception:
+                            t_days = 0.0
+                        R = 0.9 ** (t_days / max(s, 0.1))
+                        new_s = max(0.1, s * (1.0 + 0.1 * (1.0 - R)))
+                        await self.ai_memory_db.execute_update(
+                            "UPDATE curated_memories SET access_count = COALESCE(access_count,0)+1, last_accessed_at=?, stability=? WHERE memory_id=?",
+                            (ts, round(new_s, 4), mid)
+                        )
                 except Exception:
-                    pass
+                    # Fallback: plain access_count bump
+                    try:
+                        await self.ai_memory_db.execute_update(
+                            f"UPDATE curated_memories SET access_count = COALESCE(access_count,0)+1, last_accessed_at=? WHERE memory_id IN ({placeholders})",
+                            (ts, *mids)
+                        )
+                    except Exception:
+                        pass
             asyncio.ensure_future(_bump_access(memory_ids_to_bump, ts_now))
 
         # Sprint 1 T2 — Compact format: convert full result objects to compressed one-liners
@@ -4886,9 +4975,21 @@ class PersistentAIMemorySystem:
                 ]
 
             for row, emb_arr, similarity in await asyncio.to_thread(_batch_cosine_ai, rows_list, q_arr):
+                # FSRS-6 retention factor: R(t,s) = 0.9^(t/s), modulates final score
+                _stability = float(row["stability"] if "stability" in row.keys() and row["stability"] else 1.0)
+                _last_str = row["last_accessed_at"] if "last_accessed_at" in row.keys() else None
+                try:
+                    _now = datetime.now(get_local_timezone())
+                    _last = datetime.fromisoformat(_last_str) if _last_str else _now
+                    _t = max(0.0, (_now - _last).total_seconds() / 86400.0)
+                except Exception:
+                    _t = 0.0
+                _retention = 0.9 ** (_t / max(_stability, 0.1))  # 1.0 when just accessed, decays over time
+                _fsrs_boost = (_retention - 0.5) * 0.06  # ±0.03 max delta — subtle, doesn't override cosine
+
                 results.append({
                     "type": "ai_memory",
-                    "similarity_score": similarity,
+                    "similarity_score": similarity + _fsrs_boost,
                     "_raw_similarity": similarity,  # Sprint 8A: pre-boost cosine for bypass gate
                     "_embedding": emb_arr,  # Sprint 7: retained for cross-result cluster pass (ndarray)
                     "data": {
