@@ -590,65 +590,134 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
   .nodeOpacity(0.92)
   .nodeResolution(24)
   .nodeThreeObject(n => {
+    // ── Plasma Icon node: symbol + animated plasma ring ──────────────
+    const TYPE_SYMBOL = {
+      fact:       '\u25c8',   // ◈
+      insight:    '\u2726',   // ✦
+      correction: '\u2298',   // ⊘
+      preference: '\u25c6',   // ◆
+      episodic:   '\u25ce',   // ◎
+      procedure:  '\u2b21',   // ⬡
+      skill:      '\u2727',   // ✧
+      ai_memory:  '\u29bf',   // ⦿
+    };
+    const SZ = 160;
     const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = 128;
+    canvas.width = canvas.height = SZ;
     const ctx = canvas.getContext('2d');
     const col = n.color || '#C084FC';
-    // Parse hex→rgb for glass tints
     const r = parseInt(col.slice(1,3),16), g = parseInt(col.slice(3,5),16), b = parseInt(col.slice(5,7),16);
-    // 1 — wide soft ambient halo
-    const halo = ctx.createRadialGradient(64,64,18,64,64,64);
-    halo.addColorStop(0, 'rgba('+r+','+g+','+b+',0.10)');
-    halo.addColorStop(1, 'rgba('+r+','+g+','+b+',0)');
-    ctx.fillStyle = halo; ctx.fillRect(0,0,128,128);
-    // 2 — glass body (very translucent fill offset radial)
-    const body = ctx.createRadialGradient(50,46,4,64,64,46);
-    body.addColorStop(0,   'rgba(255,255,255,0.18)');
-    body.addColorStop(0.45,'rgba('+r+','+g+','+b+',0.10)');
-    body.addColorStop(1,   'rgba('+r+','+g+','+b+',0.02)');
-    ctx.beginPath(); ctx.arc(64,64,46,0,2*Math.PI);
-    ctx.fillStyle = body; ctx.fill();
-    // 3 — colored rim ring
-    ctx.beginPath(); ctx.arc(64,64,46,0,2*Math.PI);
-    ctx.strokeStyle = 'rgba('+r+','+g+','+b+',0.55)';
-    ctx.lineWidth = 1.2; ctx.stroke();
-    // 4 — outer glow ring (faint, wider)
-    ctx.beginPath(); ctx.arc(64,64,55,0,2*Math.PI);
-    ctx.strokeStyle = 'rgba('+r+','+g+','+b+',0.12)';
-    ctx.lineWidth = 2.5; ctx.stroke();
-    // 5 — top-left specular blotch
-    const spec = ctx.createRadialGradient(44,41,0,44,41,16);
-    spec.addColorStop(0,'rgba(255,255,255,0.60)');
-    spec.addColorStop(1,'rgba(255,255,255,0)');
-    ctx.beginPath(); ctx.arc(44,41,16,0,2*Math.PI);
-    ctx.fillStyle = spec; ctx.fill();
-    // 6 — tiny hard specular dot
-    ctx.beginPath(); ctx.arc(40,38,3.5,0,2*Math.PI);
-    ctx.fillStyle = 'rgba(255,255,255,0.88)'; ctx.fill();
+    const sym = TYPE_SYMBOL[n.mtype] || '\u25cb';
+    const imp = n.importance || 5;
+
+    // Store reusable draw fn on node for animation
+    n.__drawNode = function(t) {
+      ctx.clearRect(0,0,SZ,SZ);
+      const cx = SZ/2, cy = SZ/2;
+      const pulse = 0.5 + 0.5 * Math.sin(t * 0.0018 + (r+g+b) * 0.01);
+
+      // Layer 1 — outer plasma halo (pulses)
+      const halo = ctx.createRadialGradient(cx,cy,20,cx,cy,72);
+      halo.addColorStop(0,   'rgba('+r+','+g+','+b+','+(0.08 + 0.10*pulse).toFixed(3)+')');
+      halo.addColorStop(0.6, 'rgba('+r+','+g+','+b+','+(0.04 + 0.04*pulse).toFixed(3)+')');
+      halo.addColorStop(1,   'rgba('+r+','+g+','+b+',0)');
+      ctx.beginPath(); ctx.arc(cx,cy,72,0,2*Math.PI);
+      ctx.fillStyle = halo; ctx.fill();
+
+      // Layer 2 — frosted glass body
+      const body = ctx.createRadialGradient(cx-10,cy-12,4,cx,cy,46);
+      body.addColorStop(0,   'rgba(255,255,255,0.22)');
+      body.addColorStop(0.4, 'rgba('+r+','+g+','+b+',0.13)');
+      body.addColorStop(1,   'rgba('+r+','+g+','+b+',0.04)');
+      ctx.beginPath(); ctx.arc(cx,cy,46,0,2*Math.PI);
+      ctx.fillStyle = body; ctx.fill();
+      // glass border
+      ctx.beginPath(); ctx.arc(cx,cy,46,0,2*Math.PI);
+      ctx.strokeStyle = 'rgba('+r+','+g+','+b+',0.55)';
+      ctx.lineWidth = 1.0; ctx.setLineDash([]); ctx.stroke();
+
+      // Layer 3 — rotating dashed plasma ring
+      const angle = t * 0.0006;
+      ctx.save(); ctx.translate(cx,cy); ctx.rotate(angle);
+      ctx.beginPath(); ctx.arc(0,0,56,0,2*Math.PI);
+      ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(0.25+0.18*pulse).toFixed(3)+')';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([7, 5]);
+      ctx.stroke();
+      ctx.restore();
+
+      // Layer 3b — second ring counter-rotating, thinner
+      ctx.save(); ctx.translate(cx,cy); ctx.rotate(-angle * 1.4);
+      ctx.beginPath(); ctx.arc(0,0,62,0,2*Math.PI);
+      ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(0.10+0.08*pulse).toFixed(3)+')';
+      ctx.lineWidth = 0.7; ctx.setLineDash([3, 9]); ctx.stroke();
+      ctx.restore();
+
+      // Layer 4 — type symbol (Space Grotesk via system fallback)
+      ctx.setLineDash([]);
+      ctx.font = '700 42px "Space Grotesk", system-ui, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      // shadow glow
+      ctx.shadowColor = col; ctx.shadowBlur = 12 + 8*pulse;
+      ctx.fillStyle = 'rgba(255,255,255,'+(0.78 + 0.15*pulse).toFixed(3)+')';
+      ctx.fillText(sym, cx, cy);
+      ctx.shadowBlur = 0;
+
+      // Layer 5 — importance badge (DM Mono, bottom-right arc)
+      const badgeX = cx + 28, badgeY = cy + 28;
+      ctx.beginPath(); ctx.arc(badgeX,badgeY,11,0,2*Math.PI);
+      ctx.fillStyle = 'rgba(12,10,20,0.80)'; ctx.fill();
+      ctx.strokeStyle = 'rgba('+r+','+g+','+b+',0.70)'; ctx.lineWidth = 0.8;
+      ctx.setLineDash([]); ctx.stroke();
+      ctx.font = '500 10px "DM Mono", monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = col;
+      ctx.fillText(String(imp), badgeX, badgeY);
+
+      // Layer 6 — specular highlight top-left
+      const spec = ctx.createRadialGradient(cx-14,cy-15,0,cx-14,cy-15,14);
+      spec.addColorStop(0,'rgba(255,255,255,0.55)');
+      spec.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.beginPath(); ctx.arc(cx-14,cy-15,14,0,2*Math.PI);
+      ctx.fillStyle = spec; ctx.fill();
+    };
+
+    n.__drawNode(0);
     const tex = new THREE.CanvasTexture(canvas);
     const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
     const sp  = new THREE.Sprite(mat);
-    const s = 3.5 + n.importance * 1.5;
+    const s = 4 + n.importance * 1.6;
     sp.scale.set(s, s, 1);
-    n.__sprite = sp;   // store ref for direct material manipulation
+    n.__sprite = sp;
+    n.__canvas = canvas;
+    n.__ctx    = ctx;
+    n.__tex    = tex;
     return sp;
   })
   .nodeThreeObjectExtend(false)
   .linkSource('source').linkTarget('target')
   .linkColor(l => {
+    // Aurora HSL — interpolate between source and target node hues
+    const srcCol = (l.source && l.source.color) ? l.source.color : '#67E8F9';
+    const tgtCol = (l.target && l.target.color) ? l.target.color : '#C084FC';
     const t = Math.min(1, Math.max(0, (l.similarity - 0.70) / 0.25));
-    // gradient: glacier (#67E8F9) at low sim, lavanda (#C084FC) at high sim
-    const ri = Math.round(103 + t * (192-103));
-    const gi = Math.round(232 + t * (132-232));
-    const bi = Math.round(249 + t * (252-249));
-    return 'rgba('+ri+','+gi+','+bi+','+(0.08+t*0.45).toFixed(2)+')';
+    const sr = parseInt(srcCol.slice(1,3),16), sg = parseInt(srcCol.slice(3,5),16), sb = parseInt(srcCol.slice(5,7),16);
+    const tr = parseInt(tgtCol.slice(1,3),16), tg = parseInt(tgtCol.slice(3,5),16), tb = parseInt(tgtCol.slice(5,7),16);
+    const ri = Math.round(sr + t*(tr-sr));
+    const gi = Math.round(sg + t*(tg-sg));
+    const bi = Math.round(sb + t*(tb-sb));
+    const alpha = (0.10 + t * 0.55).toFixed(2);
+    return 'rgba('+ri+','+gi+','+bi+','+alpha+')';
   })
-  .linkWidth(l => 0.25 + (l.similarity - 0.70) * 4)
-  .linkOpacity(0.55)
-  .linkDirectionalParticles(l => l.similarity > 0.84 ? 2 : 0)
-  .linkDirectionalParticleWidth(1.0)
-  .linkDirectionalParticleColor(() => '#C084FC')
-  .linkDirectionalParticleSpeed(0.003)
+  .linkWidth(l => 0.15 + (l.similarity - 0.70) * 3.5)
+  .linkOpacity(0.65)
+  .linkDirectionalParticles(l => l.similarity > 0.90 ? 5 : l.similarity > 0.82 ? 3 : l.similarity > 0.76 ? 1 : 0)
+  .linkDirectionalParticleWidth(l => l.similarity > 0.90 ? 1.8 : 1.2)
+  .linkDirectionalParticleColor(l => {
+    const col = (l.source && l.source.color) ? l.source.color : '#C084FC';
+    return col;
+  })
+  .linkDirectionalParticleSpeed(0.004)
   .onNodeClick(node => {
     if (!node) return;
     const x = node.x||0, y = node.y||0, z = node.z||0, d = 60;
@@ -700,8 +769,23 @@ setTimeout(() => {
     window._bloomPass = bloom;  // expose for SSE animations
     // Intercept 3d-force-graph's per-frame render call
     const _orig = renderer.render.bind(renderer);
+    // ── Plasma node animation: redraw canvas textures every frame ────
+    let _lastNodeRedraw = 0;
     function _intercept(s, c) {
       if (s === scene) {
+        // Animate node textures at ~30fps to save GPU
+        const now = performance.now();
+        if (now - _lastNodeRedraw > 33) {
+          _lastNodeRedraw = now;
+          const nodes = Graph.graphData().nodes;
+          for (let i = 0; i < nodes.length; i++) {
+            const n = nodes[i];
+            if (n.__drawNode && n.__tex) {
+              n.__drawNode(now);
+              n.__tex.needsUpdate = true;
+            }
+          }
+        }
         renderer.render = _orig;
         composer.render();
         renderer.render = _intercept;
