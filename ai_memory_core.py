@@ -2729,10 +2729,13 @@ class EmbeddingService:
         # embedding calls so each generate_embedding() doesn't open a new TCP connection.
         self._session: Optional["aiohttp.ClientSession"] = None
 
-        # Semaphore: at most 2 concurrent embedding requests to avoid overwhelming
-        # LM Studio when many background tasks fire simultaneously (e.g. bulk create_memory).
+        # Semaphore: at most 1 concurrent embedding request so that if LM Studio is
+        # under load, extra calls queue rather than multiplying GPU/RAM pressure.
         # Created lazily in generate_embedding() because __init__ may run before the loop.
         self._embed_semaphore: Optional[asyncio.Semaphore] = None
+
+        # Circuit-breaker: maps provider name → timestamp after which it may be retried.
+        self._embed_retry_after: Dict[str, float] = {}
 
         self.provider_availability = {
             "lm_studio": None,  # Will be tested on first use
@@ -2816,9 +2819,12 @@ class EmbeddingService:
             logger.warning(f"Failed to get user config, using defaults: {e}")
             return cls()  # Fallback to defaults
 
-    # Default timeout for embedding HTTP requests: 30s total, 5s connect.
-    # Prevents infinite freeze when LM Studio is busy loading a model or saturated.
-    _SESSION_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=5)
+    # Timeout for embedding HTTP requests.
+    # 10s total prevents long freezes when LM Studio is busy; 3s connect-fail fast.
+    _SESSION_TIMEOUT = aiohttp.ClientTimeout(total=10, connect=3)
+
+    # Circuit-breaker cooldown: skip failed provider for this many seconds.
+    _EMBED_COOLDOWN_SECONDS = 45.0
 
     async def _get_session(self) -> "aiohttp.ClientSession":
         """Return the shared aiohttp session, creating it lazily on first call."""
@@ -2840,7 +2846,7 @@ class EmbeddingService:
         """
         # Lazy semaphore init — must happen inside a running event loop
         if self._embed_semaphore is None:
-            self._embed_semaphore = asyncio.Semaphore(2)
+            self._embed_semaphore = asyncio.Semaphore(1)
 
         async with self._embed_semaphore:
             return await self._generate_embedding_inner(text, model)
@@ -2867,7 +2873,7 @@ class EmbeddingService:
             instructed_text = query
 
         if self._embed_semaphore is None:
-            self._embed_semaphore = asyncio.Semaphore(2)
+            self._embed_semaphore = asyncio.Semaphore(1)
 
         async with self._embed_semaphore:
             return await self._generate_embedding_inner(instructed_text)
@@ -2893,79 +2899,112 @@ class EmbeddingService:
             instructed_text = text
 
         if self._embed_semaphore is None:
-            self._embed_semaphore = asyncio.Semaphore(2)
+            self._embed_semaphore = asyncio.Semaphore(1)
 
         async with self._embed_semaphore:
             return await self._generate_embedding_inner(instructed_text)
 
+    # ── Circuit-breaker helpers ───────────────────────────────────────────────
+
+    def _embed_provider_in_cooldown(self, provider: str) -> bool:
+        """Return True if provider recently failed and should be skipped (no HTTP call)."""
+        retry_after = self._embed_retry_after.get(provider, 0.0)
+        return retry_after > time.time()
+
+    def _mark_embed_provider_failed(self, provider: str) -> None:
+        """Record failure; block provider for _EMBED_COOLDOWN_SECONDS."""
+        self.provider_availability[provider] = False
+        self._embed_retry_after[provider] = time.time() + self._EMBED_COOLDOWN_SECONDS
+        logger.warning(f"[circuit-breaker] embed provider '{provider}' in cooldown for {self._EMBED_COOLDOWN_SECONDS}s")
+
+    def _mark_embed_provider_ok(self, provider: str) -> None:
+        """Clear cooldown after a successful embedding request."""
+        self.provider_availability[provider] = True
+        self._embed_retry_after.pop(provider, None)
+
+    # ─────────────────────────────────────────────────────────────────────────
+
     async def _generate_embedding_inner(self, text: str, model: str = None) -> List[float]:
         """Internal: generate embedding (called under semaphore)."""
-        # Try primary provider first
         primary_provider = self.primary_config.get("provider", "llama_cpp")
         self.embeddings_endpoint = self._build_embeddings_endpoint(self.primary_config)
-        
-        try:
-            if primary_provider in {"lm_studio", "llama_cpp", "custom"}:
-                result = await self._generate_lm_studio_embedding(text)
-                if result:
-                    self.provider_availability[primary_provider] = True
-                    return result
-                else:
-                    self.provider_availability[primary_provider] = False
-                    logger.warning(f"{primary_provider} unavailable, trying fallback")
-                    
-            elif primary_provider == "ollama":
-                result = await self._generate_ollama_embedding(text)
-                if result:
-                    self.provider_availability["ollama"] = True
-                    return result
-                else:
-                    self.provider_availability["ollama"] = False
-                    logger.warning("Ollama unavailable, trying fallback")
-                    
-            elif primary_provider == "openai":
-                result = await self._generate_openai_embedding(text)
-                if result:
-                    self.provider_availability["openai"] = True
-                    return result
-                else:
-                    self.provider_availability["openai"] = False
-                    logger.warning("OpenAI unavailable, trying fallback")
-                    
-        except Exception as e:
-            logger.warning(f"Primary provider {primary_provider} failed: {e}")
-        
-        # Try fallback provider
+
+        # ── Primary provider (guarded by circuit-breaker) ──────────────────
+        if not self._embed_provider_in_cooldown(primary_provider):
+            try:
+                if primary_provider in {"lm_studio", "llama_cpp", "custom"}:
+                    result = await self._generate_lm_studio_embedding(text)
+                    if result:
+                        self._mark_embed_provider_ok(primary_provider)
+                        return result
+                    else:
+                        self._mark_embed_provider_failed(primary_provider)
+                        logger.warning(f"{primary_provider} unavailable, trying fallback")
+
+                elif primary_provider == "ollama":
+                    result = await self._generate_ollama_embedding(text)
+                    if result:
+                        self._mark_embed_provider_ok("ollama")
+                        return result
+                    else:
+                        self._mark_embed_provider_failed("ollama")
+                        logger.warning("Ollama unavailable, trying fallback")
+
+                elif primary_provider == "openai":
+                    result = await self._generate_openai_embedding(text)
+                    if result:
+                        self._mark_embed_provider_ok("openai")
+                        return result
+                    else:
+                        self._mark_embed_provider_failed("openai")
+                        logger.warning("OpenAI unavailable, trying fallback")
+
+            except Exception as e:
+                self._mark_embed_provider_failed(primary_provider)
+                logger.warning(f"Primary provider {primary_provider} failed: {e}")
+        else:
+            logger.debug(f"[circuit-breaker] skipping '{primary_provider}' — still in cooldown")
+
+        # ── Fallback provider (also guarded by circuit-breaker) ────────────
         fallback_provider = self.fallback_config.get("provider")
         if fallback_provider and fallback_provider != primary_provider:
-            try:
-                if fallback_provider in {"lm_studio", "llama_cpp", "custom"}:
-                    self.embeddings_endpoint = self._build_embeddings_endpoint(self.fallback_config)
-                    result = await self._generate_lm_studio_embedding(text, fallback=True)
-                    if result:
-                        self.provider_availability[fallback_provider] = True
-                        logger.info(f"Using {fallback_provider} fallback for embedding")
-                        return result
-                        
-                elif fallback_provider == "ollama":
-                    result = await self._generate_ollama_embedding(text, fallback=True)
-                    if result:
-                        self.provider_availability["ollama"] = True
-                        logger.info("Using Ollama fallback for embedding")
-                        return result
-                        
-                elif fallback_provider == "openai":
-                    result = await self._generate_openai_embedding(text, fallback=True)
-                    if result:
-                        self.provider_availability["openai"] = True
-                        logger.info("Using OpenAI fallback for embedding")
-                        return result
-                        
-            except Exception as e:
-                logger.error(f"Fallback provider {fallback_provider} also failed: {e}")
-        
-        # If both primary and fallback fail, log the issue
-        logger.error("All embedding providers failed - semantic search will be unavailable")
+            if not self._embed_provider_in_cooldown(fallback_provider):
+                try:
+                    if fallback_provider in {"lm_studio", "llama_cpp", "custom"}:
+                        self.embeddings_endpoint = self._build_embeddings_endpoint(self.fallback_config)
+                        result = await self._generate_lm_studio_embedding(text, fallback=True)
+                        if result:
+                            self._mark_embed_provider_ok(fallback_provider)
+                            logger.info(f"Using {fallback_provider} fallback for embedding")
+                            return result
+                        else:
+                            self._mark_embed_provider_failed(fallback_provider)
+
+                    elif fallback_provider == "ollama":
+                        result = await self._generate_ollama_embedding(text, fallback=True)
+                        if result:
+                            self._mark_embed_provider_ok("ollama")
+                            logger.info("Using Ollama fallback for embedding")
+                            return result
+                        else:
+                            self._mark_embed_provider_failed("ollama")
+
+                    elif fallback_provider == "openai":
+                        result = await self._generate_openai_embedding(text, fallback=True)
+                        if result:
+                            self._mark_embed_provider_ok("openai")
+                            logger.info("Using OpenAI fallback for embedding")
+                            return result
+                        else:
+                            self._mark_embed_provider_failed("openai")
+
+                except Exception as e:
+                    self._mark_embed_provider_failed(fallback_provider)
+                    logger.error(f"Fallback provider {fallback_provider} also failed: {e}")
+            else:
+                logger.debug(f"[circuit-breaker] skipping fallback '{fallback_provider}' — still in cooldown")
+
+        logger.error("All embedding providers failed or in cooldown — falling back to text search")
         return []
 
     async def _generate_openai_compatible_embedding(self, text: str, config: Dict[str, Any], provider_name: str) -> List[float]:
@@ -3923,6 +3962,17 @@ class PersistentAIMemorySystem:
                 logger.info(
                     f"Near-duplicate advisory: {memory_id} sim={best_sim:.4f} "
                     f"vs {best_match['memory_id']} — consider merging"
+                )
+
+            # Synaptic tagging: if this memory is high-importance (≥9),
+            # propagate importance boost to semantically related memories.
+            imp_rows = await self.ai_memory_db.execute_query(
+                "SELECT importance_level FROM curated_memories WHERE memory_id = ?",
+                (memory_id,)
+            )
+            if imp_rows and int(imp_rows[0]["importance_level"] or 0) >= 9:
+                asyncio.create_task(
+                    self.synaptic_tagging(memory_id, boost=1, max_importance=9)
                 )
 
         except Exception as e:
@@ -6529,6 +6579,122 @@ class PersistentAIMemorySystem:
             }
         except Exception as e:
             logger.error(f"intent_anchor error: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def synaptic_tagging(self, memory_id: str, boost: int = 1,
+                               max_importance: int = 9, limit: int = 5,
+                               tags_include: List[str] = None) -> Dict:
+        """Retroactively elevate importance of memories related to a high-salience memory.
+
+        When a memory is stored with high importance (≥9), this method finds the
+        top semantically related memories and boosts their importance_level by
+        `boost` points (default +1), capped at `max_importance` (default 9).
+
+        This models the neuroscience concept of synaptic tagging: consolidating
+        a strong memory also strengthens related contextual memories.
+
+        Can be called manually for any memory_id, or fires automatically in
+        background when create_memory is called with importance_level >= 9.
+
+        Returns: {status, memory_id, boosted: [{id, old_importance, new_importance, content_preview}]}
+        """
+        try:
+            # Load the source memory and its embedding
+            rows = await self.ai_memory_db.execute_query(
+                "SELECT memory_id, content, embedding, importance_level "
+                "FROM curated_memories WHERE memory_id = ?",
+                (memory_id,)
+            )
+            if not rows:
+                return {"status": "error", "message": f"Memory {memory_id} not found"}
+
+            source = dict(rows[0])
+            if not source.get("embedding"):
+                return {"status": "error", "message": "Source memory has no embedding yet — retry after background embed completes"}
+
+            src_vec = np.frombuffer(source["embedding"], dtype=np.float32).copy()
+            src_norm = float(np.linalg.norm(src_vec))
+            if src_norm == 0:
+                return {"status": "error", "message": "Source embedding is zero vector"}
+            src_vec /= src_norm
+
+            # Load candidate memories with embeddings (exclude source)
+            query = (
+                "SELECT memory_id, content, embedding, importance_level, tags "
+                "FROM curated_memories "
+                "WHERE embedding IS NOT NULL AND memory_id != ? AND "
+                "COALESCE(importance_level, 1) < ?"
+            )
+            params = [memory_id, max_importance]
+            candidates = await self.ai_memory_db.execute_query(query, tuple(params))
+
+            if not candidates:
+                return {"status": "success", "memory_id": memory_id, "boosted": [], "message": "No candidates found"}
+
+            # Apply tags_include filter
+            if tags_include:
+                filtered = []
+                for c in candidates:
+                    try:
+                        ctags = [t.lower() for t in json.loads(c["tags"] or "[]")]
+                    except Exception:
+                        ctags = []
+                    if any(t.lower() in ctags for t in tags_include):
+                        filtered.append(c)
+                candidates = filtered
+
+            if not candidates:
+                return {"status": "success", "memory_id": memory_id, "boosted": [], "message": "No candidates after tag filter"}
+
+            # Compute cosine similarities
+            def _compute_sims():
+                blobs = [c["embedding"] for c in candidates]
+                matrix = np.vstack([np.frombuffer(b, dtype=np.float32) for b in blobs])
+                norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+                norms = np.where(norms == 0, 1.0, norms)
+                return (matrix / norms) @ src_vec  # (N,)
+
+            sims = await asyncio.to_thread(_compute_sims)
+
+            # Pick top-K above threshold 0.65
+            THRESHOLD = 0.65
+            indexed = sorted(enumerate(sims), key=lambda x: x[1], reverse=True)
+            top = [(candidates[i], float(s)) for i, s in indexed if s >= THRESHOLD][:limit]
+
+            if not top:
+                return {"status": "success", "memory_id": memory_id, "boosted": [],
+                        "message": f"No related memories above threshold {THRESHOLD}"}
+
+            # Boost importance
+            boosted = []
+            for cand, sim in top:
+                old_imp = int(cand["importance_level"] or 5)
+                new_imp = min(old_imp + boost, max_importance)
+                if new_imp > old_imp:
+                    await self.ai_memory_db.execute_update(
+                        "UPDATE curated_memories SET importance_level = ? WHERE memory_id = ?",
+                        (new_imp, cand["memory_id"])
+                    )
+                    boosted.append({
+                        "id":               cand["memory_id"][:8],
+                        "old_importance":   old_imp,
+                        "new_importance":   new_imp,
+                        "similarity":       round(sim, 4),
+                        "content_preview":  (cand["content"] or "")[:80],
+                    })
+
+            logger.info(
+                f"synaptic_tagging: source={memory_id[:8]} boosted {len(boosted)} related memories"
+            )
+            return {
+                "status":    "success",
+                "memory_id": memory_id,
+                "source_importance": int(source.get("importance_level") or 0),
+                "boosted":   boosted,
+                "candidates_evaluated": len(top),
+            }
+        except Exception as e:
+            logger.error(f"synaptic_tagging error: {e}")
             return {"status": "error", "message": str(e)}
 
 
