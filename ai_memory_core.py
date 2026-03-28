@@ -2729,10 +2729,13 @@ class EmbeddingService:
         # embedding calls so each generate_embedding() doesn't open a new TCP connection.
         self._session: Optional["aiohttp.ClientSession"] = None
 
-        # Semaphore: at most 2 concurrent embedding requests to avoid overwhelming
-        # LM Studio when many background tasks fire simultaneously (e.g. bulk create_memory).
+        # Semaphore: at most 1 concurrent embedding request so that if LM Studio is
+        # under load, extra calls queue rather than multiplying GPU/RAM pressure.
         # Created lazily in generate_embedding() because __init__ may run before the loop.
         self._embed_semaphore: Optional[asyncio.Semaphore] = None
+
+        # Circuit-breaker: maps provider name → timestamp after which it may be retried.
+        self._embed_retry_after: Dict[str, float] = {}
 
         self.provider_availability = {
             "lm_studio": None,  # Will be tested on first use
@@ -2816,9 +2819,12 @@ class EmbeddingService:
             logger.warning(f"Failed to get user config, using defaults: {e}")
             return cls()  # Fallback to defaults
 
-    # Default timeout for embedding HTTP requests: 30s total, 5s connect.
-    # Prevents infinite freeze when LM Studio is busy loading a model or saturated.
-    _SESSION_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=5)
+    # Timeout for embedding HTTP requests.
+    # 10s total prevents long freezes when LM Studio is busy; 3s connect-fail fast.
+    _SESSION_TIMEOUT = aiohttp.ClientTimeout(total=10, connect=3)
+
+    # Circuit-breaker cooldown: skip failed provider for this many seconds.
+    _EMBED_COOLDOWN_SECONDS = 45.0
 
     async def _get_session(self) -> "aiohttp.ClientSession":
         """Return the shared aiohttp session, creating it lazily on first call."""
@@ -2840,7 +2846,7 @@ class EmbeddingService:
         """
         # Lazy semaphore init — must happen inside a running event loop
         if self._embed_semaphore is None:
-            self._embed_semaphore = asyncio.Semaphore(2)
+            self._embed_semaphore = asyncio.Semaphore(1)
 
         async with self._embed_semaphore:
             return await self._generate_embedding_inner(text, model)
@@ -2867,7 +2873,7 @@ class EmbeddingService:
             instructed_text = query
 
         if self._embed_semaphore is None:
-            self._embed_semaphore = asyncio.Semaphore(2)
+            self._embed_semaphore = asyncio.Semaphore(1)
 
         async with self._embed_semaphore:
             return await self._generate_embedding_inner(instructed_text)
@@ -2893,79 +2899,112 @@ class EmbeddingService:
             instructed_text = text
 
         if self._embed_semaphore is None:
-            self._embed_semaphore = asyncio.Semaphore(2)
+            self._embed_semaphore = asyncio.Semaphore(1)
 
         async with self._embed_semaphore:
             return await self._generate_embedding_inner(instructed_text)
 
+    # ── Circuit-breaker helpers ───────────────────────────────────────────────
+
+    def _embed_provider_in_cooldown(self, provider: str) -> bool:
+        """Return True if provider recently failed and should be skipped (no HTTP call)."""
+        retry_after = self._embed_retry_after.get(provider, 0.0)
+        return retry_after > time.time()
+
+    def _mark_embed_provider_failed(self, provider: str) -> None:
+        """Record failure; block provider for _EMBED_COOLDOWN_SECONDS."""
+        self.provider_availability[provider] = False
+        self._embed_retry_after[provider] = time.time() + self._EMBED_COOLDOWN_SECONDS
+        logger.warning(f"[circuit-breaker] embed provider '{provider}' in cooldown for {self._EMBED_COOLDOWN_SECONDS}s")
+
+    def _mark_embed_provider_ok(self, provider: str) -> None:
+        """Clear cooldown after a successful embedding request."""
+        self.provider_availability[provider] = True
+        self._embed_retry_after.pop(provider, None)
+
+    # ─────────────────────────────────────────────────────────────────────────
+
     async def _generate_embedding_inner(self, text: str, model: str = None) -> List[float]:
         """Internal: generate embedding (called under semaphore)."""
-        # Try primary provider first
         primary_provider = self.primary_config.get("provider", "llama_cpp")
         self.embeddings_endpoint = self._build_embeddings_endpoint(self.primary_config)
-        
-        try:
-            if primary_provider in {"lm_studio", "llama_cpp", "custom"}:
-                result = await self._generate_lm_studio_embedding(text)
-                if result:
-                    self.provider_availability[primary_provider] = True
-                    return result
-                else:
-                    self.provider_availability[primary_provider] = False
-                    logger.warning(f"{primary_provider} unavailable, trying fallback")
-                    
-            elif primary_provider == "ollama":
-                result = await self._generate_ollama_embedding(text)
-                if result:
-                    self.provider_availability["ollama"] = True
-                    return result
-                else:
-                    self.provider_availability["ollama"] = False
-                    logger.warning("Ollama unavailable, trying fallback")
-                    
-            elif primary_provider == "openai":
-                result = await self._generate_openai_embedding(text)
-                if result:
-                    self.provider_availability["openai"] = True
-                    return result
-                else:
-                    self.provider_availability["openai"] = False
-                    logger.warning("OpenAI unavailable, trying fallback")
-                    
-        except Exception as e:
-            logger.warning(f"Primary provider {primary_provider} failed: {e}")
-        
-        # Try fallback provider
+
+        # ── Primary provider (guarded by circuit-breaker) ──────────────────
+        if not self._embed_provider_in_cooldown(primary_provider):
+            try:
+                if primary_provider in {"lm_studio", "llama_cpp", "custom"}:
+                    result = await self._generate_lm_studio_embedding(text)
+                    if result:
+                        self._mark_embed_provider_ok(primary_provider)
+                        return result
+                    else:
+                        self._mark_embed_provider_failed(primary_provider)
+                        logger.warning(f"{primary_provider} unavailable, trying fallback")
+
+                elif primary_provider == "ollama":
+                    result = await self._generate_ollama_embedding(text)
+                    if result:
+                        self._mark_embed_provider_ok("ollama")
+                        return result
+                    else:
+                        self._mark_embed_provider_failed("ollama")
+                        logger.warning("Ollama unavailable, trying fallback")
+
+                elif primary_provider == "openai":
+                    result = await self._generate_openai_embedding(text)
+                    if result:
+                        self._mark_embed_provider_ok("openai")
+                        return result
+                    else:
+                        self._mark_embed_provider_failed("openai")
+                        logger.warning("OpenAI unavailable, trying fallback")
+
+            except Exception as e:
+                self._mark_embed_provider_failed(primary_provider)
+                logger.warning(f"Primary provider {primary_provider} failed: {e}")
+        else:
+            logger.debug(f"[circuit-breaker] skipping '{primary_provider}' — still in cooldown")
+
+        # ── Fallback provider (also guarded by circuit-breaker) ────────────
         fallback_provider = self.fallback_config.get("provider")
         if fallback_provider and fallback_provider != primary_provider:
-            try:
-                if fallback_provider in {"lm_studio", "llama_cpp", "custom"}:
-                    self.embeddings_endpoint = self._build_embeddings_endpoint(self.fallback_config)
-                    result = await self._generate_lm_studio_embedding(text, fallback=True)
-                    if result:
-                        self.provider_availability[fallback_provider] = True
-                        logger.info(f"Using {fallback_provider} fallback for embedding")
-                        return result
-                        
-                elif fallback_provider == "ollama":
-                    result = await self._generate_ollama_embedding(text, fallback=True)
-                    if result:
-                        self.provider_availability["ollama"] = True
-                        logger.info("Using Ollama fallback for embedding")
-                        return result
-                        
-                elif fallback_provider == "openai":
-                    result = await self._generate_openai_embedding(text, fallback=True)
-                    if result:
-                        self.provider_availability["openai"] = True
-                        logger.info("Using OpenAI fallback for embedding")
-                        return result
-                        
-            except Exception as e:
-                logger.error(f"Fallback provider {fallback_provider} also failed: {e}")
-        
-        # If both primary and fallback fail, log the issue
-        logger.error("All embedding providers failed - semantic search will be unavailable")
+            if not self._embed_provider_in_cooldown(fallback_provider):
+                try:
+                    if fallback_provider in {"lm_studio", "llama_cpp", "custom"}:
+                        self.embeddings_endpoint = self._build_embeddings_endpoint(self.fallback_config)
+                        result = await self._generate_lm_studio_embedding(text, fallback=True)
+                        if result:
+                            self._mark_embed_provider_ok(fallback_provider)
+                            logger.info(f"Using {fallback_provider} fallback for embedding")
+                            return result
+                        else:
+                            self._mark_embed_provider_failed(fallback_provider)
+
+                    elif fallback_provider == "ollama":
+                        result = await self._generate_ollama_embedding(text, fallback=True)
+                        if result:
+                            self._mark_embed_provider_ok("ollama")
+                            logger.info("Using Ollama fallback for embedding")
+                            return result
+                        else:
+                            self._mark_embed_provider_failed("ollama")
+
+                    elif fallback_provider == "openai":
+                        result = await self._generate_openai_embedding(text, fallback=True)
+                        if result:
+                            self._mark_embed_provider_ok("openai")
+                            logger.info("Using OpenAI fallback for embedding")
+                            return result
+                        else:
+                            self._mark_embed_provider_failed("openai")
+
+                except Exception as e:
+                    self._mark_embed_provider_failed(fallback_provider)
+                    logger.error(f"Fallback provider {fallback_provider} also failed: {e}")
+            else:
+                logger.debug(f"[circuit-breaker] skipping fallback '{fallback_provider}' — still in cooldown")
+
+        logger.error("All embedding providers failed or in cooldown — falling back to text search")
         return []
 
     async def _generate_openai_compatible_embedding(self, text: str, config: Dict[str, Any], provider_name: str) -> List[float]:
