@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "windows": "powershell -NoProfile -File .github/hooks/nemo-inject.ps1",
+        "timeout": 5
+      }
+    ]
+  }
+}
