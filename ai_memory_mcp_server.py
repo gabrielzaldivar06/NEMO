@@ -1281,6 +1281,7 @@ async def start_http_server(mcp_server: AIMemoryMCPServer, host: str = "127.0.0.
 
 async def main():
     """Main entry point for the MCP server"""
+    import sys
     logger.info("AI Memory MCP Server starting... (PID %d)", os.getpid())
     
     # Set debug logging for MCP components
@@ -1291,6 +1292,12 @@ async def main():
     
     logger.debug("Server initialized, starting stdio interface for LM Studio...")
     
+    # --http-only flag: start HTTP/SSE server standalone (for dashboard use without MCP client)
+    if "--http-only" in sys.argv:
+        logger.info("HTTP-only mode: starting SSE server on :11434 (no stdio)")
+        await start_http_server(mcp_server)
+        return
+
     try:
         # Start HTTP server (SSE + /api/graph) in background if FastAPI available
         asyncio.create_task(start_http_server(mcp_server))
