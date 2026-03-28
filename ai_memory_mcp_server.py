@@ -190,7 +190,8 @@ class AIMemoryMCPServer:
                         "max_importance": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Maximum importance level to include (1-10)"},
                         "memory_type": {"type": "string", "description": "Filter by memory type (e.g., 'safety', 'preference', 'skill', 'general')"},
                         "compact": {"type": "boolean", "description": "Return compressed one-line strings instead of full JSON objects — saves ~90% tokens", "default": True},
-                        "tags_include": {"type": "array", "items": {"type": "string"}, "description": "Only return memories that have at least one of these tags — useful to restrict results to the current project."}
+                        "tags_include": {"type": "array", "items": {"type": "string"}, "description": "Only return memories that have at least one of these tags — useful to restrict results to the current project."},
+                        "hyde": {"type": "boolean", "description": "Enable HyDE (Hypothetical Document Embeddings): uses Ollama qwen2.5:0.5b to generate 3 semantic variants of the query and searches with the centroid embedding. Improves recall for paraphrased or abstract queries. Requires Ollama running locally. Gracefully degrades to standard search if unavailable.", "default": False}
                     },
                     "required": ["query"]
                 }

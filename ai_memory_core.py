@@ -4257,12 +4257,76 @@ class PersistentAIMemorySystem:
                 pass
         return results
 
+    async def _hyde_expand_query(self, query: str) -> List[str]:
+        """
+        HyDE — Hypothetical Document Embeddings.
+        Calls Ollama qwen2.5:0.5b to generate 3 semantic variants of the query.
+        Returns the original query + variants (gracefully degrades to [query] on failure).
+        """
+        ollama_base = self.embedding_service.fallback_config.get("base_url", "http://localhost:11434")
+        prompt = (
+            f"Generate exactly 3 short rephrased versions of this search query. "
+            f"Return ONLY the 3 rephrases, one per line, no numbering, no explanation.\n"
+            f"Query: {query}"
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{ollama_base}/api/generate",
+                    json={"model": "qwen2.5:0.5b", "prompt": prompt, "stream": False},
+                    timeout=aiohttp.ClientTimeout(total=8)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        raw = data.get("response", "")
+                        variants = [line.strip() for line in raw.strip().splitlines() if line.strip()][:3]
+                        if variants:
+                            logger.debug(f"HyDE variants for '{query}': {variants}")
+                            return [query] + variants
+        except Exception as e:
+            logger.debug(f"HyDE expansion skipped (Ollama unavailable): {e}")
+        return [query]
+
+    async def _get_centroid_embedding(self, queries: List[str]) -> List[float]:
+        """
+        Generate embeddings for multiple queries and return the centroid (mean vector).
+        Used by HyDE to merge query variants into a single representative embedding.
+        """
+        embeddings = []
+        for q in queries:
+            emb = await self.embedding_service.generate_query_embedding(q)
+            if emb:
+                embeddings.append(np.array(emb, dtype=np.float32))
+        if not embeddings:
+            return []
+        centroid = np.mean(np.stack(embeddings), axis=0)
+        # Re-normalize to unit vector
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+        return centroid.tolist()
+
     async def search_memories(self, query: str, limit: int = 10, 
                             min_importance: int = None, max_importance: int = None,
                             memory_type: str = None, database_filter: str = "all",
                             compact: bool = False,
-                            tags_include: List[str] = None) -> Dict:
+                            tags_include: List[str] = None,
+                            hyde: bool = False) -> Dict:
         """Advanced semantic search across all databases with filtering"""
+
+        # ------------------------------------------------------------------
+        # Feature HyDE — Query expansion via Ollama qwen2.5:0.5b
+        # When hyde=True, generate semantic variants and search with centroid embedding.
+        # Gracefully degrades to standard search if Ollama is unavailable.
+        # ------------------------------------------------------------------
+        if hyde:
+            queries = await self._hyde_expand_query(query)
+            if len(queries) > 1:
+                query_embedding = await self._get_centroid_embedding(queries)
+            else:
+                query_embedding = await self.embedding_service.generate_query_embedding(query)
+        else:
+            query_embedding = None  # will be set below
 
         # ------------------------------------------------------------------
         # Feature #3 — Query Intent classification (used for tie-breaks below)
@@ -4270,7 +4334,8 @@ class PersistentAIMemorySystem:
         query_intent = self._classify_query_intent(query)
 
         # Generate embedding for the search query (instruction-prefixed for Qwen3)
-        query_embedding = await self.embedding_service.generate_query_embedding(query)
+        if not hyde or not query_embedding:
+            query_embedding = await self.embedding_service.generate_query_embedding(query)
         if not query_embedding:
             # Fallback to text-based search if embedding fails
             result = await self._text_based_search(query, limit, database_filter, min_importance, max_importance, memory_type, tags_include)
