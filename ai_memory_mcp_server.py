@@ -27,6 +27,11 @@ from mcp.types import (
     Tool,
     ToolAnnotations,
     Resource,
+    SamplingMessage,
+    ModelPreferences,
+    ModelHint,
+    ClientCapabilities,
+    SamplingCapability,
 )
 
 # Local imports (will be implemented)
@@ -847,6 +852,53 @@ class AIMemoryMCPServer:
         logger.info(f"Detected client type: {client_type}")
         return client_type
     
+    async def _sample(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        max_tokens: int = 512,
+        intelligence_priority: float = 0.7,
+    ) -> Optional[str]:
+        """Request an LLM completion from the client via MCP sampling.
+
+        Returns the generated text, or None if the client does not support
+        sampling or if the request fails.  Never raises — callers always fall
+        back to non-sampling behaviour.
+        """
+        try:
+            session = self.server.request_context.session
+            capable = session.check_client_capability(
+                ClientCapabilities(sampling=SamplingCapability())
+            )
+            if not capable:
+                logger.debug("_sample: client does not support sampling, skipping")
+                return None
+            result = await session.create_message(
+                messages=[
+                    SamplingMessage(
+                        role="user",
+                        content={"type": "text", "text": prompt},
+                    )
+                ],
+                system_prompt=system_prompt or None,
+                max_tokens=max_tokens,
+                model_preferences=ModelPreferences(
+                    hints=[ModelHint(name="claude"), ModelHint(name="gpt-4")],
+                    intelligencePriority=intelligence_priority,
+                    speedPriority=0.5,
+                    costPriority=0.3,
+                ),
+            )
+            content = result.content
+            if isinstance(content, dict):
+                return content.get("text", "")
+            if hasattr(content, "text"):
+                return content.text
+            return str(content)
+        except Exception as e:
+            logger.debug(f"_sample failed (non-fatal): {e}")
+            return None
+
     async def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> CallToolResult:
         """Execute the requested tool with logging for AI self-reflection"""
         
@@ -883,10 +935,86 @@ class AIMemoryMCPServer:
                 self._primed_bundle = result
             elif tool_name == "search_memories":
                 result = await self.memory_system.search_memories(**arguments)
+                # Sampling enhancement: ask the LLM to synthesise & rank hits
+                raw_hits = result if isinstance(result, list) else (result.get("memories", []) if isinstance(result, dict) else [])
+                if raw_hits:
+                    hits_text = "\n".join(
+                        f"[{i+1}] ({m.get('memory_type','?')}, imp={m.get('importance_level','?')}) {m.get('content','')[:300]}"
+                        for i, m in enumerate(raw_hits[:12]) if isinstance(m, dict)
+                    )
+                    synthesis = await self._sample(
+                        prompt=(
+                            f"Query: {arguments.get('query', '')}\n\n"
+                            f"Retrieved memories:\n{hits_text}\n\n"
+                            "Synthesise the most relevant information from these memories that directly answers the query. "
+                            "Be concise (3-5 sentences). If the memories are not relevant, say so."
+                        ),
+                        system_prompt="You are a memory retrieval assistant. Your role is to synthesise retrieved memories into a clear, direct answer.",
+                        max_tokens=300,
+                        intelligence_priority=0.8,
+                    )
+                    if synthesis:
+                        if isinstance(result, dict):
+                            result["synthesis"] = synthesis
+                        elif isinstance(result, list):
+                            result = {"memories": result, "synthesis": synthesis}
             elif tool_name == "store_conversation":
-                result = await self.memory_system.store_conversation(**arguments)
+                # Sampling enhancement: auto-generate a structured summary when
+                # the caller does not provide one (or provides a raw transcript).
+                raw_content = arguments.get("content", "") or arguments.get("summary", "")
+                if raw_content and len(raw_content) > 200:
+                    auto_summary = await self._sample(
+                        prompt=(
+                            f"Conversation transcript:\n{raw_content[:4000]}\n\n"
+                            "Write a structured session summary with these sections:\n"
+                            "## Decisions Made\n## Problems Solved\n## Next Steps\n## Key Facts Learned\n"
+                            "Be concise — maximum 250 words total."
+                        ),
+                        system_prompt="You are a technical note-taker. Extract the most durable, reusable information from conversations.",
+                        max_tokens=400,
+                        intelligence_priority=0.7,
+                    )
+                    if auto_summary:
+                        # Enrich the arguments with the structured summary
+                        enriched = dict(arguments)
+                        enriched["summary"] = auto_summary
+                        result = await self.memory_system.store_conversation(**enriched)
+                    else:
+                        result = await self.memory_system.store_conversation(**arguments)
+                else:
+                    result = await self.memory_system.store_conversation(**arguments)
             elif tool_name == "create_memory":
-                result = await self.memory_system.create_memory(**arguments)
+                # Sampling enhancement: detect semantic duplicates before saving.
+                content_to_check = arguments.get("content", "")
+                if content_to_check and len(content_to_check) > 30:
+                    candidates = await self.memory_system.search_memories(
+                        query=content_to_check[:200], limit=4
+                    )
+                    cand_list = candidates if isinstance(candidates, list) else candidates.get("memories", []) if isinstance(candidates, dict) else []
+                    if cand_list:
+                        cand_text = "\n".join(
+                            f"- {m.get('content','')[:200]}" for m in cand_list[:4] if isinstance(m, dict)
+                        )
+                        verdict = await self._sample(
+                            prompt=(
+                                f"New memory to save:\n{content_to_check}\n\n"
+                                f"Existing similar memories:\n{cand_text}\n\n"
+                                "Is the NEW memory a duplicate or subset of one of the EXISTING memories? "
+                                "Answer ONLY 'duplicate' or 'unique' — nothing else."
+                            ),
+                            system_prompt="You are a deduplication engine. Answer with a single word: 'duplicate' or 'unique'.",
+                            max_tokens=5,
+                            intelligence_priority=0.6,
+                        )
+                        if verdict and verdict.strip().lower().startswith("duplicate"):
+                            logger.info("create_memory: sampling detected duplicate, skipping save")
+                            result = {"skipped": True, "reason": "semantic duplicate detected by sampling", "similar_memories": cand_list[:2]}
+                        else:
+                            result = await self.memory_system.create_memory(**arguments)
+                    else:
+                        result = await self.memory_system.create_memory(**arguments)
+                else:
+                    result = await self.memory_system.create_memory(**arguments)
             elif tool_name == "create_correction":
                 wrong = arguments.get("wrong_assumption", "")
                 correct = arguments.get("correct_answer", "")
@@ -904,6 +1032,31 @@ class AIMemoryMCPServer:
                     importance_level=10,
                     tags=correction_tags,
                 )
+                # Sampling enhancement: identify other memories that may be
+                # invalidated or weakened by this correction.
+                if wrong and correct:
+                    affected_raw = await self.memory_system.search_memories(query=wrong, limit=6)
+                    affected_list = affected_raw if isinstance(affected_raw, list) else affected_raw.get("memories", []) if isinstance(affected_raw, dict) else []
+                    if affected_list:
+                        affected_text = "\n".join(
+                            f"[{m.get('memory_id','?')}] {m.get('content','')[:200]}" for m in affected_list[:6] if isinstance(m, dict)
+                        )
+                        analysis = await self._sample(
+                            prompt=(
+                                f"A correction was just made:\n"
+                                f"WRONG: {wrong}\nCORRECT: {correct}\n\n"
+                                f"These memories may be affected:\n{affected_text}\n\n"
+                                "List the memory IDs (comma-separated) that contain the wrong assumption and should be reviewed. "
+                                "If none are affected, reply 'none'."
+                            ),
+                            system_prompt="You are a memory consistency checker. Identify which stored memories contradict the correction.",
+                            max_tokens=100,
+                            intelligence_priority=0.7,
+                        )
+                        if analysis and analysis.strip().lower() != "none":
+                            if isinstance(result, dict):
+                                result["affected_memory_ids"] = analysis.strip()
+                                result["affected_note"] = "These memory IDs may need review due to this correction"
             elif tool_name == "update_memory":
                 result = await self.memory_system.update_memory(**arguments)
             elif tool_name == "create_appointment":
@@ -953,7 +1106,30 @@ class AIMemoryMCPServer:
             elif tool_name == "get_appointments":
                 result = await self.memory_system.get_appointments(**arguments)
             elif tool_name == "store_ai_reflection" or tool_name == "write_ai_insights":
-                result = await self.memory_system.store_ai_reflection(**arguments)
+                # Sampling enhancement: when writing insights, ask the LLM to
+                # distil the most important non-obvious takeaway before storing.
+                raw_insight = arguments.get("content", "") or arguments.get("reflection", "")
+                if raw_insight and len(raw_insight) > 80:
+                    distilled = await self._sample(
+                        prompt=(
+                            f"Raw insight to store:\n{raw_insight}\n\n"
+                            "Rewrite this as a single, crisp, self-contained insight (1-3 sentences) "
+                            "that will be maximally useful when retrieved in a future session. "
+                            "Remove vague language. Keep concrete facts and decisions."
+                        ),
+                        system_prompt="You are a knowledge distiller. Make insights precise, durable, and retrievable.",
+                        max_tokens=200,
+                        intelligence_priority=0.8,
+                    )
+                    if distilled:
+                        enriched = dict(arguments)
+                        key = "content" if "content" in enriched else "reflection"
+                        enriched[key] = distilled
+                        result = await self.memory_system.store_ai_reflection(**enriched)
+                    else:
+                        result = await self.memory_system.store_ai_reflection(**arguments)
+                else:
+                    result = await self.memory_system.store_ai_reflection(**arguments)
             elif tool_name == "get_current_time":
                 result = await self.memory_system.get_current_time()
             elif tool_name == "get_weather_open_meteo":
