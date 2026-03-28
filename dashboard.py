@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-NEMO Dashboard — Interactive Memory Graph
+NEMO Dashboard — Cosmograph Memory Graph (WebGL / brain-inspired)
 Generates a self-contained HTML file visualizing your memory graph.
 Nodes = memories, sized by importance, colored by type.
 Edges = semantic similarity >= threshold between stored embeddings.
+
+Uses Cosmograph (WebGL) for GPU-accelerated rendering of large graphs.
 
 Usage:
     python dashboard.py [--db PATH] [--limit 300] [--threshold 0.70] [--out dashboard.html]
@@ -21,21 +23,23 @@ from pathlib import Path
 
 import numpy as np
 
-# ── Color palette by memory type ────────────────────────────────────────────
+# ── Neuron color palette by memory type ─────────────────────────────────────
+# Inspired by neuroscience: excitatory (warm), inhibitory (cool),
+# structural (teal), reward/salience (amber), error-signal (red)
 TYPE_COLORS = {
-    "fact":             "#4e9af1",   # blue
-    "procedure":        "#43d17a",   # green
-    "correction":       "#f15353",   # red
-    "preference":       "#c77dff",   # purple
-    "insight":          "#ffb347",   # orange
-    "episodic":         "#80deea",   # teal
-    "intent_anchor":    "#ffd54f",   # amber
-    "benchmark_result": "#78909c",   # grey-blue
-    "benchmark_baseline":"#78909c",
-    "ai_memory":        "#4e9af1",
-    "roleplay":         "#f48fb1",   # pink
+    "fact":              "#00b4d8",  # cognitive blue  — declarative memory
+    "procedure":         "#06d6a0",  # motor teal      — procedural memory
+    "correction":        "#ff4757",  # error red       — prediction-error signal
+    "preference":        "#a855f7",  # dopamine purple — reward/preference
+    "insight":           "#ff9f1c",  # salience amber  — discovery/aha moment
+    "episodic":          "#48cae4",  # hippocampus cyan — episodic memory
+    "intent_anchor":     "#f7b731",  # prospective gold — future intentions
+    "benchmark_result":  "#546e7a",  # grey-slate
+    "benchmark_baseline":"#546e7a",
+    "ai_memory":         "#00b4d8",
+    "roleplay":          "#f06292",  # pink — narrative
 }
-DEFAULT_COLOR = "#90a4ae"
+DEFAULT_COLOR = "#607d8b"
 
 
 def load_memories(db_path: str, limit: int) -> list[dict]:
@@ -68,21 +72,19 @@ def build_graph(rows: list[dict], threshold: float) -> tuple[list, list]:
             imp = 5
         mtype = r["memory_type"] or "fact"
         content = r["content"] or ""
+        excerpt = content[:80] + ("…" if len(content) > 80 else "")
         nodes.append({
-            "id":    r["memory_id"],
-            "label": content[:45] + ("…" if len(content) > 45 else ""),
-            "title": (
-                f"<b>{mtype}</b> | imp={imp}<br>"
-                f"tags: {', '.join(tags)}<br>"
-                f"created: {(r['timestamp_created'] or '')[:10]}<br><br>"
-                f"{content[:300]}"
-            ),
-            "value": imp,          # controls node size via vis-network
-            "color": TYPE_COLORS.get(mtype, DEFAULT_COLOR),
-            "font":  {"size": 11},
+            "id":         r["memory_id"],
+            "mtype":      mtype,
+            "importance": imp,
+            "color":      TYPE_COLORS.get(mtype, DEFAULT_COLOR),
+            "excerpt":    excerpt,
+            "tags":       tags,
+            "created":    (r["timestamp_created"] or "")[:10],
+            "content":    content[:400],
         })
 
-    # Build edges from cosine similarities
+    # Build edges from cosine similarities (Cosmograph uses source/target)
     edges = []
     embeds = []
     valid_idx = []
@@ -99,23 +101,18 @@ def build_graph(rows: list[dict], threshold: float) -> tuple[list, list]:
                 pass
 
     if len(embeds) >= 2:
-        matrix = np.vstack(embeds)          # (M, D)
-        sims = matrix @ matrix.T             # (M, M) cosine
+        matrix = np.vstack(embeds)   # (M, D)
+        sims = matrix @ matrix.T     # (M, M) cosine similarity
         n = len(valid_idx)
-        edge_id = 0
         for a in range(n):
             for b in range(a + 1, n):
                 s = float(sims[a, b])
                 if s >= threshold:
                     edges.append({
-                        "id":    edge_id,
-                        "from":  rows[valid_idx[a]]["memory_id"],
-                        "to":    rows[valid_idx[b]]["memory_id"],
-                        "value": round(s, 3),   # controls edge width
-                        "title": f"similarity: {s:.3f}",
-                        "color": {"opacity": min(1.0, (s - threshold) / (1.0 - threshold) + 0.3)},
+                        "source":     rows[valid_idx[a]]["memory_id"],
+                        "target":     rows[valid_idx[b]]["memory_id"],
+                        "similarity": round(s, 4),
                     })
-                    edge_id += 1
 
     return nodes, edges
 
@@ -124,116 +121,473 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>NEMO Memory Graph</title>
-<script src="https://unpkg.com/vis-network@9.1.9/dist/vis-network.min.js"></script>
-<link  href="https://unpkg.com/vis-network@9.1.9/dist/vis-network.min.css" rel="stylesheet"/>
+<title>NEMO · Neural Memory Graph</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  #header { padding: 14px 20px; background: #161b22; border-bottom: 1px solid #30363d; display:flex; align-items:center; gap:16px; }
-  #header h1 { font-size: 18px; font-weight: 600; }
-  #stats { font-size: 13px; color: #8b949e; }
-  #controls { padding: 10px 20px; background: #161b22; border-bottom: 1px solid #30363d; display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
-  #controls label { font-size: 12px; color: #8b949e; }
-  #controls input[type=range] { width: 120px; }
-  #controls select { background:#21262d; color:#e6edf3; border:1px solid #30363d; border-radius:4px; padding:3px 6px; font-size:12px; }
-  #legend { display:flex; gap:10px; flex-wrap:wrap; }
-  .leg-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; }
-  .leg-item { font-size:11px; display:flex; align-items:center; }
-  #container { width:100%; height: calc(100vh - 110px); }
-  #tooltip-box { position:fixed; bottom:20px; right:20px; background:#161b22; border:1px solid #30363d;
-    border-radius:8px; padding:12px 16px; max-width:340px; font-size:12px; line-height:1.6;
-    display:none; color:#e6edf3; z-index:99; max-height:300px; overflow-y:auto; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #03050d;
+    --surface:   rgba(8, 14, 30, 0.85);
+    --border:    rgba(0, 180, 216, 0.18);
+    --accent:    #00b4d8;
+    --accent2:   #ff9f1c;
+    --text:      #ccd6f6;
+    --muted:     #6a80a7;
+    --panel-w:   320px;
+  }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    overflow: hidden;
+  }
+
+  /* ── Starfield canvas ─────────────────────────────────────── */
+  #starfield {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+  }
+
+  /* ── Graph container ──────────────────────────────────────── */
+  #graph-root {
+    position: fixed; inset: 0; z-index: 1;
+  }
+  #graph-root canvas {
+    display: block;
+  }
+
+  /* ── Top HUD ──────────────────────────────────────────────── */
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0;
+    z-index: 10;
+    display: flex; align-items: center; gap: 18px;
+    padding: 12px 22px;
+    background: var(--surface);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    animation: slideDown 0.5s ease;
+  }
+  @keyframes slideDown { from { transform: translateY(-100%); opacity:0; } to { transform: none; opacity:1; } }
+
+  #hud-title {
+    font-size: 17px; font-weight: 700; letter-spacing: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    text-transform: uppercase;
+  }
+  #hud-stats {
+    font-size: 12px; color: var(--muted); letter-spacing: 0.5px;
+  }
+  #hud-pulse {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #06d6a0;
+    animation: pulse 2s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+  @keyframes pulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(6,214,160,0.7); }
+    50%      { box-shadow: 0 0 0 7px rgba(6,214,160,0); }
+  }
+  #hud-spacer { flex: 1; }
+
+  /* ── Side Panel ───────────────────────────────────────────── */
+  #panel {
+    position: fixed; top: 56px; right: 0; bottom: 0;
+    width: var(--panel-w);
+    z-index: 10;
+    background: var(--surface);
+    backdrop-filter: blur(14px);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    transform: translateX(0);
+    transition: transform 0.35s cubic-bezier(0.4,0,0.2,1);
+  }
+  #panel.collapsed { transform: translateX(var(--panel-w)); }
+
+  #panel-toggle {
+    position: absolute; left: -34px; top: 50%;
+    transform: translateY(-50%);
+    width: 34px; height: 56px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-right: none;
+    border-radius: 8px 0 0 8px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent); font-size: 14px;
+    backdrop-filter: blur(14px);
+  }
+
+  #panel-inner { padding: 18px; overflow-y: auto; flex: 1; }
+  .panel-section { margin-bottom: 20px; }
+  .panel-section h3 {
+    font-size: 10px; font-weight: 700; letter-spacing: 2px;
+    text-transform: uppercase; color: var(--muted);
+    margin-bottom: 10px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Legend */
+  .leg-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 0; font-size: 12px; cursor: pointer;
+    border-radius: 4px; padding: 5px 6px;
+    transition: background 0.15s;
+  }
+  .leg-row:hover { background: rgba(0,180,216,0.08); }
+  .leg-row.inactive { opacity: 0.35; }
+  .leg-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    box-shadow: 0 0 6px currentColor;
+  }
+  .leg-count { margin-left: auto; font-size: 10px; color: var(--muted); }
+
+  /* Controls */
+  .ctrl-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 10px; font-size: 12px;
+  }
+  .ctrl-row label { color: var(--muted); min-width: 100px; }
+  .ctrl-row input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 3px; border-radius: 2px;
+    background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--pct, 0%), rgba(0,180,216,0.2) var(--pct,0%));
+    outline: none;
+  }
+  .ctrl-row input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 13px; height: 13px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+    cursor: pointer;
+  }
+  .ctrl-val { min-width: 22px; text-align: right; color: var(--accent); font-weight: 600; }
+
+  select {
+    background: rgba(0,0,0,0.4); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 4px 8px; font-size: 12px; width: 100%;
+  }
+  select option { background: #0d1117; }
+
+  /* ── Node info card ───────────────────────────────────────── */
+  #info-card {
+    position: fixed; bottom: 24px; left: 24px;
+    width: 360px; max-height: 260px;
+    z-index: 20;
+    background: var(--surface);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    overflow-y: auto;
+    display: none;
+    animation: cardIn 0.25s ease;
+  }
+  @keyframes cardIn {
+    from { opacity:0; transform: translateY(12px); }
+    to   { opacity:1; transform: none; }
+  }
+  #info-card .card-type {
+    font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+    font-weight: 700; margin-bottom: 6px;
+  }
+  #info-card .card-imp {
+    font-size: 11px; color: var(--muted); margin-bottom: 8px;
+  }
+  #info-card .card-tags {
+    display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 10px;
+  }
+  #info-card .tag {
+    font-size: 10px; padding: 2px 8px; border-radius: 20px;
+    background: rgba(0,180,216,0.12); border: 1px solid rgba(0,180,216,0.25);
+    color: var(--accent);
+  }
+  #info-card .card-content {
+    font-size: 12px; line-height: 1.65; color: var(--text);
+  }
+  #info-close {
+    position: absolute; top: 10px; right: 12px;
+    font-size: 16px; cursor: pointer; color: var(--muted);
+    line-height: 1;
+  }
+  #info-close:hover { color: var(--text); }
+
+  /* Importance stars */
+  .imp-stars { color: var(--accent2); letter-spacing: 1px; }
 </style>
 </head>
 <body>
-<div id="header">
-  <h1>🧠 NEMO Memory Graph</h1>
-  <span id="stats"></span>
-</div>
-<div id="controls">
-  <div id="legend"></div>
-  <label>Physics <input type="checkbox" id="physicsToggle" checked></label>
-  <label>Filter type:
-    <select id="typeFilter"><option value="">All types</option></select>
-  </label>
-  <label>Min importance:
-    <input type="range" id="impSlider" min="1" max="10" value="1">
-    <span id="impVal">1</span>
-  </label>
-</div>
-<div id="container"></div>
-<div id="tooltip-box" id="tooltip-box"></div>
 
-<script>
+<canvas id="starfield"></canvas>
+<div id="graph-root"></div>
+
+<!-- Top HUD -->
+<div id="hud">
+  <div id="hud-pulse"></div>
+  <span id="hud-title">NEMO · Neural Memory</span>
+  <span id="hud-stats">loading…</span>
+  <div id="hud-spacer"></div>
+</div>
+
+<!-- Side Panel -->
+<div id="panel">
+  <button id="panel-toggle" title="Toggle panel">◀</button>
+  <div id="panel-inner">
+
+    <div class="panel-section">
+      <h3>Memory Types</h3>
+      <div id="legend"></div>
+    </div>
+
+    <div class="panel-section">
+      <h3>Filters</h3>
+      <div class="ctrl-row">
+        <label>Min importance</label>
+        <input type="range" id="impSlider" min="1" max="10" value="1">
+        <span class="ctrl-val" id="impVal">1</span>
+      </div>
+      <div class="ctrl-row" style="margin-top:4px;">
+        <label>Type</label>
+      </div>
+      <select id="typeFilter">
+        <option value="">All types</option>
+      </select>
+    </div>
+
+    <div class="panel-section">
+      <h3>Simulation</h3>
+      <div class="ctrl-row">
+        <label>Repulsion</label>
+        <input type="range" id="repSlider" min="0.2" max="4" step="0.1" value="1.5">
+        <span class="ctrl-val" id="repVal">1.5</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Link spring</label>
+        <input type="range" id="springSlider" min="0.05" max="2" step="0.05" value="0.3">
+        <span class="ctrl-val" id="springVal">0.3</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Decay</label>
+        <input type="range" id="frictionSlider" min="0.1" max="1" step="0.05" value="0.7">
+        <span class="ctrl-val" id="frictionVal">0.7</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Node info card -->
+<div id="info-card">
+  <span id="info-close" title="Close">✕</span>
+  <div class="card-type" id="card-type"></div>
+  <div class="card-imp"  id="card-imp"></div>
+  <div class="card-tags" id="card-tags"></div>
+  <div class="card-content" id="card-content"></div>
+</div>
+
+<script type="module">
+// ── Data injected by Python ──────────────────────────────────────────────
 const RAW_NODES = __NODES_JSON__;
 const RAW_EDGES = __EDGES_JSON__;
 const TYPE_COLORS = __TYPE_COLORS_JSON__;
 
-const container = document.getElementById("container");
-const statsEl   = document.getElementById("stats");
-const legendEl  = document.getElementById("legend");
-const tooltip   = document.getElementById("tooltip-box");
+// ── Cosmograph via CDN ───────────────────────────────────────────────────
+import { Cosmograph } from 'https://cdn.jsdelivr.net/npm/@cosmograph/cosmograph/+esm';
 
-// Build legend
-const seenTypes = [...new Set(RAW_NODES.map(n => {
-  // recover type from color
-  return Object.entries(TYPE_COLORS).find(([, c]) => c === n.color)?.[0] || "other";
-}))];
-seenTypes.forEach(t => {
-  const col = TYPE_COLORS[t] || "#90a4ae";
-  legendEl.innerHTML += `<span class="leg-item"><span class="leg-dot" style="background:${col}"></span>${t}</span>`;
-});
-
-// Populate type filter
-const typeFilter = document.getElementById("typeFilter");
-seenTypes.forEach(t => {
-  typeFilter.innerHTML += `<option value="${t}">${t}</option>`;
-});
-
-// vis datasets
-const nodesDS = new vis.DataSet(RAW_NODES);
-const edgesDS = new vis.DataSet(RAW_EDGES);
-
-statsEl.textContent = `${RAW_NODES.length} memories · ${RAW_EDGES.length} edges`;
-
-const options = {
-  nodes: { shape: "dot", scaling: { min:8, max:36, label:{enabled:true,min:10,max:22} }, borderWidth:1.5 },
-  edges: { smooth:{type:"continuous"}, scaling:{min:0.5, max:4} },
-  physics: { forceAtlas2Based:{gravitationalConstant:-60, springLength:150, springConstant:0.05}, solver:"forceAtlas2Based", stabilization:{iterations:200} },
-  interaction: { hover:true, tooltipDelay:200, navigationButtons:false, keyboard:true },
-};
-
-const network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, options);
-
-network.on("selectNode", params => {
-  if (!params.nodes.length) return;
-  const node = RAW_NODES.find(n => n.id === params.nodes[0]);
-  if (node) { tooltip.innerHTML = node.title; tooltip.style.display = "block"; }
-});
-network.on("deselectNode", () => { tooltip.style.display = "none"; });
-
-document.getElementById("physicsToggle").addEventListener("change", e => {
-  network.setOptions({ physics: { enabled: e.target.checked } });
-});
-
-function applyFilters() {
-  const minImp  = parseInt(document.getElementById("impSlider").value);
-  const selType = typeFilter.value;
-  document.getElementById("impVal").textContent = minImp;
-  const filtered = RAW_NODES.filter(n => {
-    if (n.value < minImp) return false;
-    if (selType && TYPE_COLORS[selType] !== n.color) return false;
-    return true;
+// ── Starfield background (canvas 2D) ────────────────────────────────────
+(function spawnStars() {
+  const cv = document.getElementById('starfield');
+  const ctx = cv.getContext('2d');
+  const stars = [];
+  function resize() { cv.width = innerWidth; cv.height = innerHeight; }
+  resize(); window.addEventListener('resize', resize);
+  for (let i = 0; i < 220; i++) stars.push({
+    x: Math.random(), y: Math.random(),
+    r: Math.random() * 1.2 + 0.2,
+    a: Math.random(),
+    da: (Math.random() - 0.5) * 0.004,
   });
-  const filteredIds = new Set(filtered.map(n => n.id));
-  nodesDS.clear(); nodesDS.add(filtered);
-  edgesDS.clear();
-  edgesDS.add(RAW_EDGES.filter(e => filteredIds.has(e.from) && filteredIds.has(e.to)));
-  statsEl.textContent = `${filtered.length} memories · ${edgesDS.length} edges (filtered)`;
+  function draw() {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    for (const s of stars) {
+      s.a = Math.max(0.05, Math.min(0.9, s.a + s.da));
+      if (s.a <= 0.05 || s.a >= 0.9) s.da *= -1;
+      ctx.beginPath();
+      ctx.arc(s.x * cv.width, s.y * cv.height, s.r, 0, 2 * Math.PI);
+      ctx.fillStyle = `rgba(180,210,255,${s.a})`;
+      ctx.fill();
+    }
+    requestAnimationFrame(draw);
+  }
+  draw();
+})();
+
+// ── Build working sets ───────────────────────────────────────────────────
+const nodeMap = new Map(RAW_NODES.map(n => [n.id, n]));
+let activeTypes = new Set(RAW_NODES.map(n => n.mtype));
+let minImp = 1;
+
+function visibleNodes() {
+  return RAW_NODES.filter(n => activeTypes.has(n.mtype) && n.importance >= minImp);
 }
-document.getElementById("impSlider").addEventListener("input", applyFilters);
-typeFilter.addEventListener("change", applyFilters);
+function visibleEdges(ids) {
+  return RAW_EDGES.filter(e => ids.has(e.source) && ids.has(e.target));
+}
+
+// ── Init Cosmograph ──────────────────────────────────────────────────────
+const root = document.getElementById('graph-root');
+
+const graph = new Cosmograph(root, {
+  backgroundColor:      '#03050d',
+
+  nodeColor:            n => n.color,
+  nodeSize:             n => 1.8 + n.importance * 1.6,
+
+  linkColor:            l => {
+    // synaptic link: hue shifts from cool (weak) to warm (strong)
+    const t = Math.min(1, (l.similarity - 0.70) / 0.25);
+    const r = Math.round(0   + t * 255);
+    const g = Math.round(180 - t * 20);
+    const b = Math.round(216 - t * 60);
+    return `rgba(${r},${g},${b},${0.15 + t * 0.55})`;
+  },
+  linkWidth:            l => 0.4 + (l.similarity - 0.70) * 6,
+  linkArrows:           false,
+
+  hoveredNodeRingColor: '#ffffff',
+  focusedNodeRingColor: '#ff9f1c',
+
+  simulationGravity:        0.08,
+  simulationRepulsion:      1.5,
+  simulationLinkSpring:     0.3,
+  simulationLinkDistance:   1.0,
+  simulationFriction:       0.7,
+
+  fitViewOnInit:            true,
+  showDynamicLabels:        true,
+  nodeLabelColor:           '#8aa4cc',
+});
+
+function refresh() {
+  const ns = visibleNodes();
+  const ids = new Set(ns.map(n => n.id));
+  const es = visibleEdges(ids);
+  graph.setData(ns, es);
+  updateStats(ns.length, es.length);
+}
+
+refresh();
+
+function updateStats(nc, ec) {
+  document.getElementById('hud-stats').textContent =
+    `${nc.toLocaleString()} neurons · ${ec.toLocaleString()} synapses`;
+}
+
+// ── Click to open info card ──────────────────────────────────────────────
+graph.on('nodeClick', (node) => {
+  if (!node) return;
+  const d = nodeMap.get(node.id);
+  if (!d) return;
+  const stars = '★'.repeat(d.importance) + '☆'.repeat(Math.max(0, 10 - d.importance));
+  document.getElementById('card-type').textContent = d.mtype;
+  document.getElementById('card-type').style.color = d.color;
+  document.getElementById('card-imp').innerHTML =
+    `<span class="imp-stars">${stars}</span> importance ${d.importance}/10 · ${d.created}`;
+  const tagsEl = document.getElementById('card-tags');
+  tagsEl.innerHTML = (d.tags || []).map(t => `<span class="tag">${t}</span>`).join('');
+  document.getElementById('card-content').textContent = d.content;
+  const card = document.getElementById('info-card');
+  card.style.display = 'block';
+  void card.offsetWidth; // reflow for animation replay
+  card.style.animation = 'none';
+  requestAnimationFrame(() => { card.style.animation = ''; });
+});
+
+document.getElementById('info-close').addEventListener('click', () => {
+  document.getElementById('info-card').style.display = 'none';
+});
+
+// ── Panel toggle ─────────────────────────────────────────────────────────
+const panel = document.getElementById('panel');
+const toggleBtn = document.getElementById('panel-toggle');
+toggleBtn.addEventListener('click', () => {
+  panel.classList.toggle('collapsed');
+  toggleBtn.textContent = panel.classList.contains('collapsed') ? '▶' : '◀';
+});
+
+// ── Legend (clickable type filter) ───────────────────────────────────────
+const legendEl = document.getElementById('legend');
+const typeCounts = {};
+RAW_NODES.forEach(n => { typeCounts[n.mtype] = (typeCounts[n.mtype] || 0) + 1; });
+const seenTypes = Object.keys(typeCounts).sort((a,b) => typeCounts[b] - typeCounts[a]);
+
+seenTypes.forEach(t => {
+  const col = TYPE_COLORS[t] || '#607d8b';
+  const row = document.createElement('div');
+  row.className = 'leg-row';
+  row.dataset.type = t;
+  row.innerHTML = `
+    <span class="leg-dot" style="background:${col}; color:${col}"></span>
+    <span>${t}</span>
+    <span class="leg-count">${typeCounts[t]}</span>`;
+  row.addEventListener('click', () => {
+    if (activeTypes.has(t)) activeTypes.delete(t);
+    else activeTypes.add(t);
+    row.classList.toggle('inactive', !activeTypes.has(t));
+    refresh();
+  });
+  legendEl.appendChild(row);
+});
+
+// Populate type dropdown
+const typeFilter = document.getElementById('typeFilter');
+seenTypes.forEach(t => {
+  const opt = document.createElement('option');
+  opt.value = t; opt.textContent = t;
+  typeFilter.appendChild(opt);
+});
+typeFilter.addEventListener('change', () => {
+  const v = typeFilter.value;
+  if (v === '') {
+    activeTypes = new Set(seenTypes);
+    legendEl.querySelectorAll('.leg-row').forEach(r => r.classList.remove('inactive'));
+  } else {
+    activeTypes = new Set([v]);
+    legendEl.querySelectorAll('.leg-row').forEach(r => {
+      r.classList.toggle('inactive', r.dataset.type !== v);
+    });
+  }
+  refresh();
+});
+
+// ── Importance slider ─────────────────────────────────────────────────────
+const impSlider = document.getElementById('impSlider');
+impSlider.addEventListener('input', () => {
+  minImp = parseInt(impSlider.value);
+  document.getElementById('impVal').textContent = minImp;
+  impSlider.style.setProperty('--pct', `${(minImp-1)/9*100}%`);
+  refresh();
+});
+
+// ── Simulation sliders ────────────────────────────────────────────────────
+function simSlider(id, valId, configKey) {
+  const sl = document.getElementById(id);
+  sl.style.setProperty('--pct', `${(parseFloat(sl.value) - parseFloat(sl.min)) / (parseFloat(sl.max) - parseFloat(sl.min)) * 100}%`);
+  sl.addEventListener('input', () => {
+    const v = parseFloat(sl.value);
+    document.getElementById(valId).textContent = v.toFixed(2).replace(/\.?0+$/, '');
+    sl.style.setProperty('--pct', `${(v - parseFloat(sl.min)) / (parseFloat(sl.max) - parseFloat(sl.min)) * 100}%`);
+    graph.setConfig({ [configKey]: v });
+  });
+}
+simSlider('repSlider',      'repVal',      'simulationRepulsion');
+simSlider('springSlider',   'springVal',   'simulationLinkSpring');
+simSlider('frictionSlider', 'frictionVal', 'simulationFriction');
+
 </script>
 </body>
 </html>"""
