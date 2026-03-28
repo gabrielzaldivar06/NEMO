@@ -1030,9 +1030,11 @@ class AIMemoryMCPServer:
                         "count": len(memories),
                     })
                 elif tool_name == "synaptic_tagging":
+                    related = result.get("related_ids", []) if isinstance(result, dict) else []
                     _emit("synaptic_tagged", {
                         "memory_id": arguments.get("memory_id", ""),
-                        "related_count": len(result.get("related_ids", [])) if isinstance(result, dict) else 0,
+                        "related_ids": related[:8],
+                        "related_count": len(related),
                     })
                 elif tool_name == "store_conversation":
                     _emit("conversation_stored", {

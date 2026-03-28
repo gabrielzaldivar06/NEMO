@@ -136,24 +136,35 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:        #03050d;
-    --surface:   rgba(8, 14, 30, 0.85);
-    --border:    rgba(0, 180, 216, 0.18);
-    --accent:    #00b4d8;
-    --accent2:   #ff9f1c;
-    --text:      #ccd6f6;
-    --muted:     #6a80a7;
+    --bg:        #0c0c14;
+    --surface:   rgba(16, 14, 36, 0.68);
+    --border:    rgba(255, 255, 255, 0.09);
+    --border-hi: rgba(192, 132, 252, 0.4);
+    --accent:    #C084FC;
+    --accent2:   #67E8F9;
+    --text:      #e8e8f4;
+    --muted:     #68668a;
     --panel-w:   320px;
   }
 
   html, body {
     width: 100%; height: 100%;
-    background: var(--bg);
+    background:
+      radial-gradient(ellipse 90% 70% at 20% 15%, #1a1a3e 0%, transparent 55%),
+      radial-gradient(ellipse 70% 55% at 80% 80%, #0d0d2a 0%, transparent 55%),
+      radial-gradient(ellipse 50% 80% at 50% 100%, #110d1e 0%, transparent 60%),
+      #0c0c14;
     color: var(--text);
-    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-family: 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
     overflow: hidden;
   }
 
+  #nebula {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(ellipse 60% 40% at 25% 30%, rgba(192,132,252,0.06) 0%, transparent 60%),
+      radial-gradient(ellipse 50% 35% at 70% 65%, rgba(103,232,249,0.04) 0%, transparent 55%);
+  }
   #starfield { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
   #graph-root { position: fixed; inset: 0; z-index: 1; }
   #graph-root canvas { display: block; }
@@ -163,26 +174,28 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     position: fixed; top: 0; left: 0; right: 0; z-index: 10;
     display: flex; align-items: center; gap: 18px;
     padding: 12px 22px;
-    background: var(--surface);
-    backdrop-filter: blur(12px);
-    border-bottom: 1px solid var(--border);
+    background: rgba(12,12,20,0.60);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border-bottom: 0.5px solid rgba(255,255,255,0.08);
+    box-shadow: 0 1px 0 rgba(192,132,252,0.08);
     animation: slideDown 0.5s ease;
   }
   @keyframes slideDown { from { transform: translateY(-100%); opacity:0; } to { transform: none; opacity:1; } }
   #hud-title {
-    font-size: 17px; font-weight: 700; letter-spacing: 2px;
-    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    font-size: 17px; font-weight: 700; letter-spacing: 2.5px;
+    background: linear-gradient(90deg, #C084FC 0%, #a78bfa 40%, #67E8F9 100%);
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     text-transform: uppercase;
   }
   #hud-stats { font-size: 12px; color: var(--muted); letter-spacing: 0.5px; }
   #hud-pulse {
-    width: 8px; height: 8px; border-radius: 50%; background: #06d6a0; flex-shrink: 0;
-    animation: pulse 2s ease-in-out infinite;
+    width: 8px; height: 8px; border-radius: 50%; background: #C084FC; flex-shrink: 0;
+    animation: pulse 2.5s ease-in-out infinite;
   }
   @keyframes pulse {
-    0%,100% { box-shadow: 0 0 0 0 rgba(6,214,160,0.7); }
-    50%      { box-shadow: 0 0 0 7px rgba(6,214,160,0); }
+    0%,100% { box-shadow: 0 0 0 0 rgba(192,132,252,0.8); }
+    50%      { box-shadow: 0 0 0 8px rgba(192,132,252,0); }
   }
   #hud-spacer { flex: 1; }
 
@@ -190,19 +203,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #panel {
     position: fixed; top: 56px; right: 0; bottom: 0; width: var(--panel-w);
     z-index: 10;
-    background: var(--surface); backdrop-filter: blur(14px);
-    border-left: 1px solid var(--border);
+    background: rgba(12,10,24,0.62);
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    border-left: 0.5px solid rgba(255,255,255,0.10);
+    box-shadow: -1px 0 0 rgba(192,132,252,0.06), inset 1px 0 0 rgba(255,255,255,0.04);
     display: flex; flex-direction: column;
-    transition: transform 0.35s cubic-bezier(0.4,0,0.2,1);
+    transition: transform 0.45s cubic-bezier(0.4,0,0.2,1);
   }
   #panel.collapsed { transform: translateX(var(--panel-w)); }
+  #panel-inner { transition: filter 0.25s ease; }
   #panel-toggle {
     position: absolute; left: -34px; top: 50%; transform: translateY(-50%);
     width: 34px; height: 56px;
-    background: var(--surface); border: 1px solid var(--border); border-right: none;
+    background: rgba(12,10,24,0.62);
+    backdrop-filter: blur(28px);
+    -webkit-backdrop-filter: blur(28px);
+    border: 0.5px solid rgba(255,255,255,0.10); border-right: none;
     border-radius: 8px 0 0 8px; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
-    color: var(--accent); font-size: 14px; backdrop-filter: blur(14px);
+    color: var(--accent); font-size: 14px;
   }
   #panel-inner { padding: 18px; overflow-y: auto; flex: 1; }
   .panel-section { margin-bottom: 20px; }
@@ -221,7 +241,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
   .leg-row:hover { background: rgba(0,180,216,0.08); }
   .leg-row.inactive { opacity: 0.35; }
-  .leg-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 5px currentColor; }
+  .leg-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 6px currentColor, 0 0 12px currentColor; opacity: 0.85; }
   .leg-count { margin-left: auto; font-size: 10px; color: var(--muted); }
 
   /* Controls */
@@ -232,8 +252,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--pct, 0%), rgba(0,180,216,0.2) var(--pct,0%));
   }
   .ctrl-row input[type=range]::-webkit-slider-thumb {
-    -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
-    background: var(--accent); box-shadow: 0 0 6px var(--accent); cursor: pointer;
+    -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 8px var(--accent), 0 0 16px rgba(192,132,252,0.4); cursor: pointer;
   }
   .ctrl-val { min-width: 26px; text-align: right; color: var(--accent); font-weight: 600; }
   select {
@@ -246,16 +266,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #info-card {
     position: fixed; bottom: 24px; left: 24px;
     width: 360px; max-height: 260px; z-index: 20;
-    background: var(--surface); backdrop-filter: blur(16px);
-    border: 1px solid var(--border); border-radius: 12px;
+    background: rgba(14,12,28,0.72);
+    backdrop-filter: blur(32px) saturate(160%);
+    -webkit-backdrop-filter: blur(32px) saturate(160%);
+    border: 0.5px solid rgba(255,255,255,0.12);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 0 0.5px rgba(192,132,252,0.1);
+    border-radius: 16px;
     padding: 16px 18px; overflow-y: auto; display: none;
-    animation: cardIn 0.25s ease;
+    animation: cardIn 0.3s cubic-bezier(0.34,1.56,0.64,1);
   }
+  @keyframes cardIn { from { opacity:0; transform: translateY(14px) scale(0.97); } to { opacity:1; transform: none; } }
   @keyframes cardIn { from { opacity:0; transform: translateY(12px); } to { opacity:1; transform: none; } }
   #info-card .card-type { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; font-weight: 700; margin-bottom: 6px; }
   #info-card .card-imp  { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
   #info-card .card-tags { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 10px; }
-  #info-card .tag { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: rgba(0,180,216,0.12); border: 1px solid rgba(0,180,216,0.25); color: var(--accent); }
+  #info-card .tag { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: rgba(192,132,252,0.08); border: 0.5px solid rgba(192,132,252,0.30); color: var(--accent); letter-spacing: 0.3px; }
   #info-card .card-content { font-size: 12px; line-height: 1.65; }
   #info-close { position: absolute; top: 10px; right: 12px; font-size: 16px; cursor: pointer; color: var(--muted); }
   #info-close:hover { color: var(--text); }
@@ -263,12 +288,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   /* Search */
   #search {
-    background: rgba(0,0,0,0.35); color: var(--text);
-    border: 1px solid var(--border); border-radius: 20px;
+    background: rgba(255,255,255,0.05); color: var(--text);
+    border: 0.5px solid rgba(255,255,255,0.12); border-radius: 20px;
     padding: 5px 14px; font-size: 12px; width: 220px; outline: none;
-    transition: border-color 0.2s, box-shadow 0.2s;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    transition: border-color 0.3s, box-shadow 0.3s;
   }
-  #search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,180,216,0.25); }
+  #search:focus { border-color: rgba(192,132,252,0.6); box-shadow: 0 0 0 3px rgba(192,132,252,0.12); }
   #search::placeholder { color: var(--muted); }
 
   /* Hover tooltip */
@@ -284,6 +310,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 
+<div id="nebula"></div>
 <canvas id="starfield"></canvas>
 <div id="graph-root"></div>
 
@@ -348,26 +375,51 @@ const RAW_NODES = __NODES_JSON__;
 const RAW_EDGES = __EDGES_JSON__;
 const TYPE_COLORS = __TYPE_COLORS_JSON__;
 
-// Starfield
+// Starfield + nebula dust
 (function() {
   const cv = document.getElementById('starfield');
   const ctx = cv.getContext('2d');
   const stars = [];
+  const dust = [];
   function resize() { cv.width = innerWidth; cv.height = innerHeight; }
   resize(); window.addEventListener('resize', resize);
-  for (let i = 0; i < 220; i++) stars.push({
+  // Tiny twinkling stars
+  for (let i = 0; i < 160; i++) stars.push({
     x: Math.random(), y: Math.random(),
-    r: Math.random() * 1.2 + 0.2,
-    a: Math.random(), da: (Math.random() - 0.5) * 0.004
+    r: Math.random() * 0.8 + 0.15,
+    a: Math.random(), da: (Math.random() - 0.5) * 0.003
+  });
+  // Slow nebula dust blobs — lavanda and glacier
+  for (let i = 0; i < 22; i++) dust.push({
+    x: Math.random(), y: Math.random(),
+    r: Math.random() * 80 + 25,
+    a: Math.random() * 0.035 + 0.005,
+    da: (Math.random()-0.5)*0.00025,
+    vx: (Math.random()-0.5)*0.000055,
+    vy: (Math.random()-0.5)*0.000055,
+    hue: Math.random() > 0.55 ? '192,132,252' : '103,232,249'
   });
   (function draw() {
     ctx.clearRect(0, 0, cv.width, cv.height);
+    // Draw dust first (back)
+    for (const d of dust) {
+      d.x = ((d.x + d.vx) % 1 + 1) % 1;
+      d.y = ((d.y + d.vy) % 1 + 1) % 1;
+      d.a = Math.max(0.004, Math.min(0.05, d.a + d.da));
+      if (d.a <= 0.004 || d.a >= 0.05) d.da *= -1;
+      const g = ctx.createRadialGradient(d.x*cv.width, d.y*cv.height, 0, d.x*cv.width, d.y*cv.height, d.r);
+      g.addColorStop(0, 'rgba('+d.hue+','+d.a+')');
+      g.addColorStop(1, 'rgba('+d.hue+',0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(d.x*cv.width, d.y*cv.height, d.r, 0, 2*Math.PI); ctx.fill();
+    }
+    // Stars
     for (const s of stars) {
-      s.a = Math.max(0.05, Math.min(0.9, s.a + s.da));
-      if (s.a <= 0.05 || s.a >= 0.9) s.da *= -1;
+      s.a = Math.max(0.04, Math.min(0.85, s.a + s.da));
+      if (s.a <= 0.04 || s.a >= 0.85) s.da *= -1;
       ctx.beginPath();
       ctx.arc(s.x * cv.width, s.y * cv.height, s.r, 0, 2 * Math.PI);
-      ctx.fillStyle = 'rgba(180,210,255,' + s.a + ')';
+      ctx.fillStyle = 'rgba(210,210,255,' + s.a + ')';
       ctx.fill();
     }
     requestAnimationFrame(draw);
@@ -388,7 +440,7 @@ function buildGraphData() {
 }
 
 const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })(document.getElementById('graph-root'))
-  .backgroundColor('#03050d')
+  .backgroundColor('#0c0c14')
   .nodeId('id')
   .nodeLabel(() => '')
   .nodeColor(n => n.color)
@@ -399,20 +451,42 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = 128;
     const ctx = canvas.getContext('2d');
-    const col = n.color || '#00b4d8';
-    const grd = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
-    grd.addColorStop(0,    col + 'ff');
-    grd.addColorStop(0.35, col + 'cc');
-    grd.addColorStop(0.6,  col + '44');
-    grd.addColorStop(1,    col + '00');
-    ctx.fillStyle = grd;
-    ctx.beginPath(); ctx.arc(64, 64, 64, 0, 2 * Math.PI); ctx.fill();
-    ctx.beginPath(); ctx.arc(64, 64, 13, 0, 2 * Math.PI);
-    ctx.fillStyle = '#ffffff55'; ctx.fill();
+    const col = n.color || '#C084FC';
+    // Parse hex→rgb for glass tints
+    const r = parseInt(col.slice(1,3),16), g = parseInt(col.slice(3,5),16), b = parseInt(col.slice(5,7),16);
+    // 1 — wide soft ambient halo
+    const halo = ctx.createRadialGradient(64,64,18,64,64,64);
+    halo.addColorStop(0, 'rgba('+r+','+g+','+b+',0.10)');
+    halo.addColorStop(1, 'rgba('+r+','+g+','+b+',0)');
+    ctx.fillStyle = halo; ctx.fillRect(0,0,128,128);
+    // 2 — glass body (very translucent fill offset radial)
+    const body = ctx.createRadialGradient(50,46,4,64,64,46);
+    body.addColorStop(0,   'rgba(255,255,255,0.18)');
+    body.addColorStop(0.45,'rgba('+r+','+g+','+b+',0.10)');
+    body.addColorStop(1,   'rgba('+r+','+g+','+b+',0.02)');
+    ctx.beginPath(); ctx.arc(64,64,46,0,2*Math.PI);
+    ctx.fillStyle = body; ctx.fill();
+    // 3 — colored rim ring
+    ctx.beginPath(); ctx.arc(64,64,46,0,2*Math.PI);
+    ctx.strokeStyle = 'rgba('+r+','+g+','+b+',0.55)';
+    ctx.lineWidth = 1.2; ctx.stroke();
+    // 4 — outer glow ring (faint, wider)
+    ctx.beginPath(); ctx.arc(64,64,55,0,2*Math.PI);
+    ctx.strokeStyle = 'rgba('+r+','+g+','+b+',0.12)';
+    ctx.lineWidth = 2.5; ctx.stroke();
+    // 5 — top-left specular blotch
+    const spec = ctx.createRadialGradient(44,41,0,44,41,16);
+    spec.addColorStop(0,'rgba(255,255,255,0.60)');
+    spec.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.beginPath(); ctx.arc(44,41,16,0,2*Math.PI);
+    ctx.fillStyle = spec; ctx.fill();
+    // 6 — tiny hard specular dot
+    ctx.beginPath(); ctx.arc(40,38,3.5,0,2*Math.PI);
+    ctx.fillStyle = 'rgba(255,255,255,0.88)'; ctx.fill();
     const tex = new THREE.CanvasTexture(canvas);
     const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
     const sp  = new THREE.Sprite(mat);
-    const s = 3 + n.importance * 1.4;
+    const s = 3.5 + n.importance * 1.5;
     sp.scale.set(s, s, 1);
     n.__sprite = sp;   // store ref for direct material manipulation
     return sp;
@@ -421,14 +495,18 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
   .linkSource('source').linkTarget('target')
   .linkColor(l => {
     const t = Math.min(1, Math.max(0, (l.similarity - 0.70) / 0.25));
-    return 'rgba(' + Math.round(t*255) + ',' + Math.round(180-t*30) + ',' + Math.round(216-t*80) + ',' + (0.12+t*0.5).toFixed(2) + ')';
+    // gradient: glacier (#67E8F9) at low sim, lavanda (#C084FC) at high sim
+    const ri = Math.round(103 + t * (192-103));
+    const gi = Math.round(232 + t * (132-232));
+    const bi = Math.round(249 + t * (252-249));
+    return 'rgba('+ri+','+gi+','+bi+','+(0.08+t*0.45).toFixed(2)+')';
   })
-  .linkWidth(l => 0.3 + (l.similarity - 0.70) * 5)
-  .linkOpacity(0.6)
-  .linkDirectionalParticles(l => l.similarity > 0.85 ? 2 : 0)
-  .linkDirectionalParticleWidth(1.2)
-  .linkDirectionalParticleColor(() => '#00b4d8')
-  .linkDirectionalParticleSpeed(0.004)
+  .linkWidth(l => 0.25 + (l.similarity - 0.70) * 4)
+  .linkOpacity(0.55)
+  .linkDirectionalParticles(l => l.similarity > 0.84 ? 2 : 0)
+  .linkDirectionalParticleWidth(1.0)
+  .linkDirectionalParticleColor(() => '#C084FC')
+  .linkDirectionalParticleSpeed(0.003)
   .onNodeClick(node => {
     if (!node) return;
     const x = node.x||0, y = node.y||0, z = node.z||0, d = 60;
@@ -472,9 +550,9 @@ setTimeout(() => {
     composer.addPass(new THREE.RenderPass(scene, Graph.camera()));
     const bloom = new THREE.UnrealBloomPass(
       new THREE.Vector2(innerWidth, innerHeight),
-      1.4,   // strength
-      0.55,  // radius
-      0.05   // threshold (low = most objects glow)
+      1.1,   // strength — softer for glass look
+      0.75,  // radius — wider spread
+      0.08   // threshold
     );
     composer.addPass(bloom);
     window._bloomPass = bloom;  // expose for SSE animations
@@ -518,11 +596,14 @@ document.getElementById('info-close').addEventListener('click', () => {
   document.getElementById('info-card').style.display = 'none';
 });
 
-// Panel toggle
+// Panel toggle with slide+blur effect
 const panel = document.getElementById('panel');
 document.getElementById('panel-toggle').addEventListener('click', () => {
+  const inner = document.getElementById('panel-inner');
+  inner.style.filter = 'blur(5px)';
   panel.classList.toggle('collapsed');
   document.getElementById('panel-toggle').textContent = panel.classList.contains('collapsed') ? '\u25b6' : '\u25c4';
+  setTimeout(() => { inner.style.filter = ''; }, 400);
 });
 
 // Legend
@@ -798,6 +879,95 @@ document.getElementById('springSlider').addEventListener('input', function() {
     const { nodes, links } = Graph.graphData();
     nodes.push(newNode);
     Graph.graphData({ nodes, links });
+
+    // Glass materialize from depth: scale 0 → targetScale over 900ms with spring easing
+    setTimeout(() => {
+      const live = Graph.graphData().nodes.find(n => n.id === newNode.id);
+      if (!live || !live.__sprite) return;
+      const targetS = 3.5 + (live.importance || 5) * 1.5;
+      live.__sprite.scale.set(0.01, 0.01, 1);
+      const start = Date.now();
+      const dur = 900;
+      (function anim() {
+        const t = Math.min(1, (Date.now()-start)/dur);
+        // spring-like ease: bounces slightly at the end
+        const freq = 2.8, decay = 4;
+        const ease = 1 - Math.exp(-decay*t) * Math.cos(freq*Math.PI*t);
+        const s = Math.max(0.01, targetS * ease);
+        live.__sprite.scale.set(s, s, 1);
+        if (t < 1) requestAnimationFrame(anim);
+      })();
+    }, 80);
+  }
+
+  // Spotlight from above — for memories_searched in Glass style
+  function spotlightNodes(ids) {
+    const scene = Graph.scene();
+    const idSet = new Set(ids);
+    Graph.graphData().nodes.forEach(n => {
+      if (!idSet.has(n.id)) return;
+      const x = n.x||0, y = n.y||0, z = n.z||0;
+      const light = new THREE.PointLight(0x67E8F9, 0, 120);
+      light.position.set(x, y + 55, z + 8);
+      scene.add(light);
+      const start = Date.now();
+      (function fade() {
+        const t = (Date.now()-start)/2800;
+        if (t >= 1) { scene.remove(light); return; }
+        // fade curve: quick in, slow out
+        light.intensity = (t < 0.25 ? t/0.25 : 1 - (t-0.25)/0.75) * 3.5;
+        requestAnimationFrame(fade);
+      })();
+    });
+  }
+
+  // Synaptic luminous trace along an edge: source → target glowing dot with trail
+  function synapticTrace(sourceId, relatedIds) {
+    if (!relatedIds || !relatedIds.length) return;
+    const scene = Graph.scene();
+    const source = Graph.graphData().nodes.find(n => n.id === sourceId);
+    if (!source) return;
+    relatedIds.slice(0, 6).forEach((targetId, idx) => {
+      setTimeout(() => {
+        const target = Graph.graphData().nodes.find(n => n.id === targetId);
+        if (!target) return;
+        const sx = source.x||0, sy = source.y||0, sz = source.z||0;
+        const tx = target.x||0, ty = target.y||0, tz = target.z||0;
+        // Glowing tracer sphere
+        const geo = new THREE.SphereGeometry(0.7, 8, 8);
+        const mat = new THREE.MeshBasicMaterial({ color: 0xC084FC, transparent: true, opacity: 0.9 });
+        const dot = new THREE.Mesh(geo, mat);
+        scene.add(dot);
+        // Trail: a few fading ghost copies
+        const trailCount = 5;
+        const trail = Array.from({length: trailCount}, () => {
+          const tg = new THREE.SphereGeometry(0.5, 6, 6);
+          const tm = new THREE.MeshBasicMaterial({ color: 0xa855f7, transparent: true, opacity: 0 });
+          const td = new THREE.Mesh(tg, tm);
+          scene.add(td);
+          return td;
+        });
+        const start = Date.now();
+        const dur = 700 + idx * 60;
+        (function travel() {
+          const t = Math.min(1, (Date.now()-start)/dur);
+          const ease = t < 0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2;  // ease-in-out quad
+          dot.position.set(sx+(tx-sx)*ease, sy+(ty-sy)*ease, sz+(tz-sz)*ease);
+          // trail lags behind
+          for (let i = 0; i < trailCount; i++) {
+            const tb = Math.max(0, ease - (i+1)*0.08);
+            trail[i].position.set(sx+(tx-sx)*tb, sy+(ty-sy)*tb, sz+(tz-sz)*tb);
+            trail[i].material.opacity = (1 - i/trailCount) * 0.35 * (1-t);
+          }
+          mat.opacity = 0.9 * (1-t*0.5);
+          if (t < 1) { requestAnimationFrame(travel); }
+          else {
+            scene.remove(dot); geo.dispose(); mat.dispose();
+            trail.forEach(td => { scene.remove(td); td.geometry.dispose(); td.material.dispose(); });
+          }
+        })();
+      }, idx * 120);
+    });
   }
 
   function connectSSE() {
@@ -818,48 +988,49 @@ document.getElementById('springSlider').addEventListener('input', function() {
         const isInsight = evt.memory_type === 'insight';
         if (isInsight) {
           showToast('Insight: ' + (evt.content || '').substring(0, 40), '#ffd166', '\u2605');
-          // slight delay so addNodeLive can render the node first
           setTimeout(() => {
             const node = Graph.graphData().nodes.find(n => n.id === evt.id);
             if (node) supernovaFlash(node);
           }, 120);
         } else {
-          showToast('Memory: ' + (evt.content || '').substring(0, 40), '#06d6a0', '\u2736');
-          setTimeout(() => flashNode(evt.id, '#ffffff'), 120);
+          showToast('Memory: ' + (evt.content || '').substring(0, 40), '#C084FC', '\u2736');
+          // Note: materialize animation is inside addNodeLive now
         }
 
       } else if (evt.type === 'memories_searched') {
-        highlightNodes(evt.hit_ids, '#00b4d8');
-        showToast('Search: "' + (evt.query || '').substring(0, 40) + '" \u2192 ' + evt.count + ' hits', '#00b4d8', '\u2315');
+        // Glass: spotlight from above instead of color flash
+        spotlightNodes(evt.hit_ids);
+        highlightNodes(evt.hit_ids, '#67E8F9');
+        showToast('Search: "' + (evt.query || '').substring(0, 40) + '" \u2192 ' + evt.count + ' hits', '#67E8F9', '\u2315');
 
       } else if (evt.type === 'context_primed') {
-        highlightNodes(evt.memory_ids, '#ff9f1c');
-        showToast('Context primed \u2014 ' + evt.count + ' memories activated', '#ff9f1c', '\u25ce');
+        highlightNodes(evt.memory_ids, '#C084FC');
+        showToast('Context primed \u2014 ' + evt.count + ' memories activated', '#C084FC', '\u25ce');
 
       } else if (evt.type === 'synaptic_tagged') {
         flashNode(evt.memory_id, '#a855f7');
+        // Glass: luminous trace along edges to related nodes
+        if (evt.related_ids && evt.related_ids.length) {
+          synapticTrace(evt.memory_id, evt.related_ids);
+        }
         showToast('Synaptic tagging \u2014 ' + evt.related_count + ' connections', '#a855f7', '\u29d7');
 
       } else if (evt.type === 'conversation_stored') {
-        showToast('Conversation stored: ' + (evt.title || ''), '#48cae4', '\u25d1');
+        showToast('Conversation stored: ' + (evt.title || ''), '#67E8F9', '\u25d1');
 
       } else if (evt.type === 'character_active') {
-        // Roleplay mode ON — persistent pink/violet glow on all roleplay nodes
         startRoleplayGlow();
-        showToast('Character active: ' + (evt.character_name || ''), '#f06292', '\u{1F3AD}');
+        showToast('Character active: ' + (evt.character_name || ''), '#f06292', '\ud83c\udfad');
         if (evt.memory_ids && evt.memory_ids.length) highlightNodes(evt.memory_ids, '#f06292');
 
       } else if (evt.type === 'roleplay_stored') {
         addNodeLive(evt);
-        showToast('Roleplay stored: ' + (evt.character_name || ''), '#ce93d8', '\u{1F3AD}');
-        setTimeout(() => {
-          const node = Graph.graphData().nodes.find(n => n.id === evt.id);
-          if (node) flashNode(evt.id, '#f06292');
-        }, 120);
+        showToast('Roleplay stored: ' + (evt.character_name || ''), '#ce93d8', '\ud83c\udfad');
+        setTimeout(() => { flashNode(evt.id, '#f06292'); }, 120);
 
       } else if (evt.type === 'character_session_ended') {
         stopRoleplayGlow();
-        showToast('Character session ended', '#9e9e9e', '\u{1F3AD}');
+        showToast('Character session ended', '#9e9e9e', '\ud83c\udfad');
       }
     });
 
