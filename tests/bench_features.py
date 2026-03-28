@@ -233,6 +233,76 @@ async def main():
             check("FSRS-6 — stability no negativa", False, "sin resultados de busqueda")
 
     # ─────────────────────────────────────────────────────────────────────────
+    print(f"\n{CYAN}[4/4] Top-1 Recall & Latency{RESET}")
+
+    # Ground-truth: (query, substring_que_debe_aparecer_en_top1)
+    RECALL_QUERIES = [
+        # Exact / near-exact
+        ("endpoint de embeddings primario",              "localhost:1234"),
+        ("ruta de la base de datos NEMO",                "AI_MEMORY_DATA_DIR"),
+        ("modelo de reranking utilizado",                "BGE-reranker-v2-m3"),
+        ("umbral de deduplicacion semantica",            "0.92"),
+        ("cuantas herramientas MCP tiene NEMO",          "37"),
+        # Paraphrase (different vocabulary)
+        ("where does NEMO save its data",                "AI_MEMORY_DATA_DIR"),
+        ("primary embedding server URL",                 "localhost:1234"),
+        ("how many MCP tools are available",             "37"),
+        ("similarity threshold for dedup",               "0.92"),
+        ("which reranker model does NEMO use",           "BGE-reranker-v2-m3"),
+    ]
+
+    hit_normal = 0
+    hit_hyde   = 0
+    lat_normal = []
+    lat_hyde   = []
+
+    print(f"  {'Query':<45}  {'Normal':>6}  {'HyDE':>6}  {'t_n':>6}  {'t_h':>6}")
+    print(f"  {'-'*45}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}")
+
+    for query, target in RECALL_QUERIES:
+        t0 = time.perf_counter()
+        rn = await system.search_memories(query, limit=1, hyde=False, database_filter="ai_memories")
+        tn = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        rh = await system.search_memories(query, limit=1, hyde=True,  database_filter="ai_memories")
+        th = time.perf_counter() - t0
+
+        top_n = rn.get("results", [{}])[0].get("data", {}).get("content", "") if rn.get("results") else ""
+        top_h = rh.get("results", [{}])[0].get("data", {}).get("content", "") if rh.get("results") else ""
+
+        ok_n = target.lower() in top_n.lower()
+        ok_h = target.lower() in top_h.lower()
+
+        if ok_n: hit_normal += 1
+        if ok_h: hit_hyde   += 1
+        lat_normal.append(tn)
+        lat_hyde.append(th)
+
+        sn = f"{GREEN}HIT{RESET}" if ok_n else f"{RED}mis{RESET}"
+        sh = f"{GREEN}HIT{RESET}" if ok_h else f"{RED}mis{RESET}"
+        print(f"  {query[:45]:<45}  {sn}  {sh}  {tn:>5.2f}s  {th:>5.2f}s")
+
+    n = len(RECALL_QUERIES)
+    r_normal = hit_normal / n * 100
+    r_hyde   = hit_hyde   / n * 100
+    avg_n    = sum(lat_normal) / n
+    avg_h    = sum(lat_hyde)   / n
+    p95_n    = sorted(lat_normal)[int(n * 0.95) - 1]
+    p95_h    = sorted(lat_hyde)[int(n * 0.95) - 1]
+
+    print(f"\n  {'Metrica':<30}  {'Normal':>8}  {'HyDE':>8}")
+    print(f"  {'-'*30}  {'-'*8}  {'-'*8}")
+    print(f"  {'Top-1 Recall':<30}  {r_normal:>7.1f}%  {r_hyde:>7.1f}%")
+    print(f"  {'Latency avg':<30}  {avg_n:>7.2f}s  {avg_h:>7.2f}s")
+    print(f"  {'Latency p95':<30}  {p95_n:>7.2f}s  {p95_h:>7.2f}s")
+
+    check("Recall — normal Top-1 >= 70%", r_normal >= 70.0, f"{r_normal:.1f}%")
+    check("Recall — HyDE Top-1 >= normal", r_hyde >= r_normal, f"normal={r_normal:.1f}% hyde={r_hyde:.1f}%")
+    check("Latency — normal avg < 5s",    avg_n < 5.0,        f"{avg_n:.2f}s")
+    check("Latency — HyDE avg < 10s",     avg_h < 10.0,       f"{avg_h:.2f}s")
+
+    # ─────────────────────────────────────────────────────────────────────────
     print(f"\n{CYAN}=== Resultados ==={RESET}")
     passed = sum(1 for _, ok in results if ok)
     total  = len(results)
