@@ -625,6 +625,8 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
       window._iconCache.set(cacheKey, iconImg);
     }
     n.__iconImg = iconImg;
+    // Unique phase per node — no two nodes ever pulse/rotate in sync
+    n.__phase = (r * 0.031 + g * 0.019 + b * 0.013 + imp * 0.17) % (Math.PI * 2);
 
     // Trigger redraw when image finishes loading (first paint is placeholder)
     if (!iconImg.complete) {
@@ -636,46 +638,97 @@ const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: true } })
     n.__drawNode = function(t) {
       ctx.clearRect(0, 0, SZ, SZ);
       const cx = SZ / 2, cy = SZ / 2;
+      const ph = n.__phase;
 
-      // ── Layer 1: outer soft glow halo ───────────────────────────────
-      const halo = ctx.createRadialGradient(cx, cy, 34, cx, cy, 60);
-      halo.addColorStop(0, 'rgba(' + r + ',' + g + ',' + b + ',0.18)');
+      // ── Master pulse: 0→1, ~5s cycle, unique phase per node ─────────
+      const pulse  = 0.5 + 0.5 * Math.sin(t * 0.00125 + ph);
+      const glowR  = 44 + pulse * 14;                 // halo radius 44–58px
+      const haloA  = 0.09 + pulse * 0.20;             // halo alpha 0.09–0.29
+
+      // ── Layer 1: breathing outer halo ─────────────────────────────
+      const halo = ctx.createRadialGradient(cx, cy, 26, cx, cy, glowR);
+      halo.addColorStop(0, 'rgba(' + r + ',' + g + ',' + b + ',' + haloA.toFixed(3) + ')');
       halo.addColorStop(1, 'rgba(' + r + ',' + g + ',' + b + ',0)');
-      ctx.beginPath(); ctx.arc(cx, cy, 60, 0, 2 * Math.PI);
+      ctx.beginPath(); ctx.arc(cx, cy, glowR, 0, 2 * Math.PI);
       ctx.fillStyle = halo; ctx.fill();
 
       // ── Layer 2: dark disc background ──────────────────────────────
-      ctx.beginPath(); ctx.arc(cx, cy, 36, 0, 2 * Math.PI);
-      ctx.fillStyle = 'rgba(8,6,18,0.92)';
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, 34, 0, 2 * Math.PI);
+      ctx.fillStyle = 'rgba(8,6,18,0.93)'; ctx.fill();
 
-      // ── Layer 3: colored border ring ────────────────────────────────
-      ctx.beginPath(); ctx.arc(cx, cy, 36, 0, 2 * Math.PI);
-      ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.72)';
-      ctx.lineWidth = 1.5; ctx.setLineDash([]); ctx.stroke();
+      // ── Layer 3: slow CW rotating dashed outer ring ────────────────
+      const dashRot = t * 0.00055 + ph;               // ~11s/revolution
+      ctx.save();
+      ctx.translate(cx, cy); ctx.rotate(dashRot);
+      ctx.beginPath(); ctx.arc(0, 0, 37, 0, 2 * Math.PI);
+      ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.38)';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([9, 5]);
+      ctx.stroke();
+      ctx.restore();
 
-      // ── Layer 4: game icon image (clip to disc) ──────────────────────
+      // ── Layer 4: fast CCW energy sweep arc (Destiny 2 style) ──────
+      const sweepRot = -t * 0.00195 + ph;             // CCW, ~3.2s/revolution
+      const arcAlpha = (0.55 + pulse * 0.40).toFixed(3);
+      ctx.save();
+      ctx.translate(cx, cy); ctx.rotate(sweepRot);
+      ctx.beginPath(); ctx.arc(0, 0, 37, -0.50, 0.50);
+      ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + arcAlpha + ')';
+      ctx.lineWidth = 2.8;
+      ctx.setLineDash([]);
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 10;
+      ctx.stroke();
+      // tail fade: dimmer leading sliver behind it
+      ctx.beginPath(); ctx.arc(0, 0, 37, 0.50, 1.10);
+      ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.18)';
+      ctx.lineWidth = 1.5;
+      ctx.shadowBlur = 0;
+      ctx.stroke();
+      ctx.restore();
+
+      // ── Layer 5: inner border ring ─────────────────────────────────
+      ctx.beginPath(); ctx.arc(cx, cy, 34, 0, 2 * Math.PI);
+      ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + (0.40 + pulse * 0.32).toFixed(3) + ')';
+      ctx.lineWidth = 1.0; ctx.setLineDash([]); ctx.stroke();
+
+      // ── Layer 6: game icon — alpha breathes in sync with pulse ─────
       if (n.__iconImg && n.__iconImg.complete && n.__iconImg.naturalWidth > 0) {
         ctx.save();
-        ctx.beginPath(); ctx.arc(cx, cy, 34, 0, 2 * Math.PI); ctx.clip();
-        ctx.drawImage(n.__iconImg, cx - 26, cy - 26, 52, 52);
+        ctx.globalAlpha = 0.72 + pulse * 0.22;
+        ctx.beginPath(); ctx.arc(cx, cy, 32, 0, 2 * Math.PI); ctx.clip();
+        ctx.drawImage(n.__iconImg, cx - 24, cy - 24, 48, 48);
         ctx.restore();
       } else {
-        // placeholder dot while image loads
         ctx.beginPath(); ctx.arc(cx, cy, 5, 0, 2 * Math.PI);
         ctx.fillStyle = col; ctx.fill();
       }
 
-      // ── Layer 5: importance badge (bottom-right) ────────────────────
-      const bx = cx + 20, by = cy + 20;
+      // ── Layer 7: scan shimmer — horizontal bar sweeps top→bottom ──
+      const scanY = cx - 32 + ((t * 0.028 + ph * 18) % 68);
+      const shimmer = ctx.createLinearGradient(0, scanY, 0, scanY + 7);
+      shimmer.addColorStop(0,   'rgba(255,255,255,0)');
+      shimmer.addColorStop(0.5, 'rgba(255,255,255,0.14)');
+      shimmer.addColorStop(1,   'rgba(255,255,255,0)');
+      ctx.save();
+      ctx.beginPath(); ctx.arc(cx, cy, 32, 0, 2 * Math.PI); ctx.clip();
+      ctx.fillStyle = shimmer;
+      ctx.fillRect(cx - 34, scanY, 68, 7);
+      ctx.restore();
+
+      // ── Layer 8: importance badge — anti-phase pulse to halo ──────
+      const bPulse = 0.5 + 0.5 * Math.sin(t * 0.00125 + ph + Math.PI); // inverted
+      const bx = cx + 19, by = cy + 19;
       ctx.beginPath(); ctx.arc(bx, by, 10, 0, 2 * Math.PI);
-      ctx.fillStyle = 'rgba(8,6,18,0.93)'; ctx.fill();
-      ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.60)';
-      ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = 'rgba(8,6,18,0.94)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + (0.38 + bPulse * 0.52).toFixed(3) + ')';
+      ctx.lineWidth = 1.2; ctx.stroke();
       ctx.font = '700 9px "DM Mono", monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillStyle = col;
+      ctx.shadowColor = col; ctx.shadowBlur = 4 * bPulse;
       ctx.fillText(String(imp), bx, by + 0.5);
+      ctx.shadowBlur = 0;
     };
 
     n.__drawNode(0);
@@ -748,13 +801,12 @@ function refresh() {
 }
 refresh();
 
-// ── Sprite texture refresh loop ──────────────────────────────────────────────
-// Batch: max 20 nodes per frame round-robin, 120ms throttle
+// ── Sprite animation loop — 30fps, batch round-robin ─────────────────────────
 (function plasmaLoop() {
   let lastT = 0, batchIdx = 0;
-  const BATCH = 20;
+  const BATCH = 30;
   function tick(t) {
-    if (t - lastT >= 120) {   // ~8fps — scan so slow, no need for more
+    if (t - lastT >= 33) {   // ~30fps
       lastT = t;
       const nodes = Graph.graphData ? Graph.graphData().nodes : [];
       const total = nodes.length;
