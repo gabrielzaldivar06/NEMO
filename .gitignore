@@ -149,3 +149,23 @@ Thumbs.db
 # Files to ignore
 persistent-ai-memory.zip
 web/index.html
+
+# Internal planning & development docs
+COMMIT_MESSAGE_v1.1.0.txt
+GITHUB_GUIDE.md
+INSTALLATION_COMPLETE.md
+NEMO_TECHNICAL_REFERENCE.md
+PROJECT_STRUCTURE.md
+RERANKER_DEVELOPMENT_PLAN.md
+
+# Benchmark and test output files
+bench_entropy.txt
+bench_out.txt
+bench_sprint7.txt
+out.txt
+out2.txt
+out_stress.txt
+verify_result.txt
+
+# Shortcuts
+*.lnk
