@@ -975,14 +975,17 @@ class AIMemoryMCPServer:
                         intelligence_priority=0.7,
                     )
                     if auto_summary:
-                        # Enrich the arguments with the structured summary
+                        # Enrich the arguments: replace/augment content with the structured summary
                         enriched = dict(arguments)
-                        enriched["summary"] = auto_summary
+                        enriched["content"] = auto_summary
+                        enriched.pop("summary", None)  # store_conversation() has no 'summary' param
                         result = await self.memory_system.store_conversation(**enriched)
                     else:
-                        result = await self.memory_system.store_conversation(**arguments)
+                        safe_args = {k: v for k, v in arguments.items() if k != "summary"}
+                        result = await self.memory_system.store_conversation(**safe_args)
                 else:
-                    result = await self.memory_system.store_conversation(**arguments)
+                    safe_args = {k: v for k, v in arguments.items() if k != "summary"}
+                    result = await self.memory_system.store_conversation(**safe_args)
             elif tool_name == "create_memory":
                 # Sampling enhancement: detect semantic duplicates before saving.
                 content_to_check = arguments.get("content", "")
@@ -1444,6 +1447,19 @@ async def start_http_server(mcp_server: AIMemoryMCPServer, host: str = "127.0.0.
                 return {"nodes": nodes, "edges": []}
             except Exception as e:
                 return {"nodes": [], "edges": [], "error": str(e)}
+
+        # Check if port is available before binding (multiple workspace instances)
+        import socket as _socket
+        _test = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        _test.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        try:
+            _test.bind((host, port))
+        except OSError:
+            _test.close()
+            logger.info(f"HTTP server port {port} already in use — skipping (another NEMO instance running)")
+            return None
+        finally:
+            _test.close()
 
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         server = uvicorn.Server(config)
