@@ -128,6 +128,67 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# ── NEMO internal / private files ──────────────────────────────────────────
+# Personal AI instructions (machine-specific)
+.github/copilot-instructions.md
+.github/hooks/
+
+# Dashboard (internal tool, not distributed)
+dashboard.html
+dashboard.py
+assets/
+docs/
+
+# VS Code extensions (built artifacts)
+nemo-panel/
+nemo-vscode/
+
+# Installer scripts (machine-specific)
+installer/
+install_autostart.bat
+install_nemo_extension.ps1
+install-nemo-panel.ps1
+
+# Scripts (machine-specific launchers)
+scripts/
+
+# Machine-specific startup scripts
+start_qwen_embedding_server*
+start_qwen_reranker_server*
+start_reranker.bat
+start_monitor.bat
+start_nemo_system.ps1
+*.lnk
+
+# Internal tests and benchmarks
+tests/
+benchmarks/
+examples/benchmark_memory*.py
+examples/benchmark_prod.py
+
+# Internal utilities and scratch files
+analyze_v3.py
+check_db.py
+tmptest.py
+extract_svgs.py
+status_monitor.py
+sse_bus.py
+
+# Backups
+*.backup
+database_maintenance_backup.py
+
+# Docs not needed publicly
+COMMUNITY.md
+CONTRIBUTORS.md
+DEPLOYMENT.md
+TESTING.md
+
+# AI memory database (runtime data)
+~/.ai_memory/
+ai_memory.db
+*.db
+
 # Memory system databases
 memory_data/
 *.db
