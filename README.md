@@ -331,7 +331,80 @@ El archivo `.github/copilot-instructions.md` instruye a VS Code Copilot para usa
 
 ---
 
-## 🏛️ Arquitectura <a id="arquitectura"></a>
+## 🖥️ Herramientas del Sistema
+
+### Monitor de Estado (`status_monitor.py`)
+
+Aplicación de escritorio con **ícono en la bandeja del sistema** que monitoriza en tiempo real:
+
+- Estado de LM Studio (embeddings)
+- Estado del Reranker (llama-server)
+- Salud de la base de datos SQLite
+
+**Requisitos adicionales:**
+```bash
+pip install pystray pillow customtkinter
+```
+
+**Iniciar:**
+```bash
+# Windows (sin ventana de consola)
+start_monitor.bat
+
+# Cualquier plataforma
+python status_monitor.py
+```
+
+Al ejecutarse, aparece un ícono en el área de notificaciones de Windows. Clic derecho para ver el panel de estado o cerrar el monitor.
+
+---
+
+### Mantenimiento de Base de Datos (`database_maintenance.py`)
+
+Módulo de mantenimiento automatizado para la base de datos SQLite:
+
+- **Limpieza** — elimina memorias expiradas según política de retención configurable
+- **Optimización** — ejecuta `VACUUM` y `ANALYZE` para mantener rendimiento óptimo
+- **Sharding** — crea nuevas bases de datos cuando la activa supera el tamaño/tiempo límite
+- **Rotación** — gestiona el ciclo de vida de múltiples archivos `.db` en `~/.ai_memory/`
+
+**Ejecutar mantenimiento manual:**
+```bash
+python database_maintenance.py
+```
+
+**Servicio automático de mantenimiento:**
+```bash
+# Windows (servicio en background)
+start_maintenance_service.bat
+
+# PowerShell
+.\start_maintenance_service.ps1
+```
+
+Configura el intervalo y políticas de retención en `memory_config.json`.
+
+---
+
+### Instrucciones para VS Code Copilot (`.github/copilot-instructions.md`)
+
+Archivo de instrucciones que hace que **VS Code Copilot use NEMO automáticamente** sin que el usuario tenga que pedírselo.
+
+**Instalación:**
+1. Copia `.github/copilot-instructions.md` a la carpeta `.github/` de tu proyecto (o al nivel raíz del workspace).
+2. VS Code Copilot lo carga automáticamente en cada sesión.
+
+**Qué hace:**
+- Obliga al agente a llamar `prime_context()` como primera acción en cada conversación
+- Define el flujo de trabajo: cuándo guardar memorias, correcciones, insights
+- Especifica los tipos de memoria y cuándo usar cada uno
+- Habilita agenda, recordatorios y reflexiones de fin de sesión
+
+> **Nota:** El archivo contiene un bloque `⚠️ EXECUTE RIGHT NOW` al inicio — esto es intencional para maximizar la probabilidad de que el modelo lo ejecute antes de responder.
+
+---
+
+
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -415,10 +488,9 @@ Configurar en `embedding_config.json`. El sistema cae graciosamente si LM Studio
 | [INSTALL.md](INSTALL.md) | Guía de instalación completa |
 | [CONFIGURATION.md](CONFIGURATION.md) | Todas las opciones de configuración |
 | [API.md](API.md) | Referencia de la API Python |
-| [TESTING.md](TESTING.md) | Suite de pruebas y verificaciones de salud |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Problemas comunes y soluciones |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Guía de despliegue en producción |
 | [REDDIT_QUICKSTART.md](REDDIT_QUICKSTART.md) | Inicio rápido en 5 minutos |
+| [.github/copilot-instructions.md](.github/copilot-instructions.md) | Instrucciones para auto-uso en VS Code Copilot |
 
 ---
 

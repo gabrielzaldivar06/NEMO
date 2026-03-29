@@ -129,8 +129,7 @@ dmypy.json
 .pyre/
 
 # ── NEMO internal / private files ──────────────────────────────────────────
-# Personal AI instructions (machine-specific)
-.github/copilot-instructions.md
+# Personal git hooks (machine-specific)
 .github/hooks/
 
 # Dashboard (internal tool, not distributed)
@@ -156,7 +155,6 @@ scripts/
 start_qwen_embedding_server*
 start_qwen_reranker_server*
 start_reranker.bat
-start_monitor.bat
 start_nemo_system.ps1
 *.lnk
 
@@ -171,7 +169,6 @@ analyze_v3.py
 check_db.py
 tmptest.py
 extract_svgs.py
-status_monitor.py
 sse_bus.py
 
 # Backups
