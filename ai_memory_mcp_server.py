@@ -1181,7 +1181,7 @@ class AIMemoryMCPServer:
                 from sse_bus import emit_event as _emit
                 if tool_name == "create_memory":
                     _emit("memory_created", {
-                        "id": result.get("memory_id", "") if isinstance(result, dict) else "",
+                        "id": result.get("memory_id", "") if isinstance(result, dict) else (str(result) if isinstance(result, str) else ""),
                         "content": arguments.get("content", "")[:120],
                         "memory_type": arguments.get("memory_type", "fact"),
                         "importance": arguments.get("importance_level", 5),
@@ -1189,7 +1189,7 @@ class AIMemoryMCPServer:
                     })
                 elif tool_name == "create_correction":
                     _emit("memory_created", {
-                        "id": result.get("memory_id", "") if isinstance(result, dict) else "",
+                        "id": result.get("memory_id", "") if isinstance(result, dict) else (str(result) if isinstance(result, str) else ""),
                         "content": arguments.get("wrong_assumption", "")[:120],
                         "memory_type": "correction",
                         "importance": 10,
@@ -1235,6 +1235,111 @@ class AIMemoryMCPServer:
                         "memory_type": "roleplay",
                         "importance": arguments.get("importance_level", 7),
                         "tags": ["roleplay", arguments.get("character_name", "").lower()],
+                    })
+                elif tool_name == "update_memory":
+                    mem_id = arguments.get("memory_id", "")
+                    if not mem_id and isinstance(result, dict):
+                        mem_id = result.get("memory_id", "")
+                    _emit("memory_updated", {
+                        "id": mem_id,
+                        "content": arguments.get("new_content", arguments.get("wrong_assumption", ""))[:120],
+                    })
+                elif tool_name == "cognitive_ingest":
+                    _emit("memory_created", {
+                        "id": result.get("memory_id", "") if isinstance(result, dict) else (str(result) if isinstance(result, str) else ""),
+                        "content": arguments.get("content", "")[:120],
+                        "memory_type": arguments.get("memory_type", "fact"),
+                        "importance": arguments.get("importance_level", 5),
+                        "tags": arguments.get("tags", []),
+                    })
+                elif tool_name == "store_ai_reflection":
+                    mem_id = result.get("memory_id", "") if isinstance(result, dict) else ""
+                    _emit("reflection_stored", {
+                        "id": mem_id,
+                        "reflection_type": arguments.get("reflection_type", "insight"),
+                        "content": arguments.get("content", "")[:120],
+                    })
+                elif tool_name == "write_ai_insights":
+                    _emit("insight_written", {
+                        "content": arguments.get("insight", arguments.get("content", ""))[:120],
+                    })
+                elif tool_name == "get_ai_insights":
+                    insights = result if isinstance(result, list) else (result.get("insights", []) if isinstance(result, dict) else [])
+                    _emit("insights_consulted", {
+                        "count": len(insights),
+                    })
+                elif tool_name in ("create_reminder", "create_appointment"):
+                    _emit("scheduled", {
+                        "tool": tool_name,
+                        "title": arguments.get("title", arguments.get("reminder_text", ""))[:80],
+                    })
+                elif tool_name == "anticipate":
+                    _emit("anticipate_done", {
+                        "content": arguments.get("situation", "")[:120],
+                    })
+                elif tool_name == "get_recent_context":
+                    memories = result.get("memories", []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
+                    ids = [m.get("memory_id", "") for m in memories[:15] if isinstance(m, dict)]
+                    if ids:
+                        _emit("context_primed", {
+                            "memory_ids": ids,
+                            "count": len(ids),
+                        })
+                elif tool_name == "detect_redundancy":
+                    dupes = result.get("duplicates", []) if isinstance(result, dict) else []
+                    ids = [d.get("memory_id", d) if isinstance(d, dict) else str(d) for d in dupes[:10]]
+                    _emit("redundancy_scanned", {
+                        "count": len(dupes),
+                        "ids": ids,
+                    })
+                    # Emergent phenomenon: 5+ duplicates = unusual memory drift
+                    if len(dupes) >= 5:
+                        _emit("emergent_detected", {
+                            "description": f"{len(dupes)} redundant memories — possible semantic drift or loop",
+                            "ids": ids,
+                        })
+                elif tool_name == "salience_score":
+                    mem_id = arguments.get("memory_id", "")
+                    score = result.get("importance", result.get("score", 0)) if isinstance(result, dict) else 0
+                    content = result.get("content", "") if isinstance(result, dict) else ""
+                    _emit("salience_scored", {
+                        "id": mem_id,
+                        "score": score,
+                        "content": str(content)[:120],
+                    })
+                elif tool_name == "memory_chronicle":
+                    memories = result.get("memories", result if isinstance(result, list) else []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
+                    ids = [m.get("memory_id", "") for m in memories[:20] if isinstance(m, dict)]
+                    _emit("chronicle_loaded", {
+                        "ids": ids,
+                        "count": len(memories),
+                    })
+                elif tool_name == "intent_anchor":
+                    mem_id = result.get("memory_id", "") if isinstance(result, dict) else ""
+                    intention = arguments.get("intent", arguments.get("goal", ""))
+                    _emit("intent_anchored", {
+                        "id": mem_id,
+                        "intent": str(intention)[:120],
+                    })
+                elif tool_name == "get_system_health":
+                    status = result.get("status", "checked") if isinstance(result, dict) else "checked"
+                    _emit("health_checked", {
+                        "status": status,
+                        "details": str(result.get("details", ""))[:80] if isinstance(result, dict) else "",
+                    })
+                elif tool_name == "complete_reminder":
+                    title = arguments.get("title", arguments.get("reminder_id", ""))
+                    _emit("reminder_completed", {
+                        "title": str(title)[:80],
+                    })
+                elif tool_name == "search_memories":
+                    # already handled above — skip fallthrough
+                    pass
+                else:
+                    # Generic pulse for any other tool invocation
+                    _emit("tool_used", {
+                        "tool": tool_name,
+                        "label": tool_name.replace("_", " "),
                     })
             except Exception:
                 pass  # SSE is non-critical — never break tool execution
