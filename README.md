@@ -16,11 +16,12 @@
 
 [![Licencia: CC BY-NC 4.0](https://img.shields.io/badge/Licencia-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![Release](https://img.shields.io/badge/release-v1.3.0--Sprint15-22c55e.svg)](https://github.com/gabrielzaldivar06/NEMO/releases)
-[![MCP Tools](https://img.shields.io/badge/herramientas_MCP-44-8b5cf6.svg)](https://modelcontextprotocol.io/)
+[![Release](https://img.shields.io/badge/release-v1.4.0-22c55e.svg)](https://github.com/gabrielzaldivar06/NEMO/releases)
+[![MCP Tools](https://img.shields.io/badge/herramientas_MCP-42-8b5cf6.svg)](https://modelcontextprotocol.io/)
 
-[![Top-1 Accuracy](https://img.shields.io/badge/precisión_Top--1-92%25-16a34a.svg)](#benchmarks)
+[![Top-1 Accuracy](https://img.shields.io/badge/precisión_Top--1-91.67%25-16a34a.svg)](#benchmarks)
 [![MRR](https://img.shields.io/badge/MRR-0.9583-16a34a.svg)](#benchmarks)
+[![Confusory](https://img.shields.io/badge/adversarial-100%25-16a34a.svg)](#benchmarks)
 [![Hybrid Search](https://img.shields.io/badge/FTS5%2BDense-Hybrid-3b82f6.svg)](#arquitectura)
 [![100% Local](https://img.shields.io/badge/ejecución-100%25_local-f97316.svg)](#proveedores-de-embeddings)
 [![No Cloud](https://img.shields.io/badge/sin_nube-sin_claves-ef4444.svg)](#licencia)
@@ -43,7 +44,7 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 ---
 
-## ⚡ Instalación en 3 pasos
+## ⚡ Instalación
 
 > Sin cuentas. Sin configuración. Sin nube. Solo Python.
 
@@ -135,7 +136,71 @@ Abre `%APPDATA%\Claude\claude_desktop_config.json` (Windows) o `~/Library/Applic
 ```
 </details>
 
-### Paso 3 — Verificar que funciona
+### Paso 3 — Configurar proveedores de embeddings (opcional pero recomendado)
+
+NEMO funciona sin embeddings (fallback a búsqueda de texto), pero para el pipeline completo necesitas al menos un proveedor de embeddings.
+
+<details open>
+<summary><b>⭐ Opción A — LM Studio (recomendado, máximo rendimiento)</b></summary>
+
+1. Descarga e instala [LM Studio](https://lmstudio.ai/)
+2. Descarga el modelo `Qwen3-Embedding-4B` desde la interfaz de LM Studio
+3. Cárgalo y verifica que el servidor esté en `http://localhost:1234`
+4. **(Opcional) Reranker BGE** — para activar el pipeline completo:
+   ```bash
+   # Descarga el modelo GGUF de BGE-reranker-v2-m3
+   # Inicia con llama-server (incluido con llama.cpp):
+   llama-server \
+     -m bge-reranker-v2-m3-Q4_K_M.gguf \
+     --reranking --embedding --pooling rank \
+     --port 8080 --ctx-size 2048 --parallel 4
+   ```
+   Verifica: `curl http://localhost:8080/health` → `{"status":"ok"}`
+
+NEMO detecta automáticamente LM Studio en `:1234` y el reranker en `:8080`.
+</details>
+
+<details>
+<summary><b>🦙 Opción B — Ollama (ligero, sin GPU dedicada)</b></summary>
+
+```bash
+# Instala Ollama desde https://ollama.com
+ollama pull nomic-embed-text
+```
+
+Edita `embedding_config.json` y establece Ollama como primario:
+```json
+{
+  "embedding_configuration": {
+    "primary": {
+      "provider": "ollama",
+      "model": "nomic-embed-text",
+      "base_url": "http://localhost:11434"
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>☁️ Opción C — OpenAI (requiere API key)</b></summary>
+
+Edita `embedding_config.json`:
+```json
+{
+  "embedding_configuration": {
+    "primary": {
+      "provider": "openai",
+      "model": "text-embedding-3-small",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-..."
+    }
+  }
+}
+```
+</details>
+
+### Paso 4 — Verificar que funciona
 
 Reinicia tu editor. En Agent mode, pídele a la IA:
 
@@ -147,8 +212,15 @@ Luego abre una sesión nueva y pregunta:
 
 **Si lo sabe — NEMO está funcionando ✓**
 
-> **Recomendado:** [LM Studio](https://lmstudio.ai/) con `text-embedding-qwen3-embedding-4b` para búsqueda semántica completa.
-> Sin él, NEMO funciona igual con búsqueda de texto básica (Ollama o fallback interno).
+### Paso 5 — Ejecutar benchmark (opcional)
+
+Verifica que tu instalación alcanza el rendimiento esperado:
+
+```bash
+python examples/benchmark_nemo_suite.py --preset quick
+```
+
+Resultados esperados con LM Studio + Reranker: Top-1 ≥ 91%, MRR ≥ 0.95, Confusory = 100%.
 
 ---
 
@@ -156,37 +228,105 @@ Luego abre una sesión nueva y pregunta:
 
 | | Otras soluciones | **NEMO** |
 |---|---|---|
-| **Búsqueda** | Similitud coseno simple | Pipeline propietario de múltiples etapas: búsqueda híbrida, reranking neuronal, señales contextuales y temporales |
-| **Infraestructura** | Dependiente de la nube | 100% local — LM Studio + SQLite, sin internet |
-| **Rendimiento** | Recuperación uniforme | Bypass adaptativo: enruta al camino rápido O al reranker completo según confianza |
-| **Persistencia** | Olvida sesiones anteriores | SQLite — sobrevive reinicios, cambios de agente y reinstalaciones |
-| **Duplicados** | Memorias repetidas | Deduplicación automática en escritura (coseno > 0.92) |
-| **Ranking** | Fijo | Bucle de retroalimentación `access_count` — las más usadas suben en relevancia |
+| **Búsqueda** | Similitud coseno simple | Pipeline de 11 fases: FTS5 + Dense + reranker BGE + fusión RWF adaptativa con gating léxico |
+| **Adversarial** | Sin protección contra imposters | 100% de rechazo en pruebas confusory · 6.25% de intercepción de imposters |
+| **Infraestructura** | Dependiente de la nube | 100% local — LM Studio + Ollama + SQLite, sin internet |
+| **Rendimiento** | Recuperación uniforme | Bypass adaptativo por confianza: enruta al camino rápido o al pipeline completo según gap de scores |
+| **Resiliencia** | Un solo proveedor | Circuit breaker con backoff exponencial · fallback Qwen3 → Ollama → texto · dimension guard |
+| **Persistencia** | Olvida sesiones anteriores | 5 bases SQLite — sobrevive reinicios, cambios de agente y reinstalaciones |
+| **Duplicados** | Memorias repetidas | Deduplicación semántica en escritura: duro 0.92 · suave 0.82 · L1 cache 0.97 |
+| **Ranking** | Fijo | Bucle de retroalimentación `access_count` + boost permanente +0.35 para correcciones |
 
 ---
 
-## 🧠 Cómo Funciona
+## 🧠 Pipeline de Búsqueda Semántica
 
-NEMO expone **44 herramientas MCP** a través de un servidor Python stdio. Cuando un agente llama `search_memories`, la consulta pasa por un **pipeline de recuperación de múltiples etapas** desarrollado internamente:
+NEMO expone **42 herramientas MCP** a través de un servidor Python stdio. Cuando un agente llama `search_memories`, la consulta pasa por un **pipeline de recuperación de múltiples etapas**:
 
-- Combina búsqueda vectorial densa y búsqueda léxica en paralelo
-- Aplica reranking neuronal para priorizar los resultados más relevantes
-- Incorpora señales temporales, de calidad y de uso histórico para un ranking contextual
-- Suprime resultados redundantes antes de retornar el conjunto final
+### Arquitectura del Pipeline <a id="arquitectura"></a>
 
-El diseño exacto del pipeline es propietario. Los resultados hablan por sí solos en los benchmarks.
+```
+  Consulta
+    │
+    ├─────────────────────────────────┐
+    ▼                                 ▼
+  Dense (Qwen3-4B)               FTS5 BM25
+  similitud coseno               ranking léxico
+    │                                 │
+    └────────┬────────────────────────┘
+             ▼
+   Filtrado por umbral adaptativo
+   floor=0.92 · ceiling=0.95
+   median(cosenos) + 1.5·std
+             │
+             ▼
+   Gap bypass router (threshold=0.12)
+   ┌─── gap > 0.12 ──→ camino rápido (líder claro)
+   │
+   └─── gap ≤ 0.12 ──→ Reranker BGE-v2-m3
+                         cross-encoder neuronal
+                         15 candidatos → top 5
+                              │
+                              ▼
+                    Fusión RWF (Reciprocal Weighted Fusion)
+                    sem=0.55 / bge=0.45
+                              │
+                              ▼
+                    Lexical Gating Adaptativo
+                    ┌── gap base < 0.03: ceiling 0.10 (empate → tiebreaker)
+                    ├── gap base > 0.10: ceiling 0.02 (líder claro → protección)
+                    └── spread léxico < 0.03: cap 0.03 (ruido → suprimir)
+                              │
+                              ▼
+                    Señales contextuales
+                    token_coverage · fuzzy_coverage
+                    phrase_boost · identifier_boost
+                    tag_boost · correction_boost (+0.35)
+                    decaimiento temporal · access_count
+                              │
+                              ▼
+                    Deduplicación near-dup
+                    Resultado final top-N
+```
 
-### Benchmarks de producción <a id="benchmarks"></a>
+### Detalles Técnicos del Pipeline
+
+| Componente | Parámetro | Valor |
+|---|---|---|
+| **Fusión RWF** | Peso semántico (`_W_SEM`) | `0.55` |
+| | Peso BGE reranker (`_W_BGE`) | `0.45` |
+| **Umbral adaptativo** | Floor / Ceiling | `0.92` / `0.95` |
+| | Fórmula | `median(cosenos) + 1.5 × std(cosenos)` |
+| **Gap bypass** | Umbral de confianza | `0.12` |
+| **Lexical gating** | Ceiling máximo (empate) | `0.10` |
+| | Ceiling mínimo (líder claro) | `0.02` |
+| | Spread check | `< 0.03` → cap en `0.03` |
+| **Reranker** | Candidatos primera etapa | `15` |
+| | Resultado final | `top 5` |
+| | Timeout | `20s` |
+| | Confianza bypass | `0.92` |
+| **Deduplicación** | Umbral duro (escritura) | `0.92` |
+| | Umbral suave (consolidación) | `0.82` |
+| | Cache de sesión L1 | `0.97` |
+| **Correcciones** | Boost permanente de relevancia | `+0.35` |
+
+### Benchmarks de Producción <a id="benchmarks"></a>
+
+Resultados del benchmark suite completo con 48 queries en 4 categorías de dificultad:
 
 <table>
-<tr><th>Métrica</th><th>Sprint 12 (reranker activo)</th><th>Stress test (48 queries)</th></tr>
-<tr><td><b>Precisión Top-1</b></td><td>✅ 92%</td><td>✅ 83.33% global</td></tr>
-<tr><td><b>MRR</b></td><td>✅ 0.9583</td><td>–</td></tr>
-<tr><td><b>Latencia P95</b></td><td>2 847 ms (FTS5+Dense+Reranker)</td><td>–</td></tr>
-<tr><td><b>confusory</b></td><td>–</td><td>✅ 91.67%</td></tr>
-<tr><td><b>typo_severe</b></td><td>–</td><td>✅ 91.67%</td></tr>
-<tr><td><b>paraphrase_ext.</b></td><td>–</td><td>⚠️ 58.33% (ceiling del modelo)</td></tr>
+<tr><th>Métrica</th><th>Resultado</th><th>Descripción</th></tr>
+<tr><td><b>Precisión Top-1 (producción)</b></td><td>✅ 91.67%</td><td>Queries limpias con reranker activo</td></tr>
+<tr><td><b>Precisión Top-1 (entropy)</b></td><td>✅ 87.50%</td><td>Mix de typos, paráfrasis y confusory</td></tr>
+<tr><td><b>MRR producción</b></td><td>✅ 0.9583</td><td>Mean Reciprocal Rank sobre queries limpias</td></tr>
+<tr><td><b>MRR entropy</b></td><td>✅ 0.9035</td><td>Mean Reciprocal Rank sobre mix adversarial</td></tr>
+<tr><td><b>Adversarial confusory</b></td><td>✅ 100%</td><td>Rechazo total de queries diseñadas para confundir</td></tr>
+<tr><td><b>Imposter intercept</b></td><td>✅ 6.25%</td><td>Solo 3/48 queries devolvieron memoria incorrecta</td></tr>
+<tr><td><b>Latencia P95 producción</b></td><td>⚡ 2 722 ms</td><td>FTS5 + Dense + Reranker completo</td></tr>
+<tr><td><b>Latencia P95 entropy</b></td><td>⚡ 3 182 ms</td><td>Incluyendo queries severamente deformadas</td></tr>
 </table>
+
+> **Suite de benchmarks incluido:** ejecuta `python examples/benchmark_nemo_suite.py --preset quick` para replicar.
 
 ---
 
@@ -194,15 +334,19 @@ El diseño exacto del pipeline es propietario. Los resultados hablan por sí sol
 
 | Característica | Detalle |
 |---|---|
-| 🔍 **Búsqueda híbrida** | Dense (Qwen3-4B, asimétrico) + FTS5 BM25 léxico en paralelo + reranker BGE |
-| 🛠️ **44 herramientas MCP** | Memoria · conversaciones · agenda · correcciones · reflexiones · salud · roleplay · proyectos · cognición avanzada |
+| 🔍 **Búsqueda híbrida** | Dense (Qwen3-4B, instrucción asimétrica) + FTS5 BM25 léxico en paralelo + reranker BGE cross-encoder |
+| 🧮 **Fusión RWF adaptativa** | Reciprocal Weighted Fusion (sem 0.55 / bge 0.45) + lexical gating condicional por confianza del ranking |
+| 🛡️ **Protección adversarial** | Gap bypass 0.12 · umbral adaptativo [0.92–0.95] · spread check · 100% confusory rejection |
+| 🛠️ **42 herramientas MCP** | Memoria · conversaciones · agenda · correcciones · reflexiones · salud · roleplay · proyectos · cognición avanzada |
 | 🗄️ **5 bases de datos SQLite** | `conversations` · `ai_memories` · `schedule` · `mcp_tool_calls` · `vscode_project` |
-| 🔁 **Deduplicación semántica** | Umbral duro 0.92 · umbral suave 0.82 — sin memorias duplicadas |
+| ⚡ **Circuit breaker** | Backoff exponencial: base 2s → max 45s · semáforo 2 concurrentes · HTTP timeout 10s/3s connect |
+| 🔒 **Dimension guard** | Detecta y rechaza embeddings de fallback con dimensiones incompatibles (ej: 2560D vs 768D) |
+| 🔁 **Deduplicación semántica** | Duro 0.92 · suave 0.82 · contradicción 0.70 · L1 cache de sesión 0.97 |
 | ⏳ **Autoridad temporal** | Decaimiento temporal evita que memorias obsoletas aparezcan |
 | ✏️ **Auto-correcciones** | `create_correction` da boost permanente +0.35 — los errores no se repiten |
 | 📥 **Importación multiplataforma** | LM Studio · Ollama · OpenWebUI · SillyTavern · Gemini CLI · VS Code |
 | 📅 **Agenda completa** | Calendario con recurrencia diaria / semanal / mensual / anual |
-| 🌊 **Degradación elegante** | Cae a Ollama → búsqueda de texto si los embeddings no están disponibles |
+| 🌊 **Degradación elegante** | Cae a Ollama → búsqueda de texto si los embeddings no están disponibles · dimension guard previene crashes |
 | 🎨 **Panel VS Code premium** | UI oscuro-dorado en tiempo real — estado de LM Studio, Reranker, DBs y MCP · launch del Dashboard 3D · polling cada 30 s |
 | 🌐 **Dashboard Neural 3D** | Grafo 3D interactivo — bloom glow · hover tooltips · búsqueda en vivo · slider de similaridad |
 | 🚀 **Autostart Windows** | Inicia LM Studio + carga modelos automáticamente al iniciar sesión |
@@ -224,7 +368,7 @@ El archivo `.github/copilot-instructions.md` instruye a VS Code Copilot para usa
 
 ---
 
-## 🛠️ 44 Herramientas MCP
+## 🛠️ 42 Herramientas MCP
 
 <details>
 <summary><b>🧠 Memoria (6 herramientas)</b></summary>
@@ -412,20 +556,24 @@ Archivo de instrucciones que hace que **VS Code Copilot use NEMO automáticament
 └───────────────────────────┬──────────────────────────────┘
                             │  MCP stdio
 ┌───────────────────────────▼──────────────────────────────┐
-│       ai_memory_mcp_server.py   (44 herramientas MCP)     │
+│       ai_memory_mcp_server.py   (42 herramientas MCP)     │
+│       HTTP API :11435  ·  SSE /events  ·  /api/graph      │
 └───────────────────────────┬──────────────────────────────┘
                             │
 ┌───────────────────────────▼──────────────────────────────┐
-│              ai_memory_core.py   (~4 900 líneas)          │
+│              ai_memory_core.py   (~7 100 líneas)          │
 │  ┌───────────────────┐    ┌─────────────────────────────┐ │
 │  │  EmbeddingService │    │      RerankingService        │ │
 │  │  Qwen3-4B @ :1234 │    │  BGE-reranker-v2-m3 @ :8080  │ │
-│  │  circuit-breaker  │    │     timeout 10s  ·  RWF      │ │
+│  │  circuit-breaker  │    │  15 cand → top 5 · RWF       │ │
+│  │  dim-guard · L1$  │    │  timeout 20s · bypass 0.92   │ │
+│  │  fallback → Ollama│    │  lexical gating adaptativo   │ │
 │  └───────────────────┘    └─────────────────────────────┘ │
 │  ┌──────────────────────────────────────────────────────┐ │
 │  │            PersistentAIMemorySystem                   │ │
-│  │   multi-stage search  ·  FTS5+Dense paralelo           │ │
-│  │   dedup semántico  ·  decaimiento  ·  near-dup        │ │
+│  │   FTS5+Dense paralelo · umbral adaptativo [0.92-0.95] │ │
+│  │   gap bypass 0.12 · dedup 0.92/0.82 · near-dup       │ │
+│  │   RWF sem=0.55 bge=0.45 · correction boost +0.35     │ │
 │  └──────────────────────────────────────────────────────┘ │
 └───────────────────────────┬──────────────────────────────┘
                             │
@@ -440,21 +588,57 @@ Archivo de instrucciones que hace que **VS Code Copilot use NEMO automáticament
 
 ## 🔌 Proveedores de Embeddings <a id="proveedores-de-embeddings"></a>
 
-| Proveedor | Modelo | Dimensiones | Costo |
-|---|---|---|---|
-| ⭐ **LM Studio** (recomendado) | Qwen3-Embedding-4B | 3 840D | Gratis |
-| ⚙️ **llama_cpp** (reranker) | BGE-reranker-v2-m3-Q4_K_M | — | Gratis |
-| 🦙 **Ollama** (respaldo) | nomic-embed-text | 768D | Gratis |
-| ☁️ **OpenAI** (nube) | text-embedding-3-large | 3 072D | $$$ |
+NEMO soporta múltiples proveedores de embeddings, todos configurables en `embedding_config.json`. El sistema degrada graciosamente si el proveedor primario no está disponible, con **dimension guard** que previene crashes por mezcla de dimensiones.
 
-Configurar en `embedding_config.json`. El sistema cae graciosamente si LM Studio no está disponible.
+| Proveedor | Modelo | Dimensiones | Rol | Costo |
+|---|---|---|---|---|
+| ⭐ **LM Studio** (primario) | Qwen3-Embedding-4B | 2 560D | Embeddings asimétricos con query instruction | Gratis |
+| ⚙️ **llama_cpp** (reranker) | BGE-reranker-v2-m3-Q4_K_M | — | Cross-encoder neuronal en `/v1/rerank` | Gratis |
+| 🦙 **Ollama** (respaldo) | nomic-embed-text | 768D | Fallback automático con circuit breaker | Gratis |
+| ☁️ **OpenAI** (nube) | text-embedding-3-small | 1 536D | Alternativa en la nube | $$$ |
+
+### Configuración de puertos
+
+| Servicio | Puerto | Endpoint |
+|---|---|---|
+| LM Studio (embeddings) | `:1234` | `/v1/embeddings` |
+| Ollama (fallback) | `:11434` | `/api/embeddings` |
+| Reranker (llama_cpp) | `:8080` | `/v1/rerank` |
+| NEMO HTTP API | `:11435` | `/api/health` · `/events` (SSE) · `/api/graph` |
+
+### Circuit Breaker y Resiliencia
+
+| Parámetro | Valor |
+|---|---|
+| HTTP timeout | `10s total` · `3s connect` |
+| Cooldown base (tras 1er fallo) | `2s` |
+| Cooldown máximo | `45s` |
+| Semáforo concurrente | `2` requests simultáneos |
+| Reranker retry | `60s` tras fallo |
+| Dimension guard | Rechaza fallback con dim ≠ primario |
+| L1 cache de sesión | Reutiliza embedding si coseno ≥ `0.97` |
 
 ---
 
 ## 🆕 Historial de versiones
 
 <details open>
-<summary><b>v1.3.0 — Sprint 15  (marzo 2026)</b></summary>
+<summary><b>v1.4.0 (abril 2026) — Pipeline de búsqueda avanzado</b></summary>
+
+- **Fusión RWF adaptativa** — Reciprocal Weighted Fusion de 2 señales (sem 0.55 + BGE 0.45) con lexical gating condicional
+- **Lexical gating por confianza** — dos pases: mide el gap del ranking base, luego escala la señal léxica inversamente a la confianza. Spread check suprime ruido cuando el lexical no discrimina
+- **Gap bypass router** — si el líder semántico tiene gap > 0.12, omite reranking costoso (camino rápido)
+- **Umbral adaptativo** — `median + 1.5·std` clamped a [0.92, 0.95] en lugar de threshold fijo
+- **Dimension guard** — previene crashes por mezcla de dimensiones cuando el fallback (768D) difiere del primario (2560D)
+- **Circuit breaker mejorado** — backoff exponencial base 2s → max 45s, semáforo de 2 concurrentes
+- **L1 session cache** — reutiliza embeddings intra-sesión si coseno ≥ 0.97
+- **Benchmark suite** — `benchmark_nemo_suite.py` con 4 categorías: baseline, producción, entropy y confusory adversarial
+- **Protección adversarial** — 100% confusory rejection, 6.25% imposter intercept, MRR 0.9583
+- **Puerto HTTP** separado del servidor de embeddings: `:11435`
+</details>
+
+<details>
+<summary><b>v1.3.0 (marzo 2026) — Dashboard y cognición</b></summary>
 
 - **`synaptic_tagging`** — nueva herramienta MCP: conecta memorias relacionadas automáticamente (importancia ≥ 9)
 - **Panel Neural 3D** — `dashboard.py` genera 3D interactivo (three.js + bloom glow + slider de similaridad)
@@ -464,16 +648,12 @@ Configurar en `embedding_config.json`. El sistema cae graciosamente si LM Studio
 </details>
 
 <details>
-<summary><b>v1.2.0 — Sprint 11 & 12</b></summary>
+<summary><b>v1.2.0 — Búsqueda híbrida y embeddings asimétricos</b></summary>
 
-**Sprint 11 — Recuperación Híbrida FTS5 + Dense**
-- SQLite FTS5 (unicode61, sin diacríticos) para BM25 léxico
-- Dense + FTS5 en paralelo vía `asyncio.gather` — sin latencia adicional
+- SQLite FTS5 (unicode61, sin diacríticos) para BM25 léxico en paralelo con dense
 - Triggers automáticos mantienen el índice FTS5 sincronizado
-
-**Sprint 12 — Embeddings Asimétricos + Reranker Real**
-- Reranker corregido: apunta a `llama_cpp :8080` + detección de falso-200
-- Query instruction B1: diferencia vocabulario abstracto de nombres técnicos (+4.2pp Top-1)
+- Reranker BGE apuntando a `llama_cpp :8080` con detección de falso-200
+- Query instruction asimétrica para diferenciar vocabulario abstracto de técnico (+4.2pp Top-1)
 - Freeze fixes: 4 root causes eliminados en escrituras concurrentes
 - Multi-workspace simultáneo: instancias en distintos workspaces ya no se matan entre sí
 - Anti-alucinación: 4 estrategias integradas (grounding · confidence · source attribution · contradiction)
@@ -499,11 +679,12 @@ Configurar en `embedding_config.json`. El sistema cae graciosamente si LM Studio
 | Tecnología | Rol |
 |---|---|
 | [Model Context Protocol](https://modelcontextprotocol.io/) | Capa de transporte — cómo los agentes llaman a NEMO |
-| [LM Studio](https://lmstudio.ai/) | Hosting local de modelos de embeddings y reranking |
-| [Qwen3-Embedding-4B](https://huggingface.co/Qwen/Qwen3-Embedding) | Modelo de embeddings principal (3 840D) |
-| [BGE-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3) | Reranker neuronal cross-encoder |
-| [Ollama](https://ollama.com/) | Proveedor de embeddings de respaldo |
-| [SQLite](https://www.sqlite.org/) | Almacenamiento persistente — sin servidor, portable |
+| [LM Studio](https://lmstudio.ai/) | Hosting local de modelos de embeddings |
+| [llama.cpp / llama-server](https://github.com/ggerganov/llama.cpp) | Servidor del reranker BGE en `:8080` con `/v1/rerank` |
+| [Qwen3-Embedding-4B](https://huggingface.co/Qwen/Qwen3-Embedding) | Modelo de embeddings principal (2 560D, instrucción asimétrica) |
+| [BGE-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3) | Reranker neuronal cross-encoder (GGUF Q4_K_M) |
+| [Ollama](https://ollama.com/) | Proveedor de embeddings de respaldo (nomic-embed-text, 768D) |
+| [SQLite + FTS5](https://www.sqlite.org/) | Almacenamiento persistente + índice léxico BM25 |
 | [Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk) | Implementación del servidor MCP stdio |
 | [Open-Meteo](https://open-meteo.com/) | API de clima sin clave requerida |
 
