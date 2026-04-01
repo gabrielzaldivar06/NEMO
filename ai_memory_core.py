@@ -62,12 +62,14 @@ import numpy as np
 import hashlib
 import os
 import re
+import subprocess
 import time
 import socket
 import difflib
 from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timezone, timedelta, tzinfo
 from pathlib import Path
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 # Get local timezone
@@ -2729,13 +2731,29 @@ class EmbeddingService:
         # embedding calls so each generate_embedding() doesn't open a new TCP connection.
         self._session: Optional["aiohttp.ClientSession"] = None
 
-        # Semaphore: at most 1 concurrent embedding request so that if LM Studio is
-        # under load, extra calls queue rather than multiplying GPU/RAM pressure.
+        # Sprint A L4 — Semaphore: at most 2 concurrent embedding requests.
+        # Raised from 1 to 2 so that a query embedding and a background store
+        # embedding can overlap without serializing on a single slot.
         # Created lazily in generate_embedding() because __init__ may run before the loop.
         self._embed_semaphore: Optional[asyncio.Semaphore] = None
 
+        # Sprint A L1 — String-hash embedding cache (LRU, 256 entries).
+        # Eliminates the ~2,800ms HTTP roundtrip for identical query strings
+        # seen within the same session. Uses exact string match (hash), NOT
+        # cosine similarity, so there is zero compute overhead on miss.
+        # OrderedDict gives us LRU eviction for free.
+        from collections import OrderedDict
+        self._embed_cache: OrderedDict = OrderedDict()  # key: str → value: List[float]
+        self._embed_cache_max = 256
+        self._embed_cache_hits = 0
+        self._embed_cache_misses = 0
+
         # Circuit-breaker: maps provider name → timestamp after which it may be retried.
         self._embed_retry_after: Dict[str, float] = {}
+        # Sprint B — B1: consecutive failure count per provider for exponential backoff.
+        self._embed_failure_count: Dict[str, int] = {}
+        # Dimension guard: reject fallback embeddings whose dimension differs from primary
+        self._primary_embed_dim: int = 0
 
         self.provider_availability = {
             "lm_studio": None,  # Will be tested on first use
@@ -2824,8 +2842,15 @@ class EmbeddingService:
     # 10s total prevents long freezes when LM Studio is busy; 3s connect-fail fast.
     _SESSION_TIMEOUT = aiohttp.ClientTimeout(total=10, connect=3)
 
-    # Circuit-breaker cooldown: skip failed provider for this many seconds.
-    _EMBED_COOLDOWN_SECONDS = 45.0
+    # Sprint B — B1: Exponential backoff circuit breaker.
+    # Instead of a flat 45s cooldown, the first failure triggers a short 2s pause
+    # and each consecutive failure doubles the wait (2→4→8→16→32→45 cap).
+    # On success the backoff resets to the minimum.  This lets the provider
+    # recover quickly from transient disconnects (e.g. LM Studio dropping a
+    # connection after a large batch) while still protecting against sustained
+    # outages.
+    _EMBED_COOLDOWN_BASE = 2.0    # seconds after 1st failure
+    _EMBED_COOLDOWN_MAX  = 45.0   # hard cap
 
     async def _get_session(self) -> "aiohttp.ClientSession":
         """Return the shared aiohttp session, creating it lazily on first call."""
@@ -2842,15 +2867,30 @@ class EmbeddingService:
     async def generate_embedding(self, text: str, model: str = None) -> List[float]:
         """Generate embedding using intelligent provider selection with preservation strategy.
 
-        A semaphore (max 2 concurrent) limits parallel requests to LM Studio so a burst
-        of background embed tasks doesn't cascade into timeouts across all workspaces.
+        Sprint A L4: semaphore raised to 2 so query + store embeddings can overlap.
+        Sprint A L1: string-hash cache checked before HTTP call.
         """
+        # Sprint A L1 — exact string-hash cache lookup (zero-cost on hit)
+        cache_key = text if model is None else f"{model}::{text}"
+        if cache_key in self._embed_cache:
+            self._embed_cache.move_to_end(cache_key)
+            self._embed_cache_hits += 1
+            return list(self._embed_cache[cache_key])  # return copy
+
         # Lazy semaphore init — must happen inside a running event loop
         if self._embed_semaphore is None:
-            self._embed_semaphore = asyncio.Semaphore(1)
+            self._embed_semaphore = asyncio.Semaphore(2)  # Sprint A L4: was 1
 
         async with self._embed_semaphore:
-            return await self._generate_embedding_inner(text, model)
+            result = await self._generate_embedding_inner(text, model)
+
+        # Cache the result
+        if result:
+            self._embed_cache[cache_key] = result
+            self._embed_cache_misses += 1
+            if len(self._embed_cache) > self._embed_cache_max:
+                self._embed_cache.popitem(last=False)  # evict LRU
+        return result
 
     async def generate_query_embedding(self, query: str) -> List[float]:
         """Generate embedding for a *search query* using the model's instruction prefix.
@@ -2873,11 +2913,25 @@ class EmbeddingService:
         else:
             instructed_text = query
 
+        # Sprint A L1 — exact string-hash cache lookup
+        cache_key = f"q::{instructed_text}"
+        if cache_key in self._embed_cache:
+            self._embed_cache.move_to_end(cache_key)
+            self._embed_cache_hits += 1
+            return list(self._embed_cache[cache_key])
+
         if self._embed_semaphore is None:
-            self._embed_semaphore = asyncio.Semaphore(1)
+            self._embed_semaphore = asyncio.Semaphore(2)  # Sprint A L4
 
         async with self._embed_semaphore:
-            return await self._generate_embedding_inner(instructed_text)
+            result = await self._generate_embedding_inner(instructed_text)
+
+        if result:
+            self._embed_cache[cache_key] = result
+            self._embed_cache_misses += 1
+            if len(self._embed_cache) > self._embed_cache_max:
+                self._embed_cache.popitem(last=False)
+        return result
 
     async def generate_document_embedding(self, text: str) -> List[float]:
         """Generate embedding for a *stored document/memory* with optional instruction prefix.
@@ -2899,11 +2953,25 @@ class EmbeddingService:
         else:
             instructed_text = text
 
+        # Sprint A L1 — exact string-hash cache lookup
+        cache_key = f"d::{instructed_text}"
+        if cache_key in self._embed_cache:
+            self._embed_cache.move_to_end(cache_key)
+            self._embed_cache_hits += 1
+            return list(self._embed_cache[cache_key])
+
         if self._embed_semaphore is None:
-            self._embed_semaphore = asyncio.Semaphore(1)
+            self._embed_semaphore = asyncio.Semaphore(2)  # Sprint A L4
 
         async with self._embed_semaphore:
-            return await self._generate_embedding_inner(instructed_text)
+            result = await self._generate_embedding_inner(instructed_text)
+
+        if result:
+            self._embed_cache[cache_key] = result
+            self._embed_cache_misses += 1
+            if len(self._embed_cache) > self._embed_cache_max:
+                self._embed_cache.popitem(last=False)
+        return result
 
     # ── Circuit-breaker helpers ───────────────────────────────────────────────
 
@@ -2913,20 +2981,60 @@ class EmbeddingService:
         return retry_after > time.time()
 
     def _mark_embed_provider_failed(self, provider: str) -> None:
-        """Record failure; block provider for _EMBED_COOLDOWN_SECONDS."""
+        """Record failure; block provider with exponential backoff (Sprint B — B1)."""
         self.provider_availability[provider] = False
-        self._embed_retry_after[provider] = time.time() + self._EMBED_COOLDOWN_SECONDS
-        logger.warning(f"[circuit-breaker] embed provider '{provider}' in cooldown for {self._EMBED_COOLDOWN_SECONDS}s")
+        n = self._embed_failure_count.get(provider, 0) + 1
+        self._embed_failure_count[provider] = n
+        cooldown = min(self._EMBED_COOLDOWN_BASE * (2 ** (n - 1)), self._EMBED_COOLDOWN_MAX)
+        self._embed_retry_after[provider] = time.time() + cooldown
+        logger.warning(f"[circuit-breaker] embed provider '{provider}' in cooldown for {cooldown:.1f}s (failure #{n})")
 
     def _mark_embed_provider_ok(self, provider: str) -> None:
-        """Clear cooldown after a successful embedding request."""
+        """Clear cooldown and reset failure count after a successful request (Sprint B — B1)."""
         self.provider_availability[provider] = True
         self._embed_retry_after.pop(provider, None)
+        self._embed_failure_count.pop(provider, None)
 
     # ─────────────────────────────────────────────────────────────────────────
 
+    # Sprint B — B1: maximum cooldown (seconds) for which the inner loop will
+    # sleep and retry rather than immediately falling back to text search.
+    # Queries execute in ~5ms under text-search fallback, so even a 2s cooldown
+    # causes all queries in a burst to miss the retry window.  Waiting up to 5s
+    # gives the provider time to recover from transient disconnects.
+    _EMBED_WAIT_RETRY_THRESHOLD = 5.0
+
     async def _generate_embedding_inner(self, text: str, model: str = None) -> List[float]:
-        """Internal: generate embedding (called under semaphore)."""
+        """Internal: generate embedding (called under semaphore).
+
+        Sprint B — B1: When all providers are in short cooldown (≤ threshold),
+        sleep until the soonest one expires and retry once before falling back to
+        text search.  This prevents the scenario where 48 rapid-fire queries all
+        miss the 2s cooldown window.
+        """
+        for _attempt in range(2):  # at most one wait-and-retry
+            result = await self._try_all_providers(text, model)
+            if result is not None:
+                return result
+
+            # All providers in cooldown — check if any expires soon enough to wait
+            now = time.time()
+            soonest = min(
+                (self._embed_retry_after.get(p, 0.0) for p in self._embed_retry_after),
+                default=0.0,
+            )
+            wait = soonest - now
+            if _attempt == 0 and 0 < wait <= self._EMBED_WAIT_RETRY_THRESHOLD:
+                logger.info(f"[circuit-breaker] all providers in cooldown; sleeping {wait:.1f}s before retry")
+                await asyncio.sleep(wait + 0.1)  # +100ms margin
+                continue
+            break
+
+        logger.error("All embedding providers failed or in cooldown — falling back to text search")
+        return []
+
+    async def _try_all_providers(self, text: str, model: str = None) -> "List[float] | None":
+        """Try primary then fallback provider. Returns embedding or None."""
         primary_provider = self.primary_config.get("provider", "llama_cpp")
         self.embeddings_endpoint = self._build_embeddings_endpoint(self.primary_config)
 
@@ -2937,6 +3045,8 @@ class EmbeddingService:
                     result = await self._generate_lm_studio_embedding(text)
                     if result:
                         self._mark_embed_provider_ok(primary_provider)
+                        if self._primary_embed_dim == 0:
+                            self._primary_embed_dim = len(result)
                         return result
                     else:
                         self._mark_embed_provider_failed(primary_provider)
@@ -2946,6 +3056,8 @@ class EmbeddingService:
                     result = await self._generate_ollama_embedding(text)
                     if result:
                         self._mark_embed_provider_ok("ollama")
+                        if self._primary_embed_dim == 0:
+                            self._primary_embed_dim = len(result)
                         return result
                     else:
                         self._mark_embed_provider_failed("ollama")
@@ -2955,6 +3067,8 @@ class EmbeddingService:
                     result = await self._generate_openai_embedding(text)
                     if result:
                         self._mark_embed_provider_ok("openai")
+                        if self._primary_embed_dim == 0:
+                            self._primary_embed_dim = len(result)
                         return result
                     else:
                         self._mark_embed_provider_failed("openai")
@@ -2967,6 +3081,9 @@ class EmbeddingService:
             logger.debug(f"[circuit-breaker] skipping '{primary_provider}' — still in cooldown")
 
         # ── Fallback provider (also guarded by circuit-breaker) ────────────
+        # Dimension guard: reject fallback embeddings whose dimension differs
+        # from the primary provider's known dimension to prevent mixed-dimension
+        # crashes in cosine similarity (e.g. 2560-dim LM Studio vs 768-dim Ollama).
         fallback_provider = self.fallback_config.get("provider")
         if fallback_provider and fallback_provider != primary_provider:
             if not self._embed_provider_in_cooldown(fallback_provider):
@@ -2975,27 +3092,36 @@ class EmbeddingService:
                         self.embeddings_endpoint = self._build_embeddings_endpoint(self.fallback_config)
                         result = await self._generate_lm_studio_embedding(text, fallback=True)
                         if result:
-                            self._mark_embed_provider_ok(fallback_provider)
-                            logger.info(f"Using {fallback_provider} fallback for embedding")
-                            return result
+                            if self._primary_embed_dim > 0 and len(result) != self._primary_embed_dim:
+                                logger.warning(f"[dim-guard] fallback {fallback_provider} produced {len(result)}D, expected {self._primary_embed_dim}D — rejecting")
+                            else:
+                                self._mark_embed_provider_ok(fallback_provider)
+                                logger.info(f"Using {fallback_provider} fallback for embedding")
+                                return result
                         else:
                             self._mark_embed_provider_failed(fallback_provider)
 
                     elif fallback_provider == "ollama":
                         result = await self._generate_ollama_embedding(text, fallback=True)
                         if result:
-                            self._mark_embed_provider_ok("ollama")
-                            logger.info("Using Ollama fallback for embedding")
-                            return result
+                            if self._primary_embed_dim > 0 and len(result) != self._primary_embed_dim:
+                                logger.warning(f"[dim-guard] fallback ollama produced {len(result)}D, expected {self._primary_embed_dim}D — rejecting")
+                            else:
+                                self._mark_embed_provider_ok("ollama")
+                                logger.info("Using Ollama fallback for embedding")
+                                return result
                         else:
                             self._mark_embed_provider_failed("ollama")
 
                     elif fallback_provider == "openai":
                         result = await self._generate_openai_embedding(text, fallback=True)
                         if result:
-                            self._mark_embed_provider_ok("openai")
-                            logger.info("Using OpenAI fallback for embedding")
-                            return result
+                            if self._primary_embed_dim > 0 and len(result) != self._primary_embed_dim:
+                                logger.warning(f"[dim-guard] fallback openai produced {len(result)}D, expected {self._primary_embed_dim}D — rejecting")
+                            else:
+                                self._mark_embed_provider_ok("openai")
+                                logger.info("Using OpenAI fallback for embedding")
+                                return result
                         else:
                             self._mark_embed_provider_failed("openai")
 
@@ -3005,8 +3131,7 @@ class EmbeddingService:
             else:
                 logger.debug(f"[circuit-breaker] skipping fallback '{fallback_provider}' — still in cooldown")
 
-        logger.error("All embedding providers failed or in cooldown — falling back to text search")
-        return []
+        return None  # signal caller to wait-and-retry or fall back
 
     async def _generate_openai_compatible_embedding(self, text: str, config: Dict[str, Any], provider_name: str) -> List[float]:
         """Generate embedding using an OpenAI-compatible /v1/embeddings endpoint.
@@ -3163,6 +3288,7 @@ class RerankingService:
         self.last_candidate_count = 0
         self.last_reranking_applied = False
         self._generative_reranker_detected = False
+        self._autostart_retry_after = 0.0
 
         import sys as _sys
         print("Reranking Service Configuration", file=_sys.stderr)
@@ -3315,6 +3441,121 @@ class RerankingService:
         if api_key and api_key not in {"", "your-api-key-here", "lm_studio", "llama_cpp"}:
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
+
+    def _should_autostart_local_reranker(self, config: Dict[str, Any]) -> bool:
+        """Whether the configured provider looks like the local llama.cpp reranker."""
+        if config.get("provider") != "llama_cpp":
+            return False
+        endpoint = self._build_rerank_endpoint(config)
+        parsed = urlparse(endpoint)
+        hostname = (parsed.hostname or "").lower()
+        return hostname in {"localhost", "127.0.0.1"}
+
+    def _get_local_reranker_start_command(self) -> Optional[List[str]]:
+        """Resolve the preferred local reranker startup script for detached launch."""
+        project_dir = Path(__file__).parent
+        if os.name == "nt":
+            batch_script = project_dir / "start_qwen_reranker_server.bat"
+            if batch_script.exists():
+                return ["cmd.exe", "/c", str(batch_script)]
+
+            ps_script = project_dir / "start_qwen_reranker_server.ps1"
+            if ps_script.exists():
+                return [
+                    "powershell.exe",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(ps_script),
+                ]
+            return None
+
+        shell_script = project_dir / "start_qwen_reranker_server.sh"
+        if shell_script.exists():
+            return ["bash", str(shell_script)]
+        return None
+
+    def _is_endpoint_port_open(self, endpoint: str) -> bool:
+        """Cheap TCP probe used while waiting for a detached reranker process to come up."""
+        try:
+            parsed = urlparse(endpoint)
+            host = parsed.hostname or "localhost"
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
+            return False
+        return False
+
+    async def _wait_for_reranker_port(self, endpoint: str, timeout_seconds: float = 20.0) -> bool:
+        """Poll until the reranker TCP port is reachable or the timeout expires."""
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if self._is_endpoint_port_open(endpoint):
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _attempt_local_reranker_autostart(self, config: Dict[str, Any]) -> bool:
+        """Start the local llama.cpp reranker once and wait briefly for the port to open."""
+        if not self._should_autostart_local_reranker(config):
+            return False
+        if self._autostart_retry_after > time.time():
+            return False
+
+        command = self._get_local_reranker_start_command()
+        if not command:
+            logger.warning("Reranker autostart requested but no startup script was found.")
+            self._autostart_retry_after = time.time() + 30.0
+            return False
+
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = (
+                getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+
+        try:
+            subprocess.Popen(
+                command,
+                cwd=str(Path(__file__).parent),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            endpoint = self._build_rerank_endpoint(config)
+            logger.warning(f"Attempting local reranker autostart for {endpoint}")
+            started = await self._wait_for_reranker_port(endpoint)
+            self._autostart_retry_after = time.time() + (5.0 if started else 30.0)
+            return started
+        except Exception as e:
+            logger.error(f"Failed to autostart local reranker: {e}")
+            self._autostart_retry_after = time.time() + 30.0
+            return False
+
+    async def _wait_for_reranker_ready(
+        self,
+        query: str,
+        documents: List[str],
+        config: Dict[str, Any],
+        provider_name: str,
+        top_n: int,
+        timeout_seconds: float = 45.0,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Poll the rerank endpoint until it returns a usable ranking or times out."""
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            results = await self._rerank_with_http_endpoint(query, documents, config, provider_name, top_n)
+            if results:
+                return results
+
+            endpoint = self._build_rerank_endpoint(config)
+            sleep_seconds = 1.0 if self._is_endpoint_port_open(endpoint) else 0.5
+            await asyncio.sleep(sleep_seconds)
+
+        return None
 
     def _normalize_rerank_response(self, payload: Dict[str, Any], documents: List[str]) -> List[Dict[str, Any]]:
         """Normalize common rerank response shapes into a stable ranked list."""
@@ -3474,13 +3715,57 @@ class RerankingService:
             "Persistent memory configuration for embeddings and reranking.",
             "Appointment reminder and schedule entry.",
         ]
-        results = await self.rerank_documents("embedding reranker configuration", sample_documents, top_n=2)
+        query = "embedding reranker configuration"
+        provider_name = self.primary_config.get("provider", "llama_cpp")
+        results = await self._rerank_with_http_endpoint(
+            query,
+            sample_documents,
+            self.primary_config,
+            provider_name,
+            top_n=2,
+        )
+        autostart_attempted = False
+        if not results:
+            autostart_attempted = await self._attempt_local_reranker_autostart(self.primary_config)
+            endpoint_open = self._is_endpoint_port_open(self.rerank_endpoint)
+            if autostart_attempted or endpoint_open:
+                results = await self._wait_for_reranker_ready(
+                    query,
+                    sample_documents,
+                    self.primary_config,
+                    provider_name,
+                    top_n=2,
+                )
+
+        if results:
+            abs_max = max(abs(item.get("relevance_score", 0.0)) for item in results)
+            if abs_max < 1e-10:
+                return {
+                    "status": "unhealthy",
+                    "enabled": True,
+                    "endpoint": self.rerank_endpoint,
+                    "error": "Reranker returned near-zero scores; endpoint appears incompatible.",
+                    "autostart_attempted": autostart_attempted,
+                }
+            self._mark_provider_available(provider_name)
+            self.last_reranking_applied = True
+            return {
+                "status": "healthy",
+                "enabled": True,
+                "endpoint": self.rerank_endpoint,
+                "result_count": len(results),
+                "last_reranking_latency_ms": round(self.last_reranking_latency_ms, 2),
+                "autostart_attempted": autostart_attempted,
+            }
+
         return {
-            "status": "healthy" if results else "unhealthy",
+            "status": "unhealthy",
             "enabled": True,
             "endpoint": self.rerank_endpoint,
-            "result_count": len(results),
+            "result_count": 0,
             "last_reranking_latency_ms": round(self.last_reranking_latency_ms, 2),
+            "error": "Reranker endpoint unavailable or failed the smoke test.",
+            "autostart_attempted": autostart_attempted,
         }
 
 
@@ -4666,7 +4951,7 @@ class PersistentAIMemorySystem:
             if len(raw_scores) >= 4:
                 arr = np.array(raw_scores, dtype=np.float32)
                 adaptive_threshold = float(np.median(arr) + 1.5 * np.std(arr))
-                adaptive_threshold = max(0.80, min(0.95, adaptive_threshold))
+                adaptive_threshold = max(0.92, min(0.95, adaptive_threshold))  # Sprint D: floor 0.88→0.92
             else:
                 adaptive_threshold = self.reranking_service.get_confidence_bypass_threshold()
 
@@ -4676,7 +4961,7 @@ class PersistentAIMemorySystem:
             # skip the expensive cross-encoder — the ordering is unambiguous.
             # Gap threshold 0.07 is calibrated to production score distributions.
             # ------------------------------------------------------------------
-            _GAP_BYPASS_THRESHOLD = 0.05  # Sprint 10: lowered from 0.07 → bypass more, cut P95
+            _GAP_BYPASS_THRESHOLD = 0.12  # Sprint F: reverted 0.18→0.12, wider gap let imposters bypass reranker
             if len(all_results) >= 2:
                 second_raw = all_results[1].get("_raw_similarity", all_results[1]["similarity_score"])
                 score_gap = top_raw - second_raw
@@ -4815,14 +5100,21 @@ class PersistentAIMemorySystem:
         return result
 
     async def rerank_search_results(self, query: str, results: List[Dict[str, Any]], top_n: int = None) -> List[Dict[str, Any]]:
-        """Reranks candidates using Rank-Weighted Fusion (RWF): 70% semantic rank + 30% BGE rank.
+        """Reranks candidates using Score-Aware Rank-Weighted Fusion (SA-RWF).
 
-        Pure BGE reranking can hurt quality when near-duplicate documents share the same base
-        content as the canonical answer plus extra keywords that raise BGE scores artificially.
-        RWF prevents the cross-encoder from completely overriding a strong semantic ranking while
-        still letting BGE provide a meaningful signal where semantic retrieval is uncertain.
+        Sprint D: Inverse-rank fusion 0.55 sem / 0.45 BGE, enhanced with a
+        BGE score-delta promotion bonus.
 
-        final_score(d) = 0.7 / semantic_rank(d) + 0.3 / bge_rank(d)
+        Pure rank-based RWF loses the *magnitude* of BGE's preference.  When
+        BGE gives candidate-X a relevance score 5+ points above the semantic
+        rank-1 leader, that's a strong signal the leader is wrong.  The
+        promotion bonus adds up to +0.20 to the underdog's RWF score, enough
+        to overcome a 1-position semantic disadvantage but not enough to
+        override a strong semantic + BGE agreement (which would require >0.55
+        swing).
+
+        rwf(d) = 0.55/sem_rank(d) + 0.45/bge_rank(d) + promotion_bonus(d)
+        promotion_bonus(d) = clamp((bge_score(d) - bge_score(sem_leader)) * 0.04, 0, 0.20)
         """
         if not results:
             return []
@@ -4834,7 +5126,6 @@ class PersistentAIMemorySystem:
         reranking_applied = self.reranking_service.last_reranking_applied
 
         if not reranking_applied or not bge_candidates:
-            # Fall-through: pass-through in original semantic order
             reranked_results = []
             for i, result in enumerate(results[:top_n]):
                 r = dict(result)
@@ -4843,23 +5134,61 @@ class PersistentAIMemorySystem:
                 reranked_results.append(r)
             return reranked_results
 
-        # Build BGE rank lookup: original_index -> 1-based BGE rank
+        # Build BGE rank + score lookups: original_index -> 1-based BGE rank / score
         bge_rank_of = {}
+        bge_score_of = {}
         for bge_pos, rc in enumerate(bge_candidates, start=1):
             orig_idx = rc.get("index")
             if orig_idx is not None and 0 <= orig_idx < len(results):
-                bge_rank_of[orig_idx] = bge_pos
-                bge_rank_of.setdefault(orig_idx, bge_pos)  # noqa: keep first assignment
+                if orig_idx not in bge_rank_of:   # keep first (best) assignment
+                    bge_rank_of[orig_idx] = bge_pos
+                    bge_score_of[orig_idx] = rc.get("relevance_score", 0.0)
 
         n_candidates = len(results)
-        fallback_bge_rank = n_candidates + 1  # penalty rank for candidates not returned by BGE
+        fallback_bge_rank = n_candidates + 1
 
-        # Compute Rank-Weighted Fusion score for every candidate
+        _W_SEM = 0.55
+        _W_BGE = 0.45
+
+        # Sprint F: adaptive-gated lexical discrimination
+        # Lexical overlap with the query is a useful 3rd signal, but it must
+        # be GATED by the base RWF gap: full strength in genuine ties
+        # (helps baseline), dampened when there is a clear leader (protects
+        # adversarial/confusory rankings from imposter keyword overlap).
+        lex_scores = []
+        for result in results:
+            lex_scores.append(self._calculate_lexical_match_score(query, result))
+        max_lex = max(lex_scores) if lex_scores else 0.0
+
+        # Pass 1: compute base RWF (sem + BGE only) to measure top-2 gap
+        base_rwf_scores = []
+        for sem_rank_0, result in enumerate(results):
+            sem_rank = sem_rank_0 + 1
+            bge_rank = bge_rank_of.get(sem_rank_0, fallback_bge_rank)
+            base_rwf_scores.append(_W_SEM / sem_rank + _W_BGE / bge_rank)
+
+        # Adaptive lexical ceiling: tight RWF gap → 0.10, wide gap → 0.02
+        # Additionally: if lexical scores lack discrimination (top-2 spread < 0.03),
+        # cap the bonus at 0.03 to suppress noise from typo/paraphrase queries
+        # where no candidate has a clear keyword advantage.
+        sorted_base = sorted(base_rwf_scores, reverse=True)
+        if len(sorted_base) >= 2:
+            top2_gap = sorted_base[0] - sorted_base[1]
+            lex_ceiling = max(0.02, 0.10 * (1.0 - min(top2_gap / 0.10, 1.0)))
+        else:
+            lex_ceiling = 0.02
+
+        sorted_lex = sorted(lex_scores, reverse=True)
+        lex_spread = (sorted_lex[0] - sorted_lex[1]) if len(sorted_lex) >= 2 else 0.0
+        if lex_spread < 0.03:
+            lex_ceiling = min(lex_ceiling, 0.03)
+
+        # Pass 2: compute final SA-RWF with gated lexical bonus
         scored = []
         for sem_rank_0, result in enumerate(results):
-            sem_rank = sem_rank_0 + 1  # 1-based
-            bge_rank = bge_rank_of.get(sem_rank_0, fallback_bge_rank)
-            rwf_score = 0.7 / sem_rank + 0.3 / bge_rank
+            base_rwf = base_rwf_scores[sem_rank_0]
+            lex_norm = (lex_scores[sem_rank_0] / max_lex * lex_ceiling) if max_lex > 0.01 else 0.0
+            rwf_score = base_rwf + lex_norm
             scored.append((rwf_score, sem_rank_0, result))
 
         scored.sort(key=lambda x: -x[0])
@@ -5142,6 +5471,16 @@ class PersistentAIMemorySystem:
             "noise":            0.1,
         }
         _BOOST_SCALE = 0.10  # Sprint 9: reduced so semantic cosine dominates; max boost = 0.10
+        # Sprint A — A2: Adaptive boost scale based on corpus size.
+        # With a large corpus (>500 results), many candidates share similar cosine
+        # scores and the fixed 0.10 boost can invert rankings.  Scale it down as
+        # the candidate pool grows so cosine similarity dominates the ordering.
+        _corpus_size = len(results)
+        if _corpus_size > 1000:
+            _BOOST_SCALE = 0.03   # large corpus: almost pure cosine
+        elif _corpus_size > 500:
+            _BOOST_SCALE = 0.05   # medium corpus: gentle metadata hint
+        # else: keep default 0.10 for small corpora where metadata disambiguation helps
         for result in results:
             mt = result["data"].get("memory_type", "general")
             imp = result["data"]["importance_level"]
@@ -5538,6 +5877,9 @@ class PersistentAIMemorySystem:
             tag_tokens.update(self._build_normalized_token_set(str(tag)))
         tag_overlap = len(normalized_query_tokens & tag_tokens)
         tag_boost = min(tag_overlap * 0.04, 0.12)
+
+        # Sprint F: removed content-specificity boost (too blunt, query-independent
+        # boost helped imposters with code identifiers equally)
 
         return min((token_coverage * 0.22) + (fuzzy_coverage * 0.12) + phrase_boost + identifier_boost + tag_boost, 0.55)
 

@@ -1493,7 +1493,7 @@ class AIMemoryMCPServer:
 
 
 
-async def start_http_server(mcp_server: AIMemoryMCPServer, host: str = "127.0.0.1", port: int = 11434):
+async def start_http_server(mcp_server: AIMemoryMCPServer, host: str = "127.0.0.1", port: int = 11435):
     """Start the HTTP API server with SSE real-time events for the dashboard."""
     try:
         from fastapi import FastAPI
@@ -1591,7 +1591,7 @@ async def main():
     
     # --http-only flag: start HTTP/SSE server standalone (for dashboard use without MCP client)
     if "--http-only" in sys.argv:
-        logger.info("HTTP-only mode: starting SSE server on :11434 (no stdio)")
+        logger.info("HTTP-only mode: starting SSE server on :11435 (no stdio)")
         await start_http_server(mcp_server)
         return
 

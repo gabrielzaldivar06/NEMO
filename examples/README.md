@@ -46,6 +46,35 @@ python examples/benchmark_memory.py --profile baseline --query-mode all
 python examples/benchmark_memory.py --profile stress --keep-data --corpus-size 10000 --batch-size 200 --concurrency 16 --limit 10
 ```
 
+#### `benchmark_prod.py`
+- **Purpose**: Ultra-fast production-condition benchmark for retrieval quality
+- **Demonstrates**: Clean vs confusory queries over a compact 24-memory corpus with imposters and no filler noise
+- **Best for**: Fast CI-friendly checks and realistic imposter-intercept measurement
+- **Key features**: Reports Top-1 clean, Top-1 adversarial, imposter intercept rate, score-gap confidence, and latency metrics in under a minute on a healthy local setup
+
+Quick command:
+```bash
+python examples/benchmark_prod.py --limit 10
+```
+
+#### `benchmark_nemo_suite.py`
+- **Purpose**: Competitive benchmark suite aligned with the public metric categories used by tools like Mem0 and Zep
+- **Demonstrates**: Top-1 accuracy, Recall@k, MRR, median/P95 latency, end-to-end latency, estimated or provider-reported token counts, accuracy vs context size, accuracy vs retrieval latency, and adversarial hit rate / imposter intercept rate
+- **Best for**: Showable benchmark runs, release reports, competitive positioning, and benchmarking ranking changes against a stable scorecard
+- **Key features**: Reuses the existing baseline, production, entropy, and optional stress benchmarks, then adds a production-style context sweep to expose the quality/latency/token frontier in a single JSON report
+
+Quick commands:
+```bash
+# Recommended default suite
+python examples/benchmark_nemo_suite.py
+
+# Full suite including large noisy stress profile
+python examples/benchmark_nemo_suite.py --preset full
+
+# Enable answer-generation stage for true end-to-end latency if a chat endpoint is configured
+python examples/benchmark_nemo_suite.py --enable-answer-stage
+```
+
 ## Use Case Examples
 
 ### 🤖 AI Assistant Memory
