@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import os
 import json
+import re
 
 from tag_manager import TagManager
 
@@ -297,10 +298,15 @@ class DatabaseMaintenance:
             # Create new database with same schema
             new_conn = sqlite3.connect(str(new_db_path))
             new_cursor = new_conn.cursor()
+
+            def _normalize_create_sql(sql: str) -> str:
+                normalized = re.sub(r"^CREATE TABLE(?! IF NOT EXISTS)", "CREATE TABLE IF NOT EXISTS", sql, count=1, flags=re.IGNORECASE)
+                normalized = re.sub(r"^CREATE VIRTUAL TABLE(?! IF NOT EXISTS)", "CREATE VIRTUAL TABLE IF NOT EXISTS", normalized, count=1, flags=re.IGNORECASE)
+                return normalized
             
             for table_name, create_sql in tables:
                 logger.debug(f"Creating table {table_name} in new database")
-                new_cursor.execute(create_sql)
+                new_cursor.execute(_normalize_create_sql(create_sql))
             
             # Recreate indexes (excluding internal sqlite indexes)
             source_conn = sqlite3.connect(source_db_path)
@@ -312,6 +318,8 @@ class DatabaseMaintenance:
             
             for (index_sql,) in indexes:
                 try:
+                    index_sql = re.sub(r"^CREATE INDEX(?! IF NOT EXISTS)", "CREATE INDEX IF NOT EXISTS", index_sql, count=1, flags=re.IGNORECASE)
+                    index_sql = re.sub(r"^CREATE UNIQUE INDEX(?! IF NOT EXISTS)", "CREATE UNIQUE INDEX IF NOT EXISTS", index_sql, count=1, flags=re.IGNORECASE)
                     logger.debug(f"Creating index: {index_sql[:50]}...")
                     new_cursor.execute(index_sql)
                 except Exception as e:
@@ -2060,6 +2068,20 @@ class DatabaseMaintenance:
     async def _cleanup_memory_links(self) -> Dict:
         """Clean up memory-conversation links and remove only orphaned entries (disabled time-based deletion)"""
         policy = self.retention_policies["memory_conversation_links"]
+
+        table_exists = await self.memory_system.conversations_db.execute_query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_conversation_links'",
+            ()
+        )
+        if not table_exists:
+            return {
+                "policy_applied": policy,
+                "skipped": True,
+                "reason": "memory_conversation_links table not present in this schema",
+                "links_before": 0,
+                "links_after": 0,
+                "links_deleted": 0,
+            }
         
         before_count = len(await self.memory_system.conversations_db.execute_query(
             "SELECT link_id FROM memory_conversation_links", ()
@@ -2195,7 +2217,18 @@ class DatabaseMaintenance:
         results["duplicate_messages_removed"] = duplicate_messages
 
         # Deduplicate curated memories by (content, memory_type, source_conversation_id, memory_bank), keep entry with earliest timestamp_created
-        dedup_query_memories = '''
+        memory_columns = await self.memory_system.ai_memory_db.execute_query(
+            "PRAGMA table_info(curated_memories)",
+            ()
+        )
+        has_memory_bank = any(row.get("name") == "memory_bank" for row in memory_columns)
+        memory_bank_clause = (
+            "AND (m2.memory_bank IS m1.memory_bank OR (m2.memory_bank IS NULL AND m1.memory_bank IS NULL))"
+            if has_memory_bank else
+            ""
+        )
+
+        dedup_query_memories = f'''
             DELETE FROM curated_memories
             WHERE memory_id NOT IN (
                 SELECT memory_id FROM (
@@ -2207,7 +2240,7 @@ class DatabaseMaintenance:
                         WHERE m2.content = m1.content
                           AND m2.memory_type = m1.memory_type
                           AND (m2.source_conversation_id IS m1.source_conversation_id OR (m2.source_conversation_id IS NULL AND m1.source_conversation_id IS NULL))
-                          AND (m2.memory_bank IS m1.memory_bank OR (m2.memory_bank IS NULL AND m1.memory_bank IS NULL))
+                          {memory_bank_clause}
                     )
                 )
             )
@@ -2495,13 +2528,22 @@ class DatabaseMaintenance:
             total_memories = 0
             
             try:
-                # Query main database for memory counts per bank
-                query = """
-                    SELECT memory_bank, COUNT(*) as count 
-                    FROM curated_memories 
-                    GROUP BY memory_bank
-                """
-                results_from_db = await self.memory_system.ai_memories_db.execute_query(query, ())
+                memory_columns = await self.memory_system.ai_memory_db.execute_query(
+                    "PRAGMA table_info(curated_memories)",
+                    ()
+                )
+                has_memory_bank = any(row.get("name") == "memory_bank" for row in memory_columns)
+
+                if has_memory_bank:
+                    query = """
+                        SELECT COALESCE(memory_bank, 'General') as memory_bank, COUNT(*) as count 
+                        FROM curated_memories 
+                        GROUP BY COALESCE(memory_bank, 'General')
+                    """
+                else:
+                    query = "SELECT 'General' as memory_bank, COUNT(*) as count FROM curated_memories"
+
+                results_from_db = await self.memory_system.ai_memory_db.execute_query(query, ())
                 
                 if results_from_db:
                     for row in results_from_db:

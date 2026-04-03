@@ -66,6 +66,7 @@ import subprocess
 import time
 import socket
 import difflib
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timezone, timedelta, tzinfo
 from pathlib import Path
@@ -3822,6 +3823,13 @@ class PersistentAIMemorySystem:
         # ---------------------------------------------------------------------------
         # Sprint 8: Memory Consolidation threshold (feature #6)
         # Memories with cosine > this at write-time are flagged as near-duplicates
+
+        # Runtime policy adjustments learned from prior reflections.
+        self._runtime_learning_state = {
+            "embed_cache_max": getattr(self.embedding_service, "_embed_cache_max", 256),
+            "bg_embed_max": self._BG_EMBED_MAX,
+            "embed_cooldown_max": getattr(self.embedding_service, "_EMBED_COOLDOWN_MAX", 45.0),
+        }
         # even if below the hard dedup threshold (0.92). Range: (dedup_thresh, 0.92)
         # ---------------------------------------------------------------------------
         self._consolidation_threshold: float = 0.82
@@ -4427,6 +4435,280 @@ class PersistentAIMemorySystem:
         """Get comprehensive tool usage summary"""
         
         return await self.mcp_db.get_tool_usage_summary(days)
+
+    async def reflect_on_tool_usage(self, days: int = 7, client_id: str = None) -> Dict:
+        """Analyze recent MCP tool usage and persist a reflection.
+
+        This is the missing bridge between raw tool-call telemetry and actual
+        learning. It summarizes recent usage, identifies the busiest tools,
+        error-prone tools, and slow tools, then stores a reflection that later
+        sessions can retrieve.
+        """
+        try:
+            history_limit = max(100, days * 80)
+            history = await self.mcp_db.get_tool_call_history(limit=history_limit)
+            if client_id:
+                history = [row for row in history if row.get("client_id") == client_id]
+
+            if not history:
+                return {
+                    "status": "success",
+                    "message": "No tool-call history available for reflection",
+                    "period_days": days,
+                    "reflection_created": False,
+                }
+
+            total_calls = len(history)
+            tool_counts = Counter(row.get("tool_name", "unknown") for row in history)
+            status_counts = Counter(row.get("status", "unknown") for row in history)
+            error_rows = [row for row in history if row.get("status") == "error"]
+
+            exec_samples: Dict[str, List[float]] = {}
+            for row in history:
+                tool_name = row.get("tool_name", "unknown")
+                execution_ms = row.get("execution_time_ms")
+                if execution_ms is None:
+                    continue
+                exec_samples.setdefault(tool_name, []).append(float(execution_ms))
+
+            slow_tools = []
+            for tool_name, samples in exec_samples.items():
+                if not samples:
+                    continue
+                avg_ms = sum(samples) / len(samples)
+                if avg_ms >= 1000:
+                    slow_tools.append({
+                        "tool_name": tool_name,
+                        "avg_execution_time_ms": round(avg_ms, 2),
+                        "sample_count": len(samples),
+                    })
+            slow_tools.sort(key=lambda item: item["avg_execution_time_ms"], reverse=True)
+
+            error_counts = Counter(row.get("tool_name", "unknown") for row in error_rows)
+            top_tools = tool_counts.most_common(5)
+            top_errors = error_counts.most_common(3)
+            error_rate = round(len(error_rows) / total_calls, 4) if total_calls else 0.0
+
+            insights = []
+            recommendations = []
+
+            if top_tools:
+                insights.append(
+                    f"Most-used tool: {top_tools[0][0]} ({top_tools[0][1]} calls in the last {days} day(s))"
+                )
+            if error_rate > 0:
+                insights.append(f"Observed error rate: {error_rate:.2%} across {total_calls} tool calls")
+            if slow_tools:
+                slow_summary = ", ".join(
+                    f"{item['tool_name']} ({item['avg_execution_time_ms']:.0f}ms avg)"
+                    for item in slow_tools[:3]
+                )
+                insights.append(f"Slow tools detected: {slow_summary}")
+            if top_errors:
+                error_summary = ", ".join(f"{name} ({count})" for name, count in top_errors)
+                insights.append(f"Error concentration by tool: {error_summary}")
+
+            if error_rate >= 0.10:
+                recommendations.append("Prioritize reliability work on the tools generating repeated failures")
+            if slow_tools:
+                recommendations.append("Move heavy operations to background workers or cache hot paths")
+            if tool_counts.get("prime_context", 0) == 0:
+                recommendations.append("Enforce prime_context at session start to avoid blind responses")
+            if tool_counts.get("write_ai_insights", 0) == 0 and total_calls >= 10:
+                recommendations.append("Persist reflection summaries more often so improvements survive across sessions")
+
+            if not insights:
+                insights.append("Tool usage is stable but lacks enough signal for a stronger pattern")
+
+            content = (
+                f"Tool usage reflection for the last {days} day(s): {total_calls} total calls, "
+                f"{len(error_rows)} errors, most-used tools {top_tools[:3]}."
+            )
+
+            reflection_id = await self.mcp_db.store_ai_reflection(
+                "tool_usage_analysis",
+                content,
+                insights=insights,
+                recommendations=recommendations,
+                confidence_level=0.82 if total_calls >= 20 else 0.68,
+                source_period_days=days,
+            )
+
+            if top_tools:
+                await self.mcp_db.store_usage_pattern(
+                    pattern_type="tool_dominance",
+                    insight=f"{top_tools[0][0]} dominates recent workflows with {top_tools[0][1]} calls",
+                    analysis_period_days=days,
+                    confidence_score=0.78,
+                    supporting_data={
+                        "top_tools": [{"tool_name": name, "count": count} for name, count in top_tools],
+                        "total_calls": total_calls,
+                        "client_id": client_id,
+                    },
+                )
+
+            if top_errors:
+                await self.mcp_db.store_usage_pattern(
+                    pattern_type="error_hotspots",
+                    insight=f"Repeated failures cluster in: {', '.join(name for name, _ in top_errors)}",
+                    analysis_period_days=days,
+                    confidence_score=0.74,
+                    supporting_data={
+                        "top_errors": [{"tool_name": name, "count": count} for name, count in top_errors],
+                        "error_rate": error_rate,
+                        "client_id": client_id,
+                    },
+                )
+
+            return {
+                "status": "success",
+                "reflection_created": True,
+                "reflection_id": reflection_id,
+                "period_days": days,
+                "total_calls": total_calls,
+                "error_rate": error_rate,
+                "top_tools": [{"tool_name": name, "count": count} for name, count in top_tools],
+                "slow_tools": slow_tools[:5],
+                "insights": insights,
+                "recommendations": recommendations,
+            }
+        except Exception as e:
+            logger.error(f"Error reflecting on tool usage: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def run_incremental_learning_cycle(self, days: int = 7) -> Dict:
+        """Run a lightweight learning pass based on stored reflections and usage patterns.
+
+        The goal is not to retrain a model but to continuously consolidate
+        operational knowledge into reflections, patterns, and project insights.
+        """
+        try:
+            reflection_result = await self.reflect_on_tool_usage(days=days)
+            recent_reflections = await self.mcp_db.get_recent_reflections(limit=12)
+
+            repeated_keywords = Counter()
+            for item in recent_reflections:
+                reflection_type = (item.get("reflection_type") or "general").strip().lower()
+                repeated_keywords[reflection_type] += 1
+                recommendations_json = item.get("recommendations")
+                if recommendations_json:
+                    try:
+                        for rec in json.loads(recommendations_json):
+                            normalized = str(rec).strip().lower()
+                            if normalized:
+                                repeated_keywords[normalized] += 1
+                    except Exception:
+                        pass
+
+            learned_patterns = []
+            for label, count in repeated_keywords.most_common(3):
+                if count < 2:
+                    continue
+                learned_patterns.append({"signal": label, "frequency": count})
+
+            if learned_patterns:
+                summary = "; ".join(f"{item['signal']} x{item['frequency']}" for item in learned_patterns)
+                await self.mcp_db.store_ai_reflection(
+                    "incremental_learning",
+                    f"Incremental learning cycle detected repeated operational signals: {summary}",
+                    insights=[f"Repeated pattern: {item['signal']} ({item['frequency']}x)" for item in learned_patterns],
+                    recommendations=[
+                        "Promote repeated operational signals into stable defaults or background automation"
+                    ],
+                    confidence_level=0.72,
+                    source_period_days=days,
+                )
+
+            adjustments = await self.apply_reflection_learnings(days=days)
+
+            return {
+                "status": "success",
+                "reflection_result": reflection_result,
+                "learned_patterns": learned_patterns,
+                "recent_reflection_count": len(recent_reflections),
+                "runtime_adjustments": adjustments,
+            }
+        except Exception as e:
+            logger.error(f"Incremental learning cycle failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def apply_reflection_learnings(self, days: int = 7) -> Dict:
+        """Translate repeated reflections into runtime policy adjustments.
+
+        This keeps the adaptation lightweight and reversible: it tunes cache sizes,
+        background parallelism, and cooldown behavior for the current process.
+        """
+        try:
+            rows = await self.mcp_db.execute_query(
+                """SELECT reflection_type, content, insights, recommendations
+                   FROM ai_reflections
+                   WHERE timestamp >= datetime('now', ?)
+                   ORDER BY timestamp DESC
+                   LIMIT 50""",
+                (f"-{days} days",)
+            )
+
+            signals = Counter()
+            for raw_row in rows:
+                row = dict(raw_row)
+                reflection_type = (row.get("reflection_type") or "general").lower()
+                signals[reflection_type] += 1
+                for key in ("content",):
+                    text = (row.get(key) or "").lower()
+                    if "cache hot paths" in text:
+                        signals["cache_hot_paths"] += 1
+                    if "background workers" in text:
+                        signals["background_workers"] += 1
+                    if "reliability" in text or "failures" in text or "error" in text:
+                        signals["reliability"] += 1
+                for key in ("insights", "recommendations"):
+                    payload = row.get(key)
+                    if not payload:
+                        continue
+                    try:
+                        values = json.loads(payload)
+                    except Exception:
+                        continue
+                    for value in values:
+                        text = str(value).lower()
+                        if "cache" in text:
+                            signals["cache_hot_paths"] += 1
+                        if "background" in text:
+                            signals["background_workers"] += 1
+                        if "reliability" in text or "failure" in text or "error" in text:
+                            signals["reliability"] += 1
+
+            applied = {}
+
+            if signals["cache_hot_paths"] >= 2:
+                new_cache_max = max(getattr(self.embedding_service, "_embed_cache_max", 256), 512)
+                self.embedding_service._embed_cache_max = new_cache_max
+                self._runtime_learning_state["embed_cache_max"] = new_cache_max
+                applied["embed_cache_max"] = new_cache_max
+
+            if signals["background_workers"] >= 2:
+                new_bg_limit = max(self._BG_EMBED_MAX, 8)
+                if new_bg_limit != self._BG_EMBED_MAX:
+                    self._BG_EMBED_MAX = new_bg_limit
+                    self._bg_embed_semaphore = asyncio.Semaphore(self._BG_EMBED_MAX)
+                self._runtime_learning_state["bg_embed_max"] = self._BG_EMBED_MAX
+                applied["bg_embed_max"] = self._BG_EMBED_MAX
+
+            if signals["reliability"] >= 2:
+                new_cooldown = min(getattr(self.embedding_service, "_EMBED_COOLDOWN_MAX", 45.0), 20.0)
+                self.embedding_service._EMBED_COOLDOWN_MAX = new_cooldown
+                self._runtime_learning_state["embed_cooldown_max"] = new_cooldown
+                applied["embed_cooldown_max"] = new_cooldown
+
+            return {
+                "status": "success",
+                "signals": dict(signals),
+                "applied": applied,
+                "runtime_state": dict(self._runtime_learning_state),
+            }
+        except Exception as e:
+            logger.error(f"Failed to apply reflection learnings: {e}")
+            return {"status": "error", "message": str(e)}
 
     async def get_ai_insights(self, limit: int = 10, reflection_type: str = None, insight_type: str = None) -> Dict:
         """Unified method to retrieve AI insights and reflections from both MCP and VS Code project databases."""

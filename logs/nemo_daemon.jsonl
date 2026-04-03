@@ -1,0 +1,3 @@
+{"ts": "2026-04-01T18:20:55", "event_type": "daemon_logging_configured", "log_path": "C:\\dev\\memory persistence\\persistent-ai-memory\\logs\\nemo_daemon.log", "jsonl_path": "C:\\dev\\memory persistence\\persistent-ai-memory\\logs\\nemo_daemon.jsonl"}
+{"ts": "2026-04-01T18:20:55", "event_type": "daemon_starting"}
+{"ts": "2026-04-01T18:20:55", "event_type": "startup_reflection_learning_applied", "adjustments": {"status": "success", "signals": {}, "applied": {}, "runtime_state": {"embed_cache_max": 256, "bg_embed_max": 6, "embed_cooldown_max": 45.0}}}
