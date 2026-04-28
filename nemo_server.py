@@ -44,10 +44,68 @@ sse_transport = SseServerTransport("/mcp/messages/")
 nemo: AIMemoryMCPServer | None = None
 
 
+def _apply_settings_overrides_from_env() -> None:
+    """Bridge env vars → settings module under pydantic-settings v2.
+
+    The upstream ``settings.py`` declares fields with the legacy
+    ``Field(env="AI_MEMORY_…")`` syntax. Pydantic-settings v2 — which we pin
+    in requirements-docker.txt — silently ignores that argument and falls
+    back to the field default, so users who set ``AI_MEMORY_DATA_DIR`` or
+    ``AI_MEMORY_ENABLE_MONITORING`` (etc.) in their environment would see no
+    effect.
+
+    Rather than patching the upstream module, we read the env vars
+    explicitly here and feed them through ``update_settings`` before the
+    NEMO core boots. Limited to the variables that actually matter inside
+    the container.
+    """
+    try:
+        from settings import update_settings  # local, optional
+    except Exception as exc:
+        logger.debug("Settings module not available for env-override shim: %s", exc)
+        return
+
+    overrides: Dict[str, Any] = {}
+
+    raw_data_dir = os.environ.get("AI_MEMORY_DATA_DIR")
+    if raw_data_dir:
+        from pathlib import Path
+        overrides["data_dir"] = Path(raw_data_dir)
+
+    raw_monitor = os.environ.get("AI_MEMORY_ENABLE_MONITORING")
+    if raw_monitor is not None:
+        overrides["enable_file_monitoring"] = raw_monitor.strip().lower() in {"1", "true", "yes", "on"}
+
+    raw_log = os.environ.get("AI_MEMORY_LOG_LEVEL")
+    if raw_log:
+        overrides["log_level"] = raw_log.upper()
+
+    for env_name, field, cast in (
+        ("AI_MEMORY_CONV_RETENTION_DAYS", "conversation_retention_days", int),
+        ("AI_MEMORY_MEMORY_RETENTION_DAYS", "memory_retention_days", int),
+        ("AI_MEMORY_SIMILARITY_THRESHOLD", "search_similarity_threshold", float),
+    ):
+        raw = os.environ.get(env_name)
+        if raw is not None:
+            try:
+                overrides[field] = cast(raw)
+            except ValueError:
+                logger.warning("Ignoring %s=%r (not a valid %s)", env_name, raw, cast.__name__)
+
+    if overrides:
+        try:
+            update_settings(**overrides)
+            logger.info("Applied settings overrides from env: %s", sorted(overrides))
+        except Exception:
+            logger.warning("Could not apply env overrides; using defaults", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Build NEMO inside the running event loop."""
     global nemo
+
+    _apply_settings_overrides_from_env()
 
     logger.info("Booting NEMO core…")
     nemo = AIMemoryMCPServer()
@@ -79,9 +137,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS — default to same-host origins only.
+#
+# An open `*` policy combined with allow_credentials=True is unsafe: any
+# page the user happens to load in their browser could fetch /api/memory/*
+# from this server (and, before the LAN-bind fix below, also from another
+# machine on the same network). MCP clients (Claude Desktop, Cursor, …),
+# server-to-server callers, and `curl` are not subject to CORS, so this
+# restriction does not affect them. Set NEMO_CORS_ORIGINS="*" explicitly
+# only if you understand the risk (e.g. all-localhost dev).
+_nemo_port = os.getenv("NEMO_PORT", "8765")
+_default_cors = ",".join((
+    f"http://localhost:{_nemo_port}",
+    f"http://127.0.0.1:{_nemo_port}",
+    f"http://[::1]:{_nemo_port}",
+))
+_cors_origins = [o.strip() for o in os.getenv("NEMO_CORS_ORIGINS", _default_cors).split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("NEMO_CORS_ORIGINS", "*").split(","),
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

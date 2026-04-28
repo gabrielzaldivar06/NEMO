@@ -21,7 +21,12 @@ services:
     container_name: nemo
     restart: unless-stopped
     ports:
-      - "${NEMO_HOST_PORT:-8765}:8765"
+      # Bind to localhost only by default — the container is reachable from
+      # this machine, NOT from the LAN. To expose NEMO on your local network
+      # (or any other interface), set NEMO_BIND_ADDRESS=0.0.0.0 in your .env.
+      # Doing so means anyone who can reach your IP can read every memory
+      # without authentication, so only enable it on a trusted network.
+      - "${NEMO_BIND_ADDRESS:-127.0.0.1}:${NEMO_HOST_PORT:-8765}:8765"
     environment:
       # --- Core ---
       NEMO_HOST: 0.0.0.0

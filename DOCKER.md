@@ -92,6 +92,33 @@ curl -X POST http://localhost:8765/api/tools/prime_context \
 
 ---
 
+## Consideraciones de seguridad
+
+NEMO guarda **todo** lo que decides recordar — preferencias, decisiones, fragmentos de
+conversaciones, recordatorios. Trátalo como datos personales sensibles. Los defaults
+están pensados para uso individual en un equipo de confianza.
+
+### Defaults seguros
+
+- **Bind a `127.0.0.1`** (loopback). El contenedor solo es alcanzable desde el equipo donde corre Docker. Tus dispositivos en la misma red WiFi **no** pueden hablarle.
+- **CORS restringido a `localhost`** en sus puertos típicos. Una webpage maliciosa abierta en tu navegador no puede hacer fetch de tus memorias vía cross-origin.
+- **Volúmenes nombrados** propiedad del usuario `nemo` (UID 1000) — no exposición a otros usuarios del equipo si bloqueas tu sesión.
+- **Sin telemetría externa**: NEMO no llama a la nube para nada (los embeddings los procesa el sidecar fastembed dentro del propio contenedor).
+
+### Lo que SÍ deberías hacer si planeas exponer NEMO
+
+- **Para acceso desde otros equipos en tu LAN**: pon `NEMO_BIND_ADDRESS=0.0.0.0` en `.env` y entiende que cualquier persona en esa red puede leer tus memorias sin autenticación. Solo úsalo en redes que controlas (tu casa, una VPN privada).
+- **Para una dashboard en otro puerto** (e.g. desarrollo local en `:3000`): añade `http://localhost:3000` a `NEMO_CORS_ORIGINS=` (lista separada por comas). No uses `*` salvo en redes aisladas.
+- **Si vas a exponer NEMO públicamente** (no recomendado sin las dos cosas siguientes): pon un proxy delante (Caddy, nginx) con autenticación HTTP básica o un OAuth2 proxy, **y** un firewall que limite IPs.
+
+### Limitaciones conocidas (no implementadas todavía)
+
+- **Sin autenticación en `/api/*`** — quien alcance el puerto puede llamar a cualquier tool, incluidas las destructivas (`delete_reminder`, `cancel_appointment`). El bind por loopback mitiga el riesgo en ~95 % de los casos. Una capa de bearer-token opcional vía `NEMO_AUTH_TOKEN` está pendiente.
+- **Sin rate-limiting** — un cliente malicioso local puede saturar el servidor. Mitigado en la práctica por el bind a loopback.
+- **Sin cifrado at-rest** de las bases SQLite. Si tu disco es accesible por terceros (laptop robada, backups en cloud sin cifrar), las memorias son texto plano. Cifra el filesystem si te preocupa.
+
+---
+
 ## Perfil GPU (opcional)
 
 ¿Tienes GPU NVIDIA y quieres máximo rendimiento en embeddings? Añade el override:
