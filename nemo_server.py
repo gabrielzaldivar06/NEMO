@@ -1,13 +1,12 @@
 """
 NEMO universal server — single process, single port.
 
-Serves three things on the same port:
+Serves on the same port:
   /mcp/sse            MCP over Server-Sent Events   (Claude, Cursor, Windsurf, Cline, VS Code …)
   /mcp/messages/      MCP POST sink for SSE clients
   /api/*              REST API + OpenAPI schema     (ChatGPT custom GPTs, Gemini, LangChain, curl …)
   /embed/v1/…         In-process fastembed sidecar  (only used when EMBEDDING_PROVIDER=custom)
   /health             Liveness + readiness probe
-  /events             Dashboard SSE bus (reused from existing ai_memory_mcp_server.py)
 
 Run:
   python nemo_server.py                  # defaults to 0.0.0.0:8765
@@ -33,7 +32,9 @@ from mcp.server.sse import SseServerTransport
 from mcp.server import NotificationOptions
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+# Normalise to upper-case so users can pass `info`/`INFO`/`Info` interchangeably
+# from .env or compose without tripping Python's case-sensitive level lookup.
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 
 
 # ─── SSE transport is safe to build at module load (no async required) ──────
@@ -43,10 +44,68 @@ sse_transport = SseServerTransport("/mcp/messages/")
 nemo: AIMemoryMCPServer | None = None
 
 
+def _apply_settings_overrides_from_env() -> None:
+    """Bridge env vars → settings module under pydantic-settings v2.
+
+    The upstream ``settings.py`` declares fields with the legacy
+    ``Field(env="AI_MEMORY_…")`` syntax. Pydantic-settings v2 — which we pin
+    in ``docker/requirements-docker.txt`` — silently ignores that argument
+    and falls back to the field default, so users who set
+    ``AI_MEMORY_DATA_DIR`` or ``AI_MEMORY_ENABLE_MONITORING`` (etc.) in
+    their environment would see no effect.
+
+    Rather than patching the upstream module, we read the env vars
+    explicitly here and feed them through ``update_settings`` before the
+    NEMO core boots. Limited to the variables that actually matter inside
+    the container.
+    """
+    try:
+        from settings import update_settings  # local, optional
+    except Exception as exc:
+        logger.debug("Settings module not available for env-override shim: %s", exc)
+        return
+
+    overrides: Dict[str, Any] = {}
+
+    raw_data_dir = os.environ.get("AI_MEMORY_DATA_DIR")
+    if raw_data_dir:
+        from pathlib import Path
+        overrides["data_dir"] = Path(raw_data_dir)
+
+    raw_monitor = os.environ.get("AI_MEMORY_ENABLE_MONITORING")
+    if raw_monitor is not None:
+        overrides["enable_file_monitoring"] = raw_monitor.strip().lower() in {"1", "true", "yes", "on"}
+
+    raw_log = os.environ.get("AI_MEMORY_LOG_LEVEL")
+    if raw_log:
+        overrides["log_level"] = raw_log.upper()
+
+    for env_name, field, cast in (
+        ("AI_MEMORY_CONV_RETENTION_DAYS", "conversation_retention_days", int),
+        ("AI_MEMORY_MEMORY_RETENTION_DAYS", "memory_retention_days", int),
+        ("AI_MEMORY_SIMILARITY_THRESHOLD", "search_similarity_threshold", float),
+    ):
+        raw = os.environ.get(env_name)
+        if raw is not None:
+            try:
+                overrides[field] = cast(raw)
+            except ValueError:
+                logger.warning("Ignoring %s=%r (not a valid %s)", env_name, raw, cast.__name__)
+
+    if overrides:
+        try:
+            update_settings(**overrides)
+            logger.info("Applied settings overrides from env: %s", sorted(overrides))
+        except Exception:
+            logger.warning("Could not apply env overrides; using defaults", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Build NEMO inside the running event loop."""
     global nemo
+
+    _apply_settings_overrides_from_env()
 
     logger.info("Booting NEMO core…")
     nemo = AIMemoryMCPServer()
@@ -78,9 +137,35 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS — default to same-host origins only.
+#
+# An open `*` policy combined with allow_credentials=True is unsafe: any
+# page the user happens to load in their browser could fetch /api/memory/*
+# from this server (and, before the LAN-bind fix below, also from another
+# machine on the same network). MCP clients (Claude Desktop, Cursor, …),
+# server-to-server callers, and `curl` are not subject to CORS, so this
+# restriction does not affect them. Set NEMO_CORS_ORIGINS="*" explicitly
+# only if you understand the risk (e.g. all-localhost dev).
+#
+# The default origins are computed from the *browser-visible* port, not the
+# container's internal listen port — when the published host port differs
+# from NEMO_PORT (e.g. you ran `docker compose up` with NEMO_HOST_PORT=9000)
+# the browser sends `Origin: http://localhost:9000`, not `:8765`. Resolution
+# order: NEMO_EXTERNAL_PORT (explicit override, e.g. for an HTTPS proxy on
+# 443/8443) → NEMO_HOST_PORT (auto-injected by docker-compose.yml) →
+# NEMO_PORT (the container's own port; correct fallback for plain-Python
+# deployments where there is no separate host mapping).
+_nemo_port = os.getenv("NEMO_PORT", "8765")
+_browser_port = os.getenv("NEMO_EXTERNAL_PORT") or os.getenv("NEMO_HOST_PORT") or _nemo_port
+_default_cors = ",".join((
+    f"http://localhost:{_browser_port}",
+    f"http://127.0.0.1:{_browser_port}",
+    f"http://[::1]:{_browser_port}",
+))
+_cors_origins = [o.strip() for o in os.getenv("NEMO_CORS_ORIGINS", _default_cors).split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("NEMO_CORS_ORIGINS", "*").split(","),
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -225,9 +310,37 @@ async def prime_context(topic: str | None = None):
 
 
 # ─── MCP over SSE ───────────────────────────────────────────────────────────
-@app.get("/mcp/sse", tags=["mcp"])
-async def mcp_sse_endpoint(request: Request):
-    """MCP Server-Sent Events endpoint. Connect Claude/Cursor/etc here."""
+# Why this handler accesses ``request._send``:
+#
+#   The MCP SDK's ``SseServerTransport.connect_sse(scope, receive, send)``
+#   context manager needs the raw ASGI ``send`` callable to stream events back
+#   to the client. Starlette's ``Request`` exposes ``scope`` and ``receive``
+#   as public attributes but stores the ASGI ``send`` as ``_send`` (set in
+#   ``Request.__init__``).  This attribute is stable across Starlette versions
+#   and is the pattern documented in the official MCP Python SDK README:
+#       https://github.com/modelcontextprotocol/python-sdk
+#       (search “SseServerTransport” in the README — the example handler does
+#        ``request.scope, request.receive, request._send``).
+#
+#   An earlier iteration of this server mounted the SSE handler as a raw ASGI
+#   callable to avoid the underscore-prefixed attribute, but Starlette's Mount
+#   semantics caused a 307 redirect on ``/mcp/sse`` → ``/mcp/sse/`` that
+#   confuses several MCP clients on long-lived SSE connections. Going back to
+#   ``add_route`` with ``request._send`` matches the SDK example exactly,
+#   keeps the URL clean (no redirect), and is what the rest of the ecosystem
+#   does.
+#
+# Why we do *not* propagate the User-Agent header into client detection:
+#
+#   ``AIMemoryMCPServer._detect_client_type()`` reads
+#   ``os.environ["USER_AGENT"]`` — a process-global. Setting it per request
+#   would race between overlapping SSE connections (one client could observe
+#   another client's tool set). The universal HTTP server therefore exposes
+#   the common tool set to every caller; client-specific extras still apply
+#   in the legacy stdio entry point, where ``USER_AGENT`` is set once at
+#   startup by the launching client.
+@app.get("/mcp/sse", include_in_schema=False)
+async def mcp_sse_endpoint(request: Request) -> Response:
     if nemo is None:
         raise HTTPException(status_code=503, detail="MCP not ready")
 
@@ -254,7 +367,7 @@ async def mcp_sse_endpoint(request: Request):
 
 # POST sink for MCP SSE clients. Mounted as an ASGI sub-app because
 # SseServerTransport.handle_post_message is itself an ASGI callable.
-app.mount("/mcp/messages", sse_transport.handle_post_message)
+app.mount("/mcp/messages/", sse_transport.handle_post_message)
 
 
 def main() -> None:

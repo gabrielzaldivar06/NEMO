@@ -35,3 +35,5 @@ docker-compose.override.yml
 # Docs that aren't needed at runtime
 *.md
 !README.md
+# Runtime asset — nemo-attach reads it from /app/templates/ inside the image.
+!templates/nemo-rules.md

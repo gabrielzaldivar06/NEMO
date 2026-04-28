@@ -12,13 +12,16 @@ La imagen expone **un solo puerto (`8765`)** con tres interfaces en paralelo:
 
 | Ruta                     | Para qué sirve                                          | Lo consume               |
 |--------------------------|---------------------------------------------------------|--------------------------|
-| `GET /mcp/sse`           | MCP sobre Server-Sent Events                            | Claude Desktop / Code, Cursor, Windsurf, Cline, VS Code Copilot |
-| `POST /mcp/messages/`    | Canal de retorno MCP para los clientes SSE              | (lo usa el cliente MCP automáticamente) |
-| `GET /api/tools`         | Lista de todas las tools con su schema                  | Exploración, LangChain, n8n |
-| `POST /api/tools/{name}` | Ejecuta cualquier tool por nombre                       | ChatGPT custom GPTs, Gemini, scripts |
-| `POST /api/memory/*`     | Atajos REST (`/search`, `/conversation`, `/prime`, …)   | Integraciones simples    |
-| `GET /openapi.json`      | OpenAPI 3 auto-generado                                 | Importar como custom GPT |
-| `GET /health`            | Liveness + readiness probe                              | Docker healthcheck, monitoreo |
+| `GET /mcp/sse`                  | MCP sobre Server-Sent Events                       | Claude Desktop / Code, Cursor, Windsurf, Cline, VS Code Copilot |
+| `POST /mcp/messages/`           | Canal de retorno MCP para los clientes SSE         | (lo usa el cliente MCP automáticamente) |
+| `GET /api/tools`                | Lista de todas las tools con su schema             | Exploración, LangChain, n8n |
+| `POST /api/tools/{name}`        | Ejecuta cualquier tool por nombre                  | ChatGPT custom GPTs, Gemini, scripts |
+| `POST /api/memory`              | Atajo REST: crear memoria curada                   | Integraciones simples    |
+| `POST /api/memory/conversation` | Atajo REST: persistir un mensaje de conversación   | Integraciones simples    |
+| `POST /api/memory/search`       | Atajo REST: búsqueda semántica                     | Integraciones simples    |
+| `GET /api/memory/prime`         | Atajo REST: prime context inicial                  | Integraciones simples    |
+| `GET /openapi.json`             | OpenAPI 3 auto-generado                            | Importar como custom GPT |
+| `GET /health`                   | Liveness + readiness probe                         | Docker healthcheck, monitoreo |
 
 ---
 
@@ -64,7 +67,13 @@ Añade un MCP server remoto apuntando a `http://localhost:8765/mcp/sse`.
 
 ### ChatGPT custom GPT
 En el builder del GPT → **Configure → Actions → Import from URL** →
-`http://localhost:8765/openapi.json`. Las ~45 tools quedan disponibles.
+`http://localhost:8765/openapi.json`. La especificación OpenAPI y las rutas
+REST exponen el **conjunto común** de tools (actualmente ~34). Los extras
+específicos por cliente que existen en `AIMemoryMCPServer._detect_client_type()`
+(por ejemplo, tools adicionales para VS Code o SillyTavern) **solo aplican al
+modo MCP-stdio original** — el servidor universal HTTP no inspecciona el
+`User-Agent` por petición, porque hacerlo de forma proceso-global no sería
+seguro bajo conexiones concurrentes.
 
 ### Gemini / LangChain / n8n / curl
 Llamada HTTP directa (una sola línea para que copy-paste funcione en bash, zsh, PowerShell y cmd):
@@ -76,6 +85,33 @@ Para llamar cualquier tool por nombre:
 ```bash
 curl -X POST http://localhost:8765/api/tools/prime_context -H 'Content-Type: application/json' -d '{"arguments": {"topic": "NEMO"}}'
 ```
+
+---
+
+## Consideraciones de seguridad
+
+NEMO guarda **todo** lo que decides recordar — preferencias, decisiones, fragmentos de
+conversaciones, recordatorios. Trátalo como datos personales sensibles. Los defaults
+están pensados para uso individual en un equipo de confianza.
+
+### Defaults seguros
+
+- **Bind a `127.0.0.1`** (loopback). El contenedor solo es alcanzable desde el equipo donde corre Docker. Tus dispositivos en la misma red WiFi **no** pueden hablarle.
+- **CORS restringido a `localhost`** en sus puertos típicos. Una webpage maliciosa abierta en tu navegador no puede hacer fetch de tus memorias vía cross-origin.
+- **Volúmenes nombrados** propiedad del usuario `nemo` (UID 1000) — no exposición a otros usuarios del equipo si bloqueas tu sesión.
+- **Sin telemetría externa**: NEMO no llama a la nube para nada (los embeddings los procesa el sidecar fastembed dentro del propio contenedor).
+
+### Lo que SÍ deberías hacer si planeas exponer NEMO
+
+- **Para acceso desde otros equipos en tu LAN**: pon `NEMO_BIND_ADDRESS=0.0.0.0` en `.env` y entiende que cualquier persona en esa red puede leer tus memorias sin autenticación. Solo úsalo en redes que controlas (tu casa, una VPN privada).
+- **Para una dashboard en otro puerto** (e.g. desarrollo local en `:3000`): añade `http://localhost:3000` a `NEMO_CORS_ORIGINS=` (lista separada por comas). No uses `*` salvo en redes aisladas.
+- **Si vas a exponer NEMO públicamente** (no recomendado sin las dos cosas siguientes): pon un proxy delante (Caddy, nginx) con autenticación HTTP básica o un OAuth2 proxy, **y** un firewall que limite IPs.
+
+### Limitaciones conocidas (no implementadas todavía)
+
+- **Sin autenticación en `/api/*`** — quien alcance el puerto puede llamar a cualquier tool, incluidas las destructivas (`delete_reminder`, `cancel_appointment`). El bind por loopback mitiga el riesgo en ~95 % de los casos. Una capa de bearer-token opcional vía `NEMO_AUTH_TOKEN` está pendiente.
+- **Sin rate-limiting** — un cliente malicioso local puede saturar el servidor. Mitigado en la práctica por el bind a loopback.
+- **Sin cifrado at-rest** de las bases SQLite. Si tu disco es accesible por terceros (laptop robada, backups en cloud sin cifrar), las memorias son texto plano. Cifra el filesystem si te preocupa.
 
 ---
 

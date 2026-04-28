@@ -21,12 +21,21 @@ services:
     container_name: nemo
     restart: unless-stopped
     ports:
-      - "${NEMO_HOST_PORT:-8765}:8765"
+      # Bind to localhost only by default — the container is reachable from
+      # this machine, NOT from the LAN. To expose NEMO on your local network
+      # (or any other interface), set NEMO_BIND_ADDRESS=0.0.0.0 in your .env.
+      # Doing so means anyone who can reach your IP can read every memory
+      # without authentication, so only enable it on a trusted network.
+      - "${NEMO_BIND_ADDRESS:-127.0.0.1}:${NEMO_HOST_PORT:-8765}:8765"
     environment:
       # --- Core ---
       NEMO_HOST: 0.0.0.0
       NEMO_PORT: 8765
-      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Surfaced into the container so the CORS default in nemo_server.py can
+      # use the browser-visible port (which may differ from NEMO_PORT when the
+      # user remaps the published host port via NEMO_HOST_PORT).
+      NEMO_HOST_PORT: ${NEMO_HOST_PORT:-8765}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # --- Embeddings (default: in-process fastembed) ---
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-custom}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
