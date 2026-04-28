@@ -1,0 +1,56 @@
+# NEMO universal server — default profile (no external services).
+#
+# Embedding runs in-process via fastembed. No GPU, no Ollama, no LM Studio.
+# Works on any machine with Docker. Single command:
+#
+#     docker compose up -d
+#
+# Then point any MCP-aware client at:   http://localhost:8765/mcp/sse
+# REST / OpenAPI schema lives at:       http://localhost:8765/api/tools
+# Auto-generated OpenAPI JSON:          http://localhost:8765/openapi.json
+#
+# For GPU-accelerated embeddings via Ollama:
+#     docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile gpu up -d
+
+services:
+  nemo:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: nemo:local
+    container_name: nemo
+    restart: unless-stopped
+    ports:
+      - "${NEMO_HOST_PORT:-8765}:8765"
+    environment:
+      # --- Core ---
+      NEMO_HOST: 0.0.0.0
+      NEMO_PORT: 8765
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # --- Embeddings (default: in-process fastembed) ---
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-custom}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_CACHE: /models
+      # --- Reranking (off by default) ---
+      RERANK_ENABLED: ${RERANK_ENABLED:-false}
+      # --- File monitoring disabled inside containers ---
+      AI_MEMORY_ENABLE_MONITORING: "false"
+    volumes:
+      # NEMO writes to ~/.ai_memory; the nemo user inside has HOME=/app, so the
+      # actual on-disk path is /app/.ai_memory — that's what we persist.
+      - nemo-data:/app/.ai_memory
+      - nemo-models:/models
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+volumes:
+  nemo-data:
+    name: nemo-data
+  nemo-models:
+    name: nemo-models

@@ -1,0 +1,37 @@
+# Keep the Docker build context small.
+
+.git
+.github
+.gitignore
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Local data — must not leak into image
+.ai_memory
+*.db
+*.db-wal
+*.db-shm
+logs
+*.log
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Existing Docker artifacts
+docker-compose.override.yml
+.env
+
+# Docs that aren't needed at runtime
+*.md
+!README.md

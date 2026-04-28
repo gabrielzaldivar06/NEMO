@@ -1,0 +1,9 @@
+# Extra deps needed only when running NEMO as the containerised universal server.
+# Kept separate from the main requirements.txt so plain-Python users don't pull
+# 200+MB of onnxruntime/fastembed by default.
+
+uvicorn[standard]>=0.35.0
+fastapi>=0.116.0
+sse-starlette>=2.1.0
+pydantic-settings>=2.0.0
+fastembed>=0.3.6
