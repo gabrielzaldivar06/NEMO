@@ -54,12 +54,10 @@ Este es el comando que ejecutas **a diario** — uno por cada proyecto donde qui
 
 ```bash
 cd ~/tu-proyecto-favorito        # el proyecto donde quieres avanzar a velocidades cercanas a la luz 🚀
-
-docker run --rm \
-  --add-host=host.docker.internal:host-gateway \
-  -v "$PWD":/workdir \
-  nemo:local nemo-attach
+docker run --rm --add-host=host.docker.internal:host-gateway -v "$PWD":/workdir nemo:local nemo-attach
 ```
+
+> 📋 **Para pegar:** una sola línea para que copy-paste funcione sin tropiezos en bash, zsh, PowerShell y cmd. En Windows PowerShell, `$PWD` ya resuelve a la ruta actual; en cmd, sustituye `"$PWD"` por `"%cd%"`.
 
 > 🤔 **¿Por qué este comando?** Porque sin él, tu IA *sabe* que NEMO existe (vía la URL configurada en su cliente) pero ~10 % de las veces "se le olvida" llamarla. Lo que este comando instala son los archivos de reglas (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`) que **fuerzan** al modelo a llamar `prime_context` antes de responderte y `create_correction` cuando lo corriges.
 
@@ -159,17 +157,13 @@ Para una prueba más completa que ejercita el ciclo entero (escribir → reinici
 
 ```bash
 # Crea una memoria
-curl -s -X POST http://localhost:8765/api/memory \
-  -H "Content-Type: application/json" \
-  -d '{"content":"smoke-test: NEMO está listo","memory_type":"fact","tags":["smoke"]}'
+curl -s -X POST http://localhost:8765/api/memory -H "Content-Type: application/json" -d '{"content":"smoke-test: NEMO está listo","memory_type":"fact","tags":["smoke"]}'
 
 # Reinicia el contenedor (simula apagar el ordenador)
 docker compose restart nemo && sleep 6
 
 # Búscala — debe aparecer
-curl -s -X POST http://localhost:8765/api/memory/search \
-  -H "Content-Type: application/json" \
-  -d '{"query":"smoke-test","limit":3}'
+curl -s -X POST http://localhost:8765/api/memory/search -H "Content-Type: application/json" -d '{"query":"smoke-test","limit":3}'
 ```
 
 Si la búsqueda recupera la memoria después del `restart`, **la persistencia funciona** y el sistema completo está operativo.
@@ -286,10 +280,7 @@ NEMO funciona sin embeddings (fallback a búsqueda de texto), pero para el pipel
    ```bash
    # Descarga el modelo GGUF de BGE-reranker-v2-m3
    # Inicia con llama-server (incluido con llama.cpp):
-   llama-server \
-     -m bge-reranker-v2-m3-Q4_K_M.gguf \
-     --reranking --embedding --pooling rank \
-     --port 8080 --ctx-size 2048 --parallel 4
+   llama-server -m bge-reranker-v2-m3-Q4_K_M.gguf --reranking --embedding --pooling rank --port 8080 --ctx-size 2048 --parallel 4
    ```
    Verifica: `curl http://localhost:8080/health` → `{"status":"ok"}`
 
