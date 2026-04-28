@@ -48,41 +48,40 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 > Una sola dependencia (Docker), funciona en Linux/macOS/Windows, conecta a **cualquier IA** en segundos. Sin Python local, sin venvs, sin LM Studio/Ollama instalados a mano.
 
-### ⭐ El camino recomendado — forzar a tu IA a usar NEMO en este proyecto
+### ⭐ El comando que activa NEMO en un proyecto
 
-> **Este es el comando que ata todo y deja el sistema funcionando de verdad.** Córrelo en cada proyecto donde quieras que tu IA tenga memoria persistente. Sin él, la IA sabe que NEMO existe pero ~10 % de las veces "se le olvida" usarla — los archivos que este comando instala son las reglas que la fuerzan a llamar `prime_context` antes de responderte y `create_correction` cuando la corriges.
-
-**Prerequisito único** — Docker funcionando en tu sistema operativo.
-
-#### Paso 1 — abre tu terminal y navega al proyecto donde usarás IA + NEMO
+Este es el comando que ejecutas **a diario** — uno por cada proyecto donde quieras que tu IA tenga memoria. Una sola línea, idempotente, cubre Claude, Cursor, Windsurf, Cline, VS Code Copilot y cualquier cliente que lea `AGENTS.md`:
 
 ```bash
-cd ~/tu-proyecto-favorito   # ese donde quieres avanzar a velocidades cercanas a la luz 🚀
-```
+cd ~/tu-proyecto-favorito        # el proyecto donde quieres avanzar a velocidades cercanas a la luz 🚀
 
-#### Paso 2 — ejecuta el comando que lo deja todo conectado
-
-```bash
 docker run --rm \
   --add-host=host.docker.internal:host-gateway \
   -v "$PWD":/workdir \
   nemo:local nemo-attach
 ```
 
-Lo que hace en una sola corrida idempotente:
+> 🤔 **¿Por qué este comando?** Porque sin él, tu IA *sabe* que NEMO existe (vía la URL configurada en su cliente) pero ~10 % de las veces "se le olvida" llamarla. Lo que este comando instala son los archivos de reglas (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`) que **fuerzan** al modelo a llamar `prime_context` antes de responderte y `create_correction` cuando lo corriges.
 
-- Instala los archivos de reglas que cada cliente AI lee automáticamente: `CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`.
-- Si ya existían, hace **merge** sin duplicar (delimita su bloque con marcadores `<!-- BEGIN NEMO RULES vN -->`).
-- Re-ejecutar trae la versión nueva del bloque sin tocar el resto del archivo.
-- Añade `--with-hooks` para también escribir *SessionStart* + *Stop* hooks en `~/.claude/settings.json` (con backup `.bak`). Esos hooks llaman a NEMO automáticamente vía shell — el modelo no puede "olvidarse" de usarlos.
+Detalles de lo que hace en una sola corrida idempotente:
 
-Si ves `Unable to find image 'nemo:local' locally` o `[WARN] NEMO @ http://localhost:8765 — unreachable`, te falta el setup único de máquina (un comando, abajo). Hazlo y vuelve aquí.
+- Crea o actualiza los 6 archivos de reglas. Si ya existían, hace **merge** sin duplicar (delimita su bloque con marcadores `<!-- BEGIN NEMO RULES vN -->`).
+- Re-ejecutar trae la versión nueva del bloque sin tocar nada más.
+- Añade `--with-hooks` para escribir *SessionStart* + *Stop* hooks en `~/.claude/settings.json` (con backup `.bak`). Los hooks llaman a NEMO automáticamente vía shell — el modelo no puede "olvidarse".
+
+> ⚠️ **El comando funciona solo si ya hiciste el setup único.** Si ves alguno de estos errores la primera vez:
+>
+> - `Unable to find image 'nemo:local' locally` → te falta construir la imagen
+> - `[WARN] NEMO @ http://localhost:8765 — unreachable` → el servidor no está corriendo
+> - Tu IA dice *"no tengo acceso a esa tool"* → el cliente AI no está vinculado al servidor
+>
+> Resuelve cada uno con su sección abajo (cada una es de una sola corrida, una sola vez en la vida útil de tu máquina/cliente). Después vuelves arriba y este comando es el único que repites por proyecto.
 
 ---
 
-### Setup único por máquina — levantar el servidor de NEMO
+### 🛠️ Setup único por máquina — levantar el servidor (1 vez en la vida)
 
-Una sola vez en la vida útil de tu máquina. Después se auto-arranca con el sistema y no lo vuelves a tocar.
+Construye la imagen `nemo:local` y deja al servidor corriendo en `http://localhost:8765` con `restart: unless-stopped`. Después no lo vuelves a tocar — se auto-arranca con tu sistema.
 
 ```bash
 git clone https://github.com/gabrielzaldivar06/NEMO.git
@@ -90,9 +89,7 @@ cd NEMO
 docker compose up -d --build
 ```
 
-Esto construye la imagen `nemo:local` (que el comando del camino recomendado usa) y deja a NEMO corriendo en `http://localhost:8765` con `restart: unless-stopped`.
-
-> ⚠️ **Esto pone a NEMO disponible — pero ninguna IA lo usa todavía.** El servidor escucha; los clientes (Claude, Cursor, ChatGPT, etc.) tienen que apuntar a él. Eso es el siguiente paso ↓
+Resuelve simultáneamente los dos primeros errores del comando recomendado: construye la imagen y deja al servidor escuchando.
 
 Tres puertas en el mismo puerto `8765` listas para cualquier cliente:
 
@@ -102,11 +99,13 @@ Tres puertas en el mismo puerto `8765` listas para cualquier cliente:
 | `http://localhost:8765/openapi.json` | ChatGPT custom GPTs (importar como Action) |
 | `http://localhost:8765/api/...` | Gemini, LangChain, n8n, scripts (REST plano) |
 
+> ⚠️ Esto pone a NEMO disponible en la red local, pero **todavía ninguna IA sabe que existe**. Eso lo resuelve la siguiente sección.
+
 ---
 
-### Vincular cada cliente AI al servidor (una vez por cliente, **manual**)
+### 🔌 Vincular cada cliente AI con NEMO (1 vez por cliente, manual)
 
-Cada cliente lee la URL de NEMO de un sitio distinto. Hazlo **una sola vez** por cliente — no por proyecto:
+Cada cliente lee la URL de NEMO de un sitio distinto. Hazlo **una vez** por cliente, no por proyecto:
 
 | Cliente | Acción única |
 |---|---|
@@ -117,7 +116,7 @@ Cada cliente lee la URL de NEMO de un sitio distinto. Hazlo **una sola vez** por
 | **ChatGPT custom GPT** | Builder → Actions → Import URL `http://localhost:8765/openapi.json` |
 | **Gemini / LangChain / n8n** | URL REST en tu código |
 
-Una vez vinculados, NEMO es como un "fondo de pantalla" para tus IAs — siempre presente, siempre disponible, sin más config. Solo vuelves a abrir terminales y correr el comando del camino recomendado en cada proyecto nuevo.
+Resuelve el tercer error del comando recomendado (*"no tengo acceso a esa tool"*). Después tu cliente AI sabe permanentemente cómo hablar con NEMO — solo te queda volver al comando recomendado y correrlo en cada proyecto nuevo.
 
 ---
 
@@ -152,9 +151,9 @@ En tu cliente AI ya configurado, pídele literalmente esto:
 Tres resultados posibles:
 
 - ✅ **Funciona y devuelve algo** (puede estar vacío si es tu primera vez — eso también es señal de éxito).
-- ❌ **"No tengo acceso a esa tool"** → el cliente no está vinculado. Vuelve a la sección [*Vincular cada cliente AI al servidor*](#vincular-cada-cliente-ai-al-servidor-una-vez-por-cliente-manual).
-- ❌ **"NEMO no responde / connection refused"** → el contenedor está caído o no se ha hecho el setup. Vuelve a [*Setup único por máquina*](#setup-único-por-máquina--levantar-el-servidor-de-nemo) y ejecuta `docker compose up -d`.
-- ❌ **`Unable to find image 'nemo:local'`** al correr el bootstrap → la imagen no se ha construido todavía. Haz el [*Setup único por máquina*](#setup-único-por-máquina--levantar-el-servidor-de-nemo) primero (es el único momento donde se construye).
+- ❌ **"No tengo acceso a esa tool"** → el cliente no está vinculado. Vuelve a [*Vincular cada cliente AI con NEMO*](#-vincular-cada-cliente-ai-con-nemo-1-vez-por-cliente-manual).
+- ❌ **"NEMO no responde / connection refused"** → el servidor no está corriendo. Vuelve a [*Setup único por máquina*](#%EF%B8%8F-setup-único-por-máquina--levantar-el-servidor-1-vez-en-la-vida) y ejecuta `docker compose up -d`.
+- ❌ **`Unable to find image 'nemo:local'`** al correr el comando recomendado → la imagen no se ha construido todavía. Haz el [*Setup único por máquina*](#%EF%B8%8F-setup-único-por-máquina--levantar-el-servidor-1-vez-en-la-vida) primero (es el único momento donde se construye).
 
 Para una prueba más completa que ejercita el ciclo entero (escribir → reiniciar → leer):
 
