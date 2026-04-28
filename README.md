@@ -48,9 +48,41 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 > Una sola dependencia (Docker), funciona en Linux/macOS/Windows, conecta a **cualquier IA** en segundos. Sin Python local, sin venvs, sin LM Studio/Ollama instalados a mano.
 
-El flujo completo son tres pasos: levantar el servidor, vincular tu IA, y hacer que esa IA *use* NEMO en cada proyecto. Los tres son rápidos, pero **ninguno es opcional** si quieres memoria persistente entre sesiones.
+### ⭐ El camino recomendado — forzar a tu IA a usar NEMO en este proyecto
 
-### Paso 1 — Levantar el servidor de NEMO (una sola vez por máquina)
+> **Este es el comando que ata todo y deja el sistema funcionando de verdad.** Córrelo en cada proyecto donde quieras que tu IA tenga memoria persistente. Sin él, la IA sabe que NEMO existe pero ~10 % de las veces "se le olvida" usarla — los archivos que este comando instala son las reglas que la fuerzan a llamar `prime_context` antes de responderte y `create_correction` cuando la corriges.
+
+**Prerequisito único** — Docker funcionando en tu sistema operativo.
+
+#### Paso 1 — abre tu terminal y navega al proyecto donde usarás IA + NEMO
+
+```bash
+cd ~/tu-proyecto-favorito   # ese donde quieres avanzar a velocidades cercanas a la luz 🚀
+```
+
+#### Paso 2 — ejecuta el comando que lo deja todo conectado
+
+```bash
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  -v "$PWD":/workdir \
+  nemo:local nemo-attach
+```
+
+Lo que hace en una sola corrida idempotente:
+
+- Instala los archivos de reglas que cada cliente AI lee automáticamente: `CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`.
+- Si ya existían, hace **merge** sin duplicar (delimita su bloque con marcadores `<!-- BEGIN NEMO RULES vN -->`).
+- Re-ejecutar trae la versión nueva del bloque sin tocar el resto del archivo.
+- Añade `--with-hooks` para también escribir *SessionStart* + *Stop* hooks en `~/.claude/settings.json` (con backup `.bak`). Esos hooks llaman a NEMO automáticamente vía shell — el modelo no puede "olvidarse" de usarlos.
+
+Si ves `Unable to find image 'nemo:local' locally` o `[WARN] NEMO @ http://localhost:8765 — unreachable`, te falta el setup único de máquina (un comando, abajo). Hazlo y vuelve aquí.
+
+---
+
+### Setup único por máquina — levantar el servidor de NEMO
+
+Una sola vez en la vida útil de tu máquina. Después se auto-arranca con el sistema y no lo vuelves a tocar.
 
 ```bash
 git clone https://github.com/gabrielzaldivar06/NEMO.git
@@ -58,9 +90,9 @@ cd NEMO
 docker compose up -d --build
 ```
 
-Esto deja a NEMO corriendo en `http://localhost:8765` y se auto-arranca con el sistema (`restart: unless-stopped`). No vuelves a tocar este paso.
+Esto construye la imagen `nemo:local` (que el comando del camino recomendado usa) y deja a NEMO corriendo en `http://localhost:8765` con `restart: unless-stopped`.
 
-> ⚠️ **Esto sí pone a NEMO disponible — pero ninguna IA lo usa todavía.** El servidor escucha; los clientes (Claude, Cursor, ChatGPT, etc.) tienen que apuntar a él. Eso es el Paso 2. Si solo haces este paso, tu IA sigue arrancando cada chat sin memoria.
+> ⚠️ **Esto pone a NEMO disponible — pero ninguna IA lo usa todavía.** El servidor escucha; los clientes (Claude, Cursor, ChatGPT, etc.) tienen que apuntar a él. Eso es el siguiente paso ↓
 
 Tres puertas en el mismo puerto `8765` listas para cualquier cliente:
 
@@ -70,7 +102,9 @@ Tres puertas en el mismo puerto `8765` listas para cualquier cliente:
 | `http://localhost:8765/openapi.json` | ChatGPT custom GPTs (importar como Action) |
 | `http://localhost:8765/api/...` | Gemini, LangChain, n8n, scripts (REST plano) |
 
-### Paso 2 — Vincular tu IA al servidor (una vez por cliente, **manual**)
+---
+
+### Vincular cada cliente AI al servidor (una vez por cliente, **manual**)
 
 Cada cliente lee la URL de NEMO de un sitio distinto. Hazlo **una sola vez** por cliente — no por proyecto:
 
@@ -83,26 +117,7 @@ Cada cliente lee la URL de NEMO de un sitio distinto. Hazlo **una sola vez** por
 | **ChatGPT custom GPT** | Builder → Actions → Import URL `http://localhost:8765/openapi.json` |
 | **Gemini / LangChain / n8n** | URL REST en tu código |
 
-### ⭐ Paso 3 — Forzar a la IA a *usar* NEMO en cada proyecto (camino recomendado)
-
-> **Este es el comando que ata todo y deja el sistema funcionando de verdad.** Córrelo en cada proyecto donde quieras que tu IA tenga memoria persistente. Sin él, la IA sabe que NEMO existe pero ~10 % de las veces "se le olvida" usarla — los archivos que este comando instala son las reglas que la fuerzan a llamar `prime_context` antes de responderte y `create_correction` cuando la corriges.
-
-```bash
-cd ~/cualquier-proyecto
-docker run --rm \
-  --add-host=host.docker.internal:host-gateway \
-  -v "$PWD":/workdir \
-  nemo:local nemo-attach
-```
-
-Lo que hace, en una sola corrida idempotente:
-
-- Instala los archivos de reglas que cada cliente lee automáticamente: `CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`.
-- Si ya existían, hace **merge** sin duplicar (delimita su bloque con marcadores `<!-- BEGIN NEMO RULES vN -->`).
-- Re-ejecutar trae la versión nueva del bloque sin tocar el resto del archivo.
-- Añade `--with-hooks` para también escribir *SessionStart* + *Stop* hooks en `~/.claude/settings.json` (con backup `.bak`). Esos hooks llaman a NEMO automáticamente vía shell — el modelo no puede "olvidarse" de usarlos.
-
-Combina esto con un Paso 1 corriendo y, en el 99 % de los casos, **tu IA ya está usando NEMO la próxima vez que abras una sesión en ese proyecto**.
+Una vez vinculados, NEMO es como un "fondo de pantalla" para tus IAs — siempre presente, siempre disponible, sin más config. Solo vuelves a abrir terminales y correr el comando del camino recomendado en cada proyecto nuevo.
 
 ---
 
@@ -115,7 +130,7 @@ Tres comprobaciones de menos de 30 segundos para confirmar que cada pieza está 
 | Abre esta URL | Qué deberías ver | Si no se ve eso… |
 |---|---|---|
 | <http://localhost:8765/health> | JSON con `"status": "ok"` y un bloque por cada base SQLite (`conversations`, `ai_memories`, `schedule`, `vscode_project`, `mcp_tool_calls`) reportando `healthy` | El contenedor no arrancó. Revisa `docker compose logs nemo --tail 50`. |
-| <http://localhost:8765/openapi.json> | JSON grande con la spec OpenAPI de las ~34 tools | Si no responde, repite Paso 1. Si responde pero la lista de tools está vacía, NEMO arrancó pero el core no inicializó — mira los logs. |
+| <http://localhost:8765/openapi.json> | JSON grande con la spec OpenAPI de las ~34 tools | Si no responde, repite el setup único por máquina (`docker compose up -d`). Si responde pero la lista de tools está vacía, NEMO arrancó pero el core no inicializó — mira los logs. |
 | <http://localhost:8765/docs> | UI interactiva de Swagger donde puedes invocar tools desde el navegador (útil para probar `prime_context` o `search_memories` sin escribir código) | — |
 
 **② Desde la terminal** (si prefieres curl):
@@ -137,8 +152,9 @@ En tu cliente AI ya configurado, pídele literalmente esto:
 Tres resultados posibles:
 
 - ✅ **Funciona y devuelve algo** (puede estar vacío si es tu primera vez — eso también es señal de éxito).
-- ❌ **"No tengo acceso a esa tool"** → el cliente no está vinculado. Vuelve al **Paso 2**.
-- ❌ **"NEMO no responde / connection refused"** → el contenedor está caído. Vuelve al **Paso 1** (`docker compose up -d`).
+- ❌ **"No tengo acceso a esa tool"** → el cliente no está vinculado. Vuelve a la sección [*Vincular cada cliente AI al servidor*](#vincular-cada-cliente-ai-al-servidor-una-vez-por-cliente-manual).
+- ❌ **"NEMO no responde / connection refused"** → el contenedor está caído o no se ha hecho el setup. Vuelve a [*Setup único por máquina*](#setup-único-por-máquina--levantar-el-servidor-de-nemo) y ejecuta `docker compose up -d`.
+- ❌ **`Unable to find image 'nemo:local'`** al correr el bootstrap → la imagen no se ha construido todavía. Haz el [*Setup único por máquina*](#setup-único-por-máquina--levantar-el-servidor-de-nemo) primero (es el único momento donde se construye).
 
 Para una prueba más completa que ejercita el ciclo entero (escribir → reiniciar → leer):
 
