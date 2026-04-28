@@ -202,6 +202,118 @@ class AIMemoryMCPServer:
                 }
             ),
             Tool(
+                name="build_context_portfolio",
+                annotations=_UPDATE,
+                description="Build a bounded, evidence-backed memory context portfolio for a task.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string", "description": "Task or question to build context for"},
+                        "topic": {"type": "string", "description": "Optional project/topic filter"},
+                        "tags_include": {"type": "array", "items": {"type": "string"}},
+                        "token_budget": {"type": "integer", "default": 1200},
+                        "mode": {"type": "string", "default": "balanced"},
+                        "risk_tolerance": {"type": "number", "default": 0.5},
+                        "include_evidence_handles": {"type": "boolean", "default": True},
+                        "limit": {"type": "integer", "default": 40}
+                    },
+                    "required": ["task"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="expand_context_evidence",
+                annotations=_RONLY,
+                description="Expand a Context Economy evidence handle.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "handle": {"type": "string"},
+                        "query": {"type": "string"}
+                    },
+                    "required": ["handle"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="record_context_feedback",
+                annotations=_UPDATE,
+                description="Record portfolio usefulness or expansion feedback.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "portfolio_id": {"type": "string"},
+                        "evidence_handle": {"type": "string"},
+                        "event_type": {"type": "string", "default": "feedback"},
+                        "was_useful": {"type": "boolean"},
+                        "token_delta": {"type": "integer", "default": 0}
+                    },
+                    "required": ["portfolio_id"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="get_context_portfolio_stats",
+                annotations=_RONLY,
+                description="Get Context Economy portfolio and evidence stats.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="compare_context_strategies",
+                annotations=_RONLY,
+                description="Dry-run compare prime, compact search, and portfolio context costs.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string", "description": "Task or question to compare context for"},
+                        "topic": {"type": "string", "description": "Optional project/topic filter"},
+                        "tags_include": {"type": "array", "items": {"type": "string"}},
+                        "token_budget": {"type": "integer", "default": 1200},
+                        "limit": {"type": "integer", "default": 5}
+                    },
+                    "required": ["task"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="refresh_context_portfolio",
+                annotations=_UPDATE,
+                description="Rebuild a saved context portfolio with fresh candidates.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "portfolio_id": {"type": "string", "description": "Portfolio ID to rebuild from"},
+                        "token_budget": {"type": "integer", "description": "Optional replacement token budget"},
+                        "limit": {"type": "integer", "description": "Optional replacement candidate limit"}
+                    },
+                    "required": ["portfolio_id"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="compress_context_artifact",
+                annotations=_UPDATE,
+                description="Compact a large artifact and keep recoverable evidence.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "Raw artifact content to compact"},
+                        "artifact_type": {"type": "string", "default": "text"},
+                        "title": {"type": "string"},
+                        "token_budget": {"type": "integer", "default": 400},
+                        "source_id": {"type": "string"},
+                        "persist_evidence": {"type": "boolean", "default": True},
+                        "expires_at": {"type": "string"}
+                    },
+                    "required": ["content"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
                 name="store_conversation",
                 annotations=_WRITE,
                 description=(
@@ -958,6 +1070,20 @@ class AIMemoryMCPServer:
                             result["synthesis"] = synthesis
                         elif isinstance(result, list):
                             result = {"memories": result, "synthesis": synthesis}
+            elif tool_name == "build_context_portfolio":
+                result = await self.memory_system.build_context_portfolio(**arguments)
+            elif tool_name == "expand_context_evidence":
+                result = await self.memory_system.expand_context_evidence(**arguments)
+            elif tool_name == "record_context_feedback":
+                result = await self.memory_system.record_context_feedback(**arguments)
+            elif tool_name == "get_context_portfolio_stats":
+                result = await self.memory_system.get_context_portfolio_stats()
+            elif tool_name == "compare_context_strategies":
+                result = await self.memory_system.compare_context_strategies(**arguments)
+            elif tool_name == "refresh_context_portfolio":
+                result = await self.memory_system.refresh_context_portfolio(**arguments)
+            elif tool_name == "compress_context_artifact":
+                result = await self.memory_system.compress_context_artifact(**arguments)
             elif tool_name == "store_conversation":
                 # Sampling enhancement: auto-generate a structured summary when
                 # the caller does not provide one (or provides a raw transcript).

@@ -129,8 +129,7 @@ dmypy.json
 .pyre/
 
 # ── NEMO internal / private files ──────────────────────────────────────────
-# Personal git hooks (machine-specific)
-.github/hooks/
+# Workspace Copilot hooks are versioned for NEMO agent policy.
 
 # Dashboard (internal tool, not distributed)
 dashboard.html

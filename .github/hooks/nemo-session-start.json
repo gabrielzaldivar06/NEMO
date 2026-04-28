@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "windows": "powershell -NoProfile -File .github/hooks/nemo-inject.ps1",
+        "timeout": 5
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "type": "command",
+        "windows": "powershell -NoProfile -File .github/hooks/nemo-inject.ps1",
+        "timeout": 5
+      }
+    ],
+    "SubagentStart": [
+      {
+        "type": "command",
+        "windows": "powershell -NoProfile -File .github/hooks/nemo-inject.ps1",
+        "timeout": 5
+      }
+    ]
+  }
+}
