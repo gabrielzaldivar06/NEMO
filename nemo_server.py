@@ -49,10 +49,10 @@ def _apply_settings_overrides_from_env() -> None:
 
     The upstream ``settings.py`` declares fields with the legacy
     ``Field(env="AI_MEMORY_…")`` syntax. Pydantic-settings v2 — which we pin
-    in requirements-docker.txt — silently ignores that argument and falls
-    back to the field default, so users who set ``AI_MEMORY_DATA_DIR`` or
-    ``AI_MEMORY_ENABLE_MONITORING`` (etc.) in their environment would see no
-    effect.
+    in ``docker/requirements-docker.txt`` — silently ignores that argument
+    and falls back to the field default, so users who set
+    ``AI_MEMORY_DATA_DIR`` or ``AI_MEMORY_ENABLE_MONITORING`` (etc.) in
+    their environment would see no effect.
 
     Rather than patching the upstream module, we read the env vars
     explicitly here and feed them through ``update_settings`` before the
@@ -146,11 +146,21 @@ app = FastAPI(
 # server-to-server callers, and `curl` are not subject to CORS, so this
 # restriction does not affect them. Set NEMO_CORS_ORIGINS="*" explicitly
 # only if you understand the risk (e.g. all-localhost dev).
+#
+# The default origins are computed from the *browser-visible* port, not the
+# container's internal listen port — when the published host port differs
+# from NEMO_PORT (e.g. you ran `docker compose up` with NEMO_HOST_PORT=9000)
+# the browser sends `Origin: http://localhost:9000`, not `:8765`. Resolution
+# order: NEMO_EXTERNAL_PORT (explicit override, e.g. for an HTTPS proxy on
+# 443/8443) → NEMO_HOST_PORT (auto-injected by docker-compose.yml) →
+# NEMO_PORT (the container's own port; correct fallback for plain-Python
+# deployments where there is no separate host mapping).
 _nemo_port = os.getenv("NEMO_PORT", "8765")
+_browser_port = os.getenv("NEMO_EXTERNAL_PORT") or os.getenv("NEMO_HOST_PORT") or _nemo_port
 _default_cors = ",".join((
-    f"http://localhost:{_nemo_port}",
-    f"http://127.0.0.1:{_nemo_port}",
-    f"http://[::1]:{_nemo_port}",
+    f"http://localhost:{_browser_port}",
+    f"http://127.0.0.1:{_browser_port}",
+    f"http://[::1]:{_browser_port}",
 ))
 _cors_origins = [o.strip() for o in os.getenv("NEMO_CORS_ORIGINS", _default_cors).split(",") if o.strip()]
 app.add_middleware(
