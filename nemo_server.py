@@ -21,9 +21,9 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from ai_memory_mcp_server import AIMemoryMCPServer
@@ -226,44 +226,39 @@ async def prime_context(topic: str | None = None):
 
 
 # ─── MCP over SSE ───────────────────────────────────────────────────────────
-# We expose the SSE handshake as a raw ASGI app rather than a FastAPI route so
-# that the MCP SDK receives the genuine ASGI `send` callable. FastAPI's
-# `Request` only exposes `send` via the underscore-prefixed `_send` attribute,
-# which is private API that has changed between Starlette versions; mounting
-# a raw ASGI callable bypasses that brittleness entirely.
-async def _send_plain(send, status: int, body: bytes) -> None:
-    await send({
-        "type": "http.response.start",
-        "status": status,
-        "headers": [(b"content-type", b"text/plain; charset=utf-8")],
-    })
-    await send({"type": "http.response.body", "body": body})
-
-
-async def _mcp_sse_app(scope, receive, send) -> None:
-    if scope["type"] != "http":  # pragma: no cover — FastAPI never routes lifespan/ws here
-        return
-    # Mount routes everything under the prefix; only accept the exact root.
-    if scope.get("path", "") not in ("", "/"):
-        await _send_plain(send, 404, b"Not Found")
-        return
-    if scope.get("method") != "GET":
-        await _send_plain(send, 405, b"Method Not Allowed")
-        return
+# Why this handler accesses ``request._send``:
+#
+#   The MCP SDK's ``SseServerTransport.connect_sse(scope, receive, send)``
+#   context manager needs the raw ASGI ``send`` callable to stream events back
+#   to the client. Starlette's ``Request`` exposes ``scope`` and ``receive``
+#   as public attributes but stores the ASGI ``send`` as ``_send`` (set in
+#   ``Request.__init__``).  This attribute is stable across Starlette versions
+#   and is the pattern documented in the official MCP Python SDK README:
+#       https://github.com/modelcontextprotocol/python-sdk
+#       (search “SseServerTransport” in the README — the example handler does
+#        ``request.scope, request.receive, request._send``).
+#
+#   An earlier iteration of this server mounted the SSE handler as a raw ASGI
+#   callable to avoid the underscore-prefixed attribute, but Starlette's Mount
+#   semantics caused a 307 redirect on ``/mcp/sse`` → ``/mcp/sse/`` that
+#   confuses several MCP clients on long-lived SSE connections. Going back to
+#   ``add_route`` with ``request._send`` matches the SDK example exactly,
+#   keeps the URL clean (no redirect), and is what the rest of the ecosystem
+#   does.
+#
+# Why we do *not* propagate the User-Agent header into client detection:
+#
+#   ``AIMemoryMCPServer._detect_client_type()`` reads
+#   ``os.environ["USER_AGENT"]`` — a process-global. Setting it per request
+#   would race between overlapping SSE connections (one client could observe
+#   another client's tool set). The universal HTTP server therefore exposes
+#   the common tool set to every caller; client-specific extras still apply
+#   in the legacy stdio entry point, where ``USER_AGENT`` is set once at
+#   startup by the launching client.
+@app.get("/mcp/sse", include_in_schema=False)
+async def mcp_sse_endpoint(request: Request) -> Response:
     if nemo is None:
-        await _send_plain(send, 503, b"MCP not ready")
-        return
-
-    # Propagate the connecting client's User-Agent into the env var that
-    # AIMemoryMCPServer._detect_client_type() inspects, so e.g. VS Code Copilot
-    # gets its enriched tool set instead of the default common-tools fallback.
-    user_agent = ""
-    for k, v in scope.get("headers", []):
-        if k == b"user-agent":
-            user_agent = v.decode("latin-1", errors="ignore")
-            break
-    previous_user_agent = os.environ.get("USER_AGENT")
-    os.environ["USER_AGENT"] = user_agent
+        raise HTTPException(status_code=503, detail="MCP not ready")
 
     init_options = InitializationOptions(
         server_name="nemo",
@@ -279,17 +274,11 @@ async def _mcp_sse_app(scope, receive, send) -> None:
         ),
     )
 
-    try:
-        async with sse_transport.connect_sse(scope, receive, send) as (read_stream, write_stream):
-            await nemo.server.run(read_stream, write_stream, init_options)
-    finally:
-        if previous_user_agent is None:
-            os.environ.pop("USER_AGENT", None)
-        else:
-            os.environ["USER_AGENT"] = previous_user_agent
-
-
-app.mount("/mcp/sse", _mcp_sse_app)
+    async with sse_transport.connect_sse(
+        request.scope, request.receive, request._send
+    ) as (read_stream, write_stream):
+        await nemo.server.run(read_stream, write_stream, init_options)
+    return Response()
 
 
 # POST sink for MCP SSE clients. Mounted as an ASGI sub-app because

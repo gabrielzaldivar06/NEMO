@@ -9,7 +9,8 @@ This keeps ai_memory_core.py completely untouched: from its perspective it is
 just another OpenAI-compatible embedding server on localhost.
 
 Env knobs:
-  EMBEDDING_MODEL   — fastembed model id (default: multilingual-e5-small)
+  EMBEDDING_MODEL   — fastembed model id
+                      (default: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2)
   EMBEDDING_CACHE   — directory for downloaded model weights (default: /models)
 """
 

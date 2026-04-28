@@ -67,10 +67,13 @@ Añade un MCP server remoto apuntando a `http://localhost:8765/mcp/sse`.
 
 ### ChatGPT custom GPT
 En el builder del GPT → **Configure → Actions → Import from URL** →
-`http://localhost:8765/openapi.json`. El conjunto de tools expuestas por REST
-varía según el cliente que detecte NEMO vía `User-Agent` (por defecto verás el
-conjunto común — actualmente ~34 tools — y los clientes específicos como
-VS Code reciben extras adicionales).
+`http://localhost:8765/openapi.json`. La especificación OpenAPI y las rutas
+REST exponen el **conjunto común** de tools (actualmente ~34). Los extras
+específicos por cliente que existen en `AIMemoryMCPServer._detect_client_type()`
+(por ejemplo, tools adicionales para VS Code o SillyTavern) **solo aplican al
+modo MCP-stdio original** — el servidor universal HTTP no inspecciona el
+`User-Agent` por petición, porque hacerlo de forma proceso-global no sería
+seguro bajo conexiones concurrentes.
 
 ### Gemini / LangChain / n8n / curl
 Llamada HTTP directa:
