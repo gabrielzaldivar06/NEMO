@@ -283,7 +283,7 @@ async def mcp_sse_endpoint(request: Request) -> Response:
 
 # POST sink for MCP SSE clients. Mounted as an ASGI sub-app because
 # SseServerTransport.handle_post_message is itself an ASGI callable.
-app.mount("/mcp/messages", sse_transport.handle_post_message)
+app.mount("/mcp/messages/", sse_transport.handle_post_message)
 
 
 def main() -> None:
