@@ -844,90 +844,6 @@ class AIMemoryDatabase(DatabaseManager):
                     conn.execute("ALTER TABLE curated_memories ADD COLUMN difficulty REAL DEFAULT 0.3")
             conn.commit()
 
-    async def create_memory(self, content: str, memory_type: str = None, 
-                          importance_level: int = 5, tags: List[str] = None,
-                          source_conversation_id: str = None) -> str:
-        """Create a new curated memory with duplicate detection"""
-        memory_id = str(uuid.uuid4())
-        timestamp = get_current_timestamp()
-
-        # Advanced duplicate detection: check for existing memory with same content, type, and source
-        existing = await self.execute_query(
-            """SELECT memory_id FROM curated_memories 
-                   WHERE content = ? AND memory_type = ? AND source_conversation_id IS ?""",
-            (content, memory_type, source_conversation_id)
-        )
-        if existing:
-            print("Skipping duplicate curated memory entry.")
-            return existing[0]["memory_id"]
-
-        await self.execute_update(
-            """INSERT INTO curated_memories 
-               (memory_id, timestamp_created, timestamp_updated, source_conversation_id, 
-                memory_type, content, importance_level, tags) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (memory_id, timestamp, timestamp, source_conversation_id, 
-             memory_type, content, importance_level, 
-             json.dumps(tags) if tags else None)
-        )
-        return memory_id
-        """Run database maintenance tasks.
-        
-        Args:
-            force: Whether to force maintenance even if recent
-            
-        Returns:
-            Dict containing maintenance results
-        """
-        try:
-            # Check last maintenance
-            last_maintenance = await self.execute_query(
-                "SELECT value FROM metadata WHERE key = 'last_maintenance'"
-            )
-            
-            if not force and last_maintenance:
-                last_time = datetime.fromisoformat(last_maintenance[0]["value"])
-                if datetime.now(get_local_timezone()) - last_time < timedelta(days=7):
-                    return {
-                        "status": "skipped",
-                        "message": "Maintenance ran recently",
-                        "last_run": last_time.isoformat()
-                    }
-            
-            with self.get_connection() as conn:
-                # Optimize indexes
-                conn.execute("ANALYZE")
-                
-                # Clean up any orphaned records
-                conn.execute("""
-                    DELETE FROM curated_memories 
-                    WHERE source_conversation_id NOT IN (
-                        SELECT conversation_id FROM conversations
-                    ) AND source_conversation_id IS NOT NULL
-                """)
-                
-                # Update metadata
-                conn.execute(
-                    "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
-                    ("last_maintenance", get_current_timestamp())
-                )
-                
-                conn.commit()
-                
-            return {
-                "status": "success",
-                "message": "Maintenance completed successfully",
-                "timestamp": get_current_timestamp()
-            }
-            
-        except Exception as e:
-            logger.error(f"Maintenance error: {e}")
-            return {
-                "status": "error",
-                "message": str(e),
-                "timestamp": get_current_timestamp()
-            }
-    
     def initialize_tables(self):
         """Create tables if they don't exist, and add new columns via live migration."""
         with self.get_connection() as conn:
@@ -2753,8 +2669,10 @@ class EmbeddingService:
         self._embed_retry_after: Dict[str, float] = {}
         # Sprint B — B1: consecutive failure count per provider for exponential backoff.
         self._embed_failure_count: Dict[str, int] = {}
-        # Dimension guard: reject fallback embeddings whose dimension differs from primary
-        self._primary_embed_dim: int = 0
+        # Dimension guard: reject fallback embeddings whose dimension differs from primary.
+        # Seed from config so a fresh process can still reject a mismatched fallback
+        # before the first successful primary embedding call.
+        self._primary_embed_dim: int = self._resolve_expected_embedding_dim(self.primary_config)
 
         self.provider_availability = {
             "lm_studio": None,  # Will be tested on first use
@@ -2773,8 +2691,28 @@ class EmbeddingService:
         print("Intelligent Embedding Service Configuration", file=_sys.stderr)
         print(f"Primary: {primary_provider} ({primary_model})", file=_sys.stderr)
         print(f"Fallback: {fallback_provider} ({fallback_model})", file=_sys.stderr)
+        if self._primary_embed_dim > 0:
+            print(f"Expected primary dimension: {self._primary_embed_dim}D", file=_sys.stderr)
         print("Preserving existing 768D embeddings, using best available for new ones", file=_sys.stderr)
         print("To customize, edit embedding_config.json in the project directory", file=_sys.stderr)
+
+    def _resolve_expected_embedding_dim(self, config: Dict[str, Any]) -> int:
+        """Resolve the configured or inferred embedding dimension for a provider."""
+        expected_dim = config.get("expected_dimension")
+        if isinstance(expected_dim, int) and expected_dim > 0:
+            return expected_dim
+
+        model = str(config.get("model", "")).strip().lower()
+        known_dimensions = {
+            "qwen3-embedding-4b": 2560,
+            "qwen3-embed-4b": 2560,
+            "nomic-embed-text": 768,
+            "text-embedding-3-small": 1536,
+        }
+        for model_hint, dimension in known_dimensions.items():
+            if model_hint in model:
+                return dimension
+        return 0
 
     def _build_embeddings_endpoint(self, config: Dict[str, Any]) -> str:
         """Build the effective embeddings endpoint for health checks and diagnostics."""
@@ -3046,8 +2984,13 @@ class EmbeddingService:
                     result = await self._generate_lm_studio_embedding(text)
                     if result:
                         self._mark_embed_provider_ok(primary_provider)
-                        if self._primary_embed_dim == 0:
-                            self._primary_embed_dim = len(result)
+                        configured_dim = self._resolve_expected_embedding_dim(self.primary_config)
+                        if configured_dim > 0 and len(result) != configured_dim:
+                            logger.warning(
+                                f"[dim-guard] primary {primary_provider} produced {len(result)}D, "
+                                f"configured {configured_dim}D; updating runtime expectation"
+                            )
+                        self._primary_embed_dim = len(result)
                         return result
                     else:
                         self._mark_embed_provider_failed(primary_provider)
@@ -3057,8 +3000,13 @@ class EmbeddingService:
                     result = await self._generate_ollama_embedding(text)
                     if result:
                         self._mark_embed_provider_ok("ollama")
-                        if self._primary_embed_dim == 0:
-                            self._primary_embed_dim = len(result)
+                        configured_dim = self._resolve_expected_embedding_dim(self.primary_config)
+                        if configured_dim > 0 and len(result) != configured_dim:
+                            logger.warning(
+                                f"[dim-guard] primary ollama produced {len(result)}D, "
+                                f"configured {configured_dim}D; updating runtime expectation"
+                            )
+                        self._primary_embed_dim = len(result)
                         return result
                     else:
                         self._mark_embed_provider_failed("ollama")
@@ -3068,8 +3016,13 @@ class EmbeddingService:
                     result = await self._generate_openai_embedding(text)
                     if result:
                         self._mark_embed_provider_ok("openai")
-                        if self._primary_embed_dim == 0:
-                            self._primary_embed_dim = len(result)
+                        configured_dim = self._resolve_expected_embedding_dim(self.primary_config)
+                        if configured_dim > 0 and len(result) != configured_dim:
+                            logger.warning(
+                                f"[dim-guard] primary openai produced {len(result)}D, "
+                                f"configured {configured_dim}D; updating runtime expectation"
+                            )
+                        self._primary_embed_dim = len(result)
                         return result
                     else:
                         self._mark_embed_provider_failed("openai")
@@ -3089,12 +3042,13 @@ class EmbeddingService:
         if fallback_provider and fallback_provider != primary_provider:
             if not self._embed_provider_in_cooldown(fallback_provider):
                 try:
+                    expected_dim = self._primary_embed_dim or self._resolve_expected_embedding_dim(self.primary_config)
                     if fallback_provider in {"lm_studio", "llama_cpp", "custom"}:
                         self.embeddings_endpoint = self._build_embeddings_endpoint(self.fallback_config)
                         result = await self._generate_lm_studio_embedding(text, fallback=True)
                         if result:
-                            if self._primary_embed_dim > 0 and len(result) != self._primary_embed_dim:
-                                logger.warning(f"[dim-guard] fallback {fallback_provider} produced {len(result)}D, expected {self._primary_embed_dim}D — rejecting")
+                            if expected_dim > 0 and len(result) != expected_dim:
+                                logger.warning(f"[dim-guard] fallback {fallback_provider} produced {len(result)}D, expected {expected_dim}D — rejecting")
                             else:
                                 self._mark_embed_provider_ok(fallback_provider)
                                 logger.info(f"Using {fallback_provider} fallback for embedding")
@@ -3105,8 +3059,8 @@ class EmbeddingService:
                     elif fallback_provider == "ollama":
                         result = await self._generate_ollama_embedding(text, fallback=True)
                         if result:
-                            if self._primary_embed_dim > 0 and len(result) != self._primary_embed_dim:
-                                logger.warning(f"[dim-guard] fallback ollama produced {len(result)}D, expected {self._primary_embed_dim}D — rejecting")
+                            if expected_dim > 0 and len(result) != expected_dim:
+                                logger.warning(f"[dim-guard] fallback ollama produced {len(result)}D, expected {expected_dim}D — rejecting")
                             else:
                                 self._mark_embed_provider_ok("ollama")
                                 logger.info("Using Ollama fallback for embedding")
@@ -3117,8 +3071,8 @@ class EmbeddingService:
                     elif fallback_provider == "openai":
                         result = await self._generate_openai_embedding(text, fallback=True)
                         if result:
-                            if self._primary_embed_dim > 0 and len(result) != self._primary_embed_dim:
-                                logger.warning(f"[dim-guard] fallback openai produced {len(result)}D, expected {self._primary_embed_dim}D — rejecting")
+                            if expected_dim > 0 and len(result) != expected_dim:
+                                logger.warning(f"[dim-guard] fallback openai produced {len(result)}D, expected {expected_dim}D — rejecting")
                             else:
                                 self._mark_embed_provider_ok("openai")
                                 logger.info("Using OpenAI fallback for embedding")
@@ -4169,17 +4123,21 @@ class PersistentAIMemorySystem:
             best_sim = 0.0
             best_match = None
             if rows:
+                valid = self._collect_rows_with_matching_embedding_dim(
+                    rows, new_vec.size, "AI memory background dedup"
+                )
                 # CPU-bound numpy ops — run off the event loop to avoid freezing.
-                def _compute_best_match():
-                    blobs = [r["embedding"] for r in rows]
-                    matrix = np.vstack([np.frombuffer(b, dtype=np.float32) for b in blobs])
+                def _compute_best_match(valid_inner):
+                    if not valid_inner:
+                        return 0.0, None
+                    valid_rows, embeds = zip(*valid_inner)
+                    matrix = np.vstack(embeds)
                     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
                     norms = np.where(norms == 0, 1.0, norms)
                     sims = (matrix / norms) @ (new_vec / new_norm)
                     idx = int(np.argmax(sims))
-                    return float(sims[idx]), idx
-                best_sim, best_idx = await asyncio.to_thread(_compute_best_match)
-                best_match = rows[best_idx]
+                    return float(sims[idx]), valid_rows[idx]
+                best_sim, best_match = await asyncio.to_thread(_compute_best_match, valid)
 
             if best_sim >= 0.92 and best_match:
                 # Semantic duplicate found — remove the just-inserted memory
@@ -5645,6 +5603,64 @@ class PersistentAIMemorySystem:
     # INTERNAL HELPER METHODS
     # =============================================================================
     
+    def _collect_rows_with_matching_embedding_dim(
+        self,
+        rows: List[Any],
+        expected_dim: int,
+        context: str,
+    ) -> List[tuple[Any, np.ndarray]]:
+        """Decode row embeddings and keep only vectors matching the expected dimension."""
+        valid: List[tuple[Any, np.ndarray]] = []
+        skipped = 0
+
+        for row in rows:
+            embedding_blob = row["embedding"] if row["embedding"] else None
+            if not embedding_blob:
+                continue
+            embedding_array = np.frombuffer(embedding_blob, dtype=np.float32)
+            if embedding_array.size != expected_dim:
+                skipped += 1
+                continue
+            valid.append((row, embedding_array))
+
+        if skipped:
+            logger.warning(
+                f"Skipped {skipped} embedding(s) with mismatched dimensions during {context} "
+                f"(expected {expected_dim}D)"
+            )
+
+        return valid
+
+    def _collect_rows_with_majority_embedding_dim(
+        self,
+        rows: List[Any],
+        context: str,
+    ) -> List[tuple[Any, np.ndarray]]:
+        """Decode row embeddings and keep only the majority dimension for batch comparisons."""
+        buckets: Dict[int, List[tuple[Any, np.ndarray]]] = {}
+        total = 0
+
+        for row in rows:
+            embedding_blob = row["embedding"] if row["embedding"] else None
+            if not embedding_blob:
+                continue
+            embedding_array = np.frombuffer(embedding_blob, dtype=np.float32)
+            total += 1
+            buckets.setdefault(int(embedding_array.size), []).append((row, embedding_array))
+
+        if not buckets:
+            return []
+
+        selected_dim, valid = max(buckets.items(), key=lambda item: len(item[1]))
+        skipped = total - len(valid)
+        if skipped:
+            logger.warning(
+                f"Skipped {skipped} embedding(s) with non-majority dimensions during {context} "
+                f"(using {selected_dim}D batch)"
+            )
+
+        return valid
+
     async def _search_ai_memories(self, query_embedding: List[float], limit: int,
                                 min_importance: int = None, max_importance: int = None,
                                 memory_type: str = None) -> List[Dict]:
@@ -5671,16 +5687,14 @@ class PersistentAIMemorySystem:
 
         if rows:
             q_arr = np.array(query_embedding, dtype=np.float32)
-            rows_list = list(rows)
+            valid = self._collect_rows_with_matching_embedding_dim(
+                list(rows), q_arr.size, "AI memory semantic search"
+            )
 
-            def _batch_cosine_ai(rows_inner, q_arr_inner):
-                valid = [
-                    (row, np.frombuffer(row["embedding"], dtype=np.float32))
-                    for row in rows_inner if row["embedding"]
-                ]
-                if not valid:
+            def _batch_cosine_ai(valid_inner, q_arr_inner):
+                if not valid_inner:
                     return []
-                valid_rows, embeds = zip(*valid)
+                valid_rows, embeds = zip(*valid_inner)
                 matrix = np.vstack(embeds)
                 q_norm = float(np.linalg.norm(q_arr_inner))
                 if q_norm < 1e-9:
@@ -5693,7 +5707,7 @@ class PersistentAIMemorySystem:
                     for j in range(len(valid_rows)) if sims[j] > 0.3
                 ]
 
-            for row, emb_arr, similarity in await asyncio.to_thread(_batch_cosine_ai, rows_list, q_arr):
+            for row, emb_arr, similarity in await asyncio.to_thread(_batch_cosine_ai, valid, q_arr):
                 # FSRS-6 retention factor: R(t,s) = 0.9^(t/s), modulates final score
                 _stability = float(row["stability"] if "stability" in row.keys() and row["stability"] else 1.0)
                 _last_str = row["last_accessed_at"] if "last_accessed_at" in row.keys() else None
@@ -5896,15 +5910,14 @@ class PersistentAIMemorySystem:
 
         if rows:
             q_arr = np.array(query_embedding, dtype=np.float32)
+            valid = self._collect_rows_with_matching_embedding_dim(
+                list(rows), q_arr.size, "conversation semantic search"
+            )
 
-            def _batch_cosine_conv(rows_inner, q_arr_inner):
-                valid = [
-                    (row, np.frombuffer(row["embedding"], dtype=np.float32))
-                    for row in rows_inner if row["embedding"]
-                ]
-                if not valid:
+            def _batch_cosine_conv(valid_inner, q_arr_inner):
+                if not valid_inner:
                     return []
-                valid_rows, embeds = zip(*valid)
+                valid_rows, embeds = zip(*valid_inner)
                 matrix = np.vstack(embeds)
                 q_norm = float(np.linalg.norm(q_arr_inner))
                 if q_norm < 1e-9:
@@ -5914,7 +5927,7 @@ class PersistentAIMemorySystem:
                 sims = (matrix @ q_arr_inner) / (norms * q_norm)
                 return [(valid_rows[j], float(sims[j])) for j in range(len(valid_rows)) if sims[j] > 0.3]
 
-            for row, similarity in await asyncio.to_thread(_batch_cosine_conv, list(rows), q_arr):
+            for row, similarity in await asyncio.to_thread(_batch_cosine_conv, valid, q_arr):
                 results.append({
                     "type": "conversation",
                     "similarity_score": similarity,
@@ -5946,14 +5959,10 @@ class PersistentAIMemorySystem:
         
         q_arr_sched = np.array(query_embedding, dtype=np.float32)
 
-        def _batch_cosine_sched(rows_inner, q_arr_inner):
-            valid = [
-                (row, np.frombuffer(row["embedding"], dtype=np.float32))
-                for row in rows_inner if row["embedding"]
-            ]
-            if not valid:
+        def _batch_cosine_sched(valid_inner, q_arr_inner):
+            if not valid_inner:
                 return []
-            valid_rows, embeds = zip(*valid)
+            valid_rows, embeds = zip(*valid_inner)
             matrix = np.vstack(embeds)
             q_norm = float(np.linalg.norm(q_arr_inner))
             if q_norm < 1e-9:
@@ -5964,7 +5973,10 @@ class PersistentAIMemorySystem:
             return [(valid_rows[j], float(sims[j])) for j in range(len(valid_rows)) if sims[j] > 0.3]
 
         appt_rows = await self.schedule_db.execute_query(appointment_query)
-        for row, similarity in await asyncio.to_thread(_batch_cosine_sched, list(appt_rows), q_arr_sched):
+        appt_valid = self._collect_rows_with_matching_embedding_dim(
+            list(appt_rows), q_arr_sched.size, "appointment semantic search"
+        )
+        for row, similarity in await asyncio.to_thread(_batch_cosine_sched, appt_valid, q_arr_sched):
             results.append({
                 "type": "appointment",
                 "similarity_score": similarity,
@@ -5986,7 +5998,10 @@ class PersistentAIMemorySystem:
         """
 
         rem_rows = await self.schedule_db.execute_query(reminder_query)
-        for row, similarity in await asyncio.to_thread(_batch_cosine_sched, list(rem_rows), q_arr_sched):
+        rem_valid = self._collect_rows_with_matching_embedding_dim(
+            list(rem_rows), q_arr_sched.size, "reminder semantic search"
+        )
+        for row, similarity in await asyncio.to_thread(_batch_cosine_sched, rem_valid, q_arr_sched):
             results.append({
                 "type": "reminder",
                 "similarity_score": similarity,
@@ -6017,15 +6032,14 @@ class PersistentAIMemorySystem:
 
         if rows:
             q_arr_pi = np.array(query_embedding, dtype=np.float32)
+            valid = self._collect_rows_with_matching_embedding_dim(
+                list(rows), q_arr_pi.size, "project insight semantic search"
+            )
 
-            def _batch_cosine_pi(rows_inner, q_arr_inner):
-                valid = [
-                    (row, np.frombuffer(row["embedding"], dtype=np.float32))
-                    for row in rows_inner if row["embedding"]
-                ]
-                if not valid:
+            def _batch_cosine_pi(valid_inner, q_arr_inner):
+                if not valid_inner:
                     return []
-                valid_rows, embeds = zip(*valid)
+                valid_rows, embeds = zip(*valid_inner)
                 matrix = np.vstack(embeds)
                 q_norm = float(np.linalg.norm(q_arr_inner))
                 if q_norm < 1e-9:
@@ -6035,7 +6049,7 @@ class PersistentAIMemorySystem:
                 sims = (matrix @ q_arr_inner) / (norms * q_norm)
                 return [(valid_rows[j], float(sims[j])) for j in range(len(valid_rows)) if sims[j] > 0.3]
 
-            for row, similarity in await asyncio.to_thread(_batch_cosine_pi, list(rows), q_arr_pi):
+            for row, similarity in await asyncio.to_thread(_batch_cosine_pi, valid, q_arr_pi):
                 results.append({
                     "type": "project_insight",
                     "similarity_score": similarity,
@@ -6178,6 +6192,11 @@ class PersistentAIMemorySystem:
             # Convert to numpy arrays
             vec1 = np.array(embedding1, dtype=np.float32)
             vec2 = np.array(embedding2, dtype=np.float32)
+            if vec1.size != vec2.size:
+                logger.warning(
+                    f"Skipping cosine similarity for mismatched embeddings: {vec1.size}D vs {vec2.size}D"
+                )
+                return 0.0
             
             # Calculate cosine similarity
             dot_product = np.dot(vec1, vec2)
@@ -7049,10 +7068,13 @@ class PersistentAIMemorySystem:
             if len(rows) < 2:
                 return {"status": "success", "clusters": [], "total_redundant": 0}
 
-            def _find_clusters(rows_inner, thresh):
-                valid = [(r, np.frombuffer(r["embedding"], dtype=np.float32)) for r in rows_inner]
-                n = len(valid)
-                matrix = np.vstack([e for _, e in valid])
+            valid = self._collect_rows_with_majority_embedding_dim(rows, "redundancy detection")
+
+            def _find_clusters(valid_inner, thresh):
+                if len(valid_inner) < 2:
+                    return []
+                n = len(valid_inner)
+                matrix = np.vstack([e for _, e in valid_inner])
                 norms = np.linalg.norm(matrix, axis=1)
                 norms = np.where(norms < 1e-9, 1.0, norms)
                 normed = matrix / norms[:, None]
@@ -7072,15 +7094,15 @@ class PersistentAIMemorySystem:
                         visited.add(i)
                         clusters.append([
                             {"index": idx,
-                             "memory_id": valid[idx][0]["memory_id"],
-                             "importance": valid[idx][0]["importance_level"],
-                             "content_preview": (valid[idx][0]["content"] or "")[:80],
+                             "memory_id": valid_inner[idx][0]["memory_id"],
+                             "importance": valid_inner[idx][0]["importance_level"],
+                             "content_preview": (valid_inner[idx][0]["content"] or "")[:80],
                              "sim_to_centroid": round(float(sim_matrix[cluster[0]][idx]), 3)}
                             for idx in cluster
                         ])
                 return clusters
 
-            clusters = await asyncio.to_thread(_find_clusters, rows, threshold)
+            clusters = await asyncio.to_thread(_find_clusters, valid, threshold)
 
             merged_count = 0
             if auto_merge:
@@ -7274,19 +7296,24 @@ class PersistentAIMemorySystem:
                 return {"status": "success", "memory_id": memory_id, "boosted": [], "message": "No candidates after tag filter"}
 
             # Compute cosine similarities
-            def _compute_sims():
-                blobs = [c["embedding"] for c in candidates]
-                matrix = np.vstack([np.frombuffer(b, dtype=np.float32) for b in blobs])
+            valid_candidates = self._collect_rows_with_matching_embedding_dim(
+                list(candidates), src_vec.size, "synaptic tagging"
+            )
+            if not valid_candidates:
+                return {"status": "success", "memory_id": memory_id, "boosted": [], "message": "No candidates with matching embedding dimensions"}
+
+            def _compute_sims(valid_inner):
+                matrix = np.vstack([emb for _, emb in valid_inner])
                 norms = np.linalg.norm(matrix, axis=1, keepdims=True)
                 norms = np.where(norms == 0, 1.0, norms)
                 return (matrix / norms) @ src_vec  # (N,)
 
-            sims = await asyncio.to_thread(_compute_sims)
+            sims = await asyncio.to_thread(_compute_sims, valid_candidates)
 
             # Pick top-K above threshold 0.65
             THRESHOLD = 0.65
             indexed = sorted(enumerate(sims), key=lambda x: x[1], reverse=True)
-            top = [(candidates[i], float(s)) for i, s in indexed if s >= THRESHOLD][:limit]
+            top = [(valid_candidates[i][0], float(s)) for i, s in indexed if s >= THRESHOLD][:limit]
 
             if not top:
                 return {"status": "success", "memory_id": memory_id, "boosted": [],

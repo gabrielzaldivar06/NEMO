@@ -3,6 +3,7 @@
     "primary": {
       "provider": "lm_studio",
       "model": "text-embedding-qwen3-embedding-4b",
+      "expected_dimension": 2560,
       "base_url": "http://localhost:1234",
       "add_special_tokens": true,
       "query_instruction": "Given a question about an AI memory system, find the stored memory that contains the same information. The question may use abstract, formal, or academic vocabulary where the stored memory uses specific technical names, product names, or colloquial descriptions of the same concept.",
@@ -11,6 +12,7 @@
     "fallback": {
       "provider": "ollama",
       "model": "nomic-embed-text",
+      "expected_dimension": 768,
       "base_url": "http://localhost:11434",
       "description": "Ollama fallback - fast local embeddings"
     },

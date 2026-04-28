@@ -1853,6 +1853,7 @@ class DatabaseMaintenance:
             "maintenance_timestamp": datetime.now(timezone.utc).isoformat(),
             "rotation_results": {},
             "cleanup_results": {},
+            "embedding_audit": {},
             "optimization_results": {},
             "statistics": {},
             "schema_upgrades": []
@@ -1910,7 +1911,15 @@ class DatabaseMaintenance:
             logger.error(f"❌ Duplicate removal failed: {e}")
             results.setdefault("cleanup_results", {})["duplicates"] = {"error": str(e)}
 
-        # 5. Collect post-cleanup statistics
+        # 5. Audit embedding dimensions and re-embed mismatches
+        logger.info("🧠 Auditing embedding dimensions...")
+        try:
+            results["embedding_audit"] = await self.audit_embedding_dimensions()
+        except Exception as e:
+            logger.error(f"❌ Embedding audit failed: {e}")
+            results["embedding_audit"] = {"error": str(e)}
+
+        # 6. Collect post-cleanup statistics
         logger.info("📊 Collecting statistics...")
         try:
             results["statistics"] = await self._collect_statistics()
@@ -1918,7 +1927,7 @@ class DatabaseMaintenance:
             logger.error(f"❌ Statistics collection failed: {e}")
             results["statistics"] = {"error": str(e)}
 
-        # 6. Build tag registries from all memories
+        # 7. Build tag registries from all memories
         logger.info("🏷️  Building tag registries...")
         try:
             results["tag_registry"] = await self._build_tag_registries()
@@ -1926,7 +1935,7 @@ class DatabaseMaintenance:
             logger.error(f"❌ Tag registry build failed: {e}")
             results["tag_registry"] = {"error": str(e)}
 
-        # 7. Build memory_bank registries
+        # 8. Build memory_bank registries
         logger.info("🏦 Building memory_bank registries...")
         try:
             results["memory_bank_registry"] = await self._build_memory_bank_registries()
@@ -1937,6 +1946,136 @@ class DatabaseMaintenance:
         logger.info("✅ Database maintenance completed")
         
         return results
+
+    async def audit_embedding_dimensions(self) -> Dict:
+        """Audit stored embeddings and re-embed rows with mismatched dimensions.
+
+        Uses the configured primary embedding dimension as the source of truth.
+        This closes the loop on legacy rows that may have been written by an
+        older provider configuration or by a fresh process before the current
+        runtime learned the primary embedding dimension.
+        """
+        embedding_service = self.memory_system.embedding_service
+        expected_dim = (
+            embedding_service._primary_embed_dim
+            or embedding_service._resolve_expected_embedding_dim(embedding_service.primary_config)
+        )
+        if expected_dim <= 0:
+            return {
+                "status": "skipped",
+                "reason": "Unable to resolve expected primary embedding dimension",
+            }
+
+        expected_bytes = expected_dim * 4
+        table_specs = [
+            {
+                "name": "messages",
+                "db": self.memory_system.conversations_db,
+                "query": (
+                    "SELECT message_id AS record_id, content, length(embedding) AS embedding_bytes "
+                    "FROM messages WHERE embedding IS NOT NULL"
+                ),
+                "verify_query": (
+                    "SELECT length(embedding) AS embedding_bytes FROM messages "
+                    "WHERE embedding IS NOT NULL AND message_id = ?"
+                ),
+                "reembed": self.memory_system._add_embedding_to_message,
+            },
+            {
+                "name": "curated_memories",
+                "db": self.memory_system.ai_memory_db,
+                "query": (
+                    "SELECT memory_id AS record_id, content, length(embedding) AS embedding_bytes "
+                    "FROM curated_memories WHERE embedding IS NOT NULL"
+                ),
+                "verify_query": (
+                    "SELECT length(embedding) AS embedding_bytes FROM curated_memories "
+                    "WHERE embedding IS NOT NULL AND memory_id = ?"
+                ),
+                "reembed": self.memory_system._add_embedding_to_memory,
+            },
+            {
+                "name": "reminders",
+                "db": self.memory_system.schedule_db,
+                "query": (
+                    "SELECT reminder_id AS record_id, content, length(embedding) AS embedding_bytes "
+                    "FROM reminders WHERE embedding IS NOT NULL"
+                ),
+                "verify_query": (
+                    "SELECT length(embedding) AS embedding_bytes FROM reminders "
+                    "WHERE embedding IS NOT NULL AND reminder_id = ?"
+                ),
+                "reembed": self.memory_system._add_embedding_to_reminder,
+            },
+            {
+                "name": "project_insights",
+                "db": self.memory_system.vscode_db,
+                "query": (
+                    "SELECT insight_id AS record_id, content, length(embedding) AS embedding_bytes "
+                    "FROM project_insights WHERE embedding IS NOT NULL"
+                ),
+                "verify_query": (
+                    "SELECT length(embedding) AS embedding_bytes FROM project_insights "
+                    "WHERE embedding IS NOT NULL AND insight_id = ?"
+                ),
+                "reembed": self.memory_system._add_embedding_to_project_insight,
+            },
+        ]
+
+        audit_result = {
+            "status": "success",
+            "expected_dimension": expected_dim,
+            "expected_bytes": expected_bytes,
+            "tables": {},
+            "mismatched_rows_found": 0,
+            "rows_reembedded": 0,
+            "rows_still_mismatched": 0,
+        }
+
+        for spec in table_specs:
+            rows = await spec["db"].execute_query(spec["query"])
+            total_rows = len(rows)
+            mismatched_rows = [
+                row for row in rows
+                if row["embedding_bytes"] is not None and int(row["embedding_bytes"]) != expected_bytes
+            ]
+
+            table_result = {
+                "rows_with_embeddings": total_rows,
+                "mismatched_found": len(mismatched_rows),
+                "reembedded": 0,
+                "still_mismatched": 0,
+                "sample_record_ids": [row["record_id"] for row in mismatched_rows[:5]],
+            }
+
+            for row in mismatched_rows:
+                content = row["content"] or ""
+                if not content.strip():
+                    table_result["still_mismatched"] += 1
+                    continue
+
+                before_bytes = int(row["embedding_bytes"])
+                await spec["reembed"](row["record_id"], content)
+                updated_rows = await spec["db"].execute_query(
+                    spec["verify_query"],
+                    (row["record_id"],)
+                )
+                after_bytes = int(updated_rows[0]["embedding_bytes"]) if updated_rows else before_bytes
+                if after_bytes == expected_bytes:
+                    table_result["reembedded"] += 1
+                else:
+                    table_result["still_mismatched"] += 1
+                    logger.warning(
+                        "Embedding audit could not normalize %s.%s (%s -> %s bytes)",
+                        spec["name"], row["record_id"], before_bytes, after_bytes
+                    )
+
+            audit_result["tables"][spec["name"]] = table_result
+            audit_result["mismatched_rows_found"] += table_result["mismatched_found"]
+            audit_result["rows_reembedded"] += table_result["reembedded"]
+            audit_result["rows_still_mismatched"] += table_result["still_mismatched"]
+
+        return audit_result
     
     async def _apply_retention_policies(self, force: bool = False) -> Dict:
         """Apply retention policies to remove old data"""
