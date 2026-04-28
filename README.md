@@ -30,6 +30,8 @@
 
 **Memoria semántica de largo plazo para agentes de IA — 100% local, sin suscripciones, sin nube.**
 
+NEMO ahora incluye una base inicial de **Context Economy / Context Governor**: en vez de empujar resultados crudos al contexto, puede compilar memorias persistentes en portafolios compactos, tipados y respaldados por evidencia. El objetivo es reducir tokens y ruido contextual sin perder correcciones, preferencias o decisiones críticas.
+
 Compatible con&nbsp; `VS Code Copilot` &nbsp;·&nbsp; `LM Studio` &nbsp;·&nbsp; `Ollama` &nbsp;·&nbsp; `OpenWebUI` &nbsp;·&nbsp; `SillyTavern` &nbsp;·&nbsp; `Claude Desktop` &nbsp;·&nbsp; cualquier cliente MCP
 
 </div>

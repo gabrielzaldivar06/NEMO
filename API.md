@@ -33,6 +33,99 @@ await system.close()
 
 ## Memory Operations
 
+### Context Economy / Context Governor
+
+NEMO can compile durable memory into a bounded, evidence-backed context portfolio instead of returning unbounded raw search history.
+
+#### build_context_portfolio
+
+```python
+portfolio = await system.build_context_portfolio(
+    task="implement the next Context Economy step",
+    topic="memory persistence",
+    tags_include=["nemo"],
+    token_budget=1200,
+    mode="balanced",
+    risk_tolerance=0.5,
+    include_evidence_handles=True,
+)
+```
+
+Returns a payload with `portfolio_id`, selected `atoms`, `estimated_tokens`, `raw_candidate_tokens`, `token_savings_percent`, `build_latency_ms`, utility/risk scores, omitted evidence handles, and retrieval metadata. Critical corrections, preferences, decisions, and project facts are prioritized before ordinary semantic matches. When `token_budget` or `limit` is omitted, NEMO uses `AI_MEMORY_CONTEXT_PORTFOLIO_TOKEN_BUDGET` and `AI_MEMORY_CONTEXT_PORTFOLIO_CANDIDATE_LIMIT`.
+
+#### expand_context_evidence
+
+```python
+expanded = await system.expand_context_evidence(handle="ev_abc123", query="optional filter")
+```
+
+Expands a stored evidence handle and increments retrieval metadata. Missing or expired handles return a structured error.
+
+When `query` is provided, NEMO returns matching evidence lines when possible while preserving the full stored evidence for later expansion. Missing handles return `{"found": false, "error": "missing evidence handle"}`; expired handles return `{"found": false, "error": "expired evidence handle"}`.
+
+#### record_context_feedback
+
+```python
+event = await system.record_context_feedback(
+    portfolio_id="...",
+    evidence_handle="ev_abc123",
+    event_type="expanded",
+    was_useful=True,
+    token_delta=42,
+)
+```
+
+Records feedback used by adaptive scoring. Future portfolios give a small utility boost to memories whose evidence handles were marked useful and a small penalty to handles marked not useful.
+
+#### get_context_portfolio_stats
+
+```python
+stats = await system.get_context_portfolio_stats()
+```
+
+Returns counts for portfolios, evidence handles, retrievals, and feedback events, plus observability metrics such as average token savings, average build latency, evidence expansion rate, useful feedback rate, and missing/expired evidence handle events.
+
+#### compare_context_strategies
+
+```python
+comparison = await system.compare_context_strategies(
+    task="continue the Context Economy implementation",
+    topic="memory persistence",
+    tags_include=["nemo"],
+    token_budget=1200,
+)
+```
+
+Dry-run compares `prime_context`, compact search, and a non-persisted context portfolio for the same task. Returns per-strategy token estimates, item counts, evidence availability, relative savings, and a recommended strategy.
+
+#### refresh_context_portfolio
+
+```python
+refreshed = await system.refresh_context_portfolio(
+    portfolio_id="existing-portfolio-id",
+    token_budget=800,  # optional override
+    limit=40,          # optional override
+)
+```
+
+Rebuilds a saved portfolio with fresh memory candidates while inheriting the original task, topic, tags, mode, risk tolerance, evidence-handle preference, and token budget unless overrides are provided. The refresh creates a new persisted portfolio and returns `refreshed_from_portfolio_id` so clients can keep lineage without mutating the original snapshot. Missing portfolios return `{"status": "error", "error": "portfolio not found"}`.
+
+#### compress_context_artifact
+
+```python
+compressed = await system.compress_context_artifact(
+    content="large log, trace, tool output, or document text...",
+    artifact_type="log",
+    title="build failure",
+    token_budget=400,
+    source_id="optional-source-id",
+    persist_evidence=True,
+    expires_at=None,
+)
+```
+
+Deterministically compacts a large artifact into a bounded context packet while preserving the original behind an evidence handle when `persist_evidence=True`. The compact text prioritizes headings, errors, warnings, decisions, requirements, TODOs, code declarations, assertions, and boundary lines. Returns `compact_text`, `original_tokens`, `compact_tokens`, `token_savings_percent`, `compression_ratio`, and `evidence_handle` when recoverable. When `token_budget` is omitted, NEMO uses `AI_MEMORY_CONTEXT_ARTIFACT_TOKEN_BUDGET`. Empty content returns `{"status": "error", "error": "content is required"}`.
+
 ### store_memory
 
 Store a persistent memory with optional metadata.

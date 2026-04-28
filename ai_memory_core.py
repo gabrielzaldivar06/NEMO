@@ -95,6 +95,340 @@ def datetime_to_local_isoformat(dt: datetime) -> str:
         dt = dt.replace(tzinfo=get_local_timezone())
     return dt.astimezone(get_local_timezone()).isoformat()
 
+
+class ContextAtom:
+    """A typed, budgetable unit of context for Context Economy portfolios."""
+
+    def __init__(self, atom_type: str, content: str, importance_level: int = 5,
+                 tags: Optional[List[str]] = None, evidence_handle: Optional[str] = None,
+                 risk_category: Optional[str] = None, context_cost_tokens: Optional[int] = None,
+                 metadata: Optional[Dict[str, Any]] = None):
+        self.atom_type = atom_type or "semantic"
+        self.content = content or ""
+        self.importance_level = int(importance_level or 5)
+        self.tags = tags or []
+        self.evidence_handle = evidence_handle
+        self.risk_category = risk_category
+        self.context_cost_tokens = context_cost_tokens or estimate_context_tokens(self.content)
+        self.metadata = metadata or {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "atom_type": self.atom_type,
+            "content": self.content,
+            "importance_level": self.importance_level,
+            "tags": self.tags,
+            "evidence_handle": self.evidence_handle,
+            "risk_category": self.risk_category,
+            "context_cost_tokens": self.context_cost_tokens,
+            "metadata": self.metadata,
+        }
+
+
+class EvidenceHandle:
+    """A reversible pointer for evidence that can be expanded on demand."""
+
+    def __init__(self, handle: str, compact_claim: str, original_content: Optional[str] = None,
+                 created_at: Optional[str] = None, expires_at: Optional[str] = None,
+                 retrieval_count: int = 0):
+        self.handle = handle
+        self.compact_claim = compact_claim
+        self.original_content = original_content
+        self.created_at = created_at or get_current_timestamp()
+        self.expires_at = expires_at
+        self.retrieval_count = retrieval_count or 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "handle": self.handle,
+            "compact_claim": self.compact_claim,
+            "original_content": self.original_content,
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "retrieval_count": self.retrieval_count,
+        }
+
+
+class ScoringResult:
+    """Utility and risk scoring for a context atom."""
+
+    def __init__(self, utility: float, risk: float, reason: Optional[str] = None):
+        self.utility = float(utility)
+        self.risk = float(risk)
+        self.reason = reason
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"utility": self.utility, "risk": self.risk, "reason": self.reason}
+
+
+def estimate_context_tokens(text: str) -> int:
+    """Cheap local token estimate used by the MVP until tokenizer adapters exist."""
+    if not text:
+        return 0
+    return max(1, (len(text) + 3) // 4)
+
+
+def _parse_tags(tags: Any) -> List[str]:
+    if not tags:
+        return []
+    if isinstance(tags, list):
+        return tags
+    if isinstance(tags, str):
+        try:
+            parsed = json.loads(tags)
+            return parsed if isinstance(parsed, list) else [tags]
+        except Exception:
+            return [tag.strip() for tag in tags.split(",") if tag.strip()]
+    return []
+
+
+def compress_context_artifact_payload(content: str, artifact_type: str = "text",
+                                      title: Optional[str] = None,
+                                      token_budget: int = 400) -> Dict[str, Any]:
+    """Deterministically compact a large artifact while preserving evidence reversibility."""
+    original_content = content or ""
+    budget = max(1, int(token_budget or 400))
+    original_tokens = estimate_context_tokens(original_content)
+    if not original_content.strip():
+        return {
+            "status": "error",
+            "error": "content is required",
+            "artifact_type": artifact_type or "text",
+            "title": title,
+            "original_tokens": 0,
+            "compact_tokens": 0,
+            "compression_ratio": 0.0,
+            "compact_text": "",
+        }
+
+    normalized_lines = [line.strip() for line in original_content.splitlines() if line.strip()]
+    if not normalized_lines:
+        normalized_lines = [original_content.strip()]
+
+    priority_markers = (
+        "error", "exception", "failed", "failure", "traceback", "warning", "todo",
+        "fixme", "decision", "requirement", "must", "should", "critical", "deprecated",
+        "assert", "def ", "class ", "import ", "from ", "##", "#", "- ", "* ",
+    )
+    selected: List[str] = []
+    seen = set()
+
+    def add_line(line: str):
+        compact_line = line[:240] + "..." if len(line) > 240 else line
+        key = compact_line.lower()
+        if key not in seen:
+            seen.add(key)
+            selected.append(compact_line)
+
+    for line in normalized_lines:
+        lowered = line.lower()
+        if any(marker in lowered for marker in priority_markers):
+            add_line(line)
+    for line in normalized_lines[:5]:
+        add_line(line)
+    if len(normalized_lines) > 5:
+        for line in normalized_lines[-3:]:
+            add_line(line)
+
+    header_parts = [f"artifact_type={artifact_type or 'text'}"]
+    if title:
+        header_parts.append(f"title={title}")
+    header_parts.append(f"original_tokens={original_tokens}")
+    compact_lines = ["[context_artifact|" + "|".join(header_parts) + "]"]
+    compact_lines.extend(f"- {line}" for line in selected)
+
+    compact_text = "\n".join(compact_lines)
+    while estimate_context_tokens(compact_text) > budget and len(compact_lines) > 2:
+        compact_lines.pop()
+        compact_text = "\n".join(compact_lines)
+    if estimate_context_tokens(compact_text) > budget:
+        max_chars = max(1, budget * 4)
+        compact_text = compact_text[:max_chars]
+
+    compact_tokens = estimate_context_tokens(compact_text)
+    compression_ratio = round(compact_tokens / original_tokens, 4) if original_tokens else 0.0
+    return {
+        "status": "success",
+        "artifact_type": artifact_type or "text",
+        "title": title,
+        "original_tokens": original_tokens,
+        "compact_tokens": compact_tokens,
+        "token_budget": budget,
+        "compression_ratio": compression_ratio,
+        "token_savings_percent": round(max(0.0, (1.0 - compression_ratio) * 100.0), 2) if original_tokens else 0.0,
+        "compact_text": compact_text,
+        "selected_line_count": max(0, len(compact_lines) - 1),
+        "original_line_count": len(normalized_lines),
+    }
+
+
+class ContextPortfolio:
+    """Builds a deterministic, budgeted context portfolio from memory rows."""
+
+    CRITICAL_TYPES = {"correction", "preference", "project_fact", "decision", "insight"}
+
+    def __init__(self, task: str, topic: str = None, tags_include: Optional[List[str]] = None,
+                 token_budget: Optional[int] = None, mode: str = None, risk_tolerance: Optional[float] = None,
+                 include_evidence_handles: bool = True, raw_memories: Optional[List[Dict[str, Any]]] = None):
+        self.task = task
+        self.topic = topic
+        self.tags_include = tags_include or []
+        self.token_budget = token_budget
+        self.mode = mode or "balanced"
+        self.risk_tolerance = 0.5 if risk_tolerance is None else risk_tolerance
+        self.include_evidence_handles = include_evidence_handles
+        self.raw_memories = raw_memories or []
+        self.atoms: List[ContextAtom] = []
+        self.evidence_handles: List[EvidenceHandle] = []
+        self.scoring: List[ScoringResult] = []
+        self.estimated_tokens = 0
+        self.raw_candidate_tokens = 0
+        self.token_savings_percent = 0.0
+        self.omitted_evidence_handles: List[str] = []
+        self._evidence_store: Dict[str, EvidenceHandle] = {}
+        self._build_portfolio()
+
+    def _build_portfolio(self):
+        candidates = [self._memory_to_atom(row) for row in self.raw_memories]
+        self.raw_candidate_tokens = sum(atom.context_cost_tokens or estimate_context_tokens(atom.content) for atom in candidates)
+        scored = [(atom, self.score_atom(atom)) for atom in candidates if atom.content]
+        scored.sort(key=lambda pair: (-pair[1].utility, pair[1].risk, pair[0].context_cost_tokens))
+
+        selected: List[ContextAtom] = []
+        selected_scores: List[ScoringResult] = []
+        total_tokens = 0
+        budget = self.token_budget if self.token_budget is not None else 4096
+
+        for atom, score in scored:
+            cost = atom.context_cost_tokens or estimate_context_tokens(atom.content)
+            if selected and total_tokens + cost > budget:
+                if atom.evidence_handle:
+                    self.omitted_evidence_handles.append(atom.evidence_handle)
+                continue
+            if not selected and cost > budget:
+                atom = self._compress_atom_to_budget(atom, budget)
+                cost = atom.context_cost_tokens
+            selected.append(atom)
+            selected_scores.append(score)
+            total_tokens += cost
+
+        self.atoms = selected
+        self.scoring = selected_scores
+        self.estimated_tokens = total_tokens
+        if self.raw_candidate_tokens > 0:
+            self.token_savings_percent = max(0.0, (1.0 - (self.estimated_tokens / self.raw_candidate_tokens)) * 100.0)
+        self.evidence_handles = [
+            EvidenceHandle(atom.evidence_handle, atom.content)
+            for atom in self.atoms if atom.evidence_handle and self.include_evidence_handles
+        ]
+
+    def _memory_to_atom(self, row: Dict[str, Any]) -> ContextAtom:
+        return ContextAtom(
+            atom_type=row.get("memory_type") or row.get("atom_type") or "semantic",
+            content=row.get("content") or "",
+            importance_level=row.get("importance_level", 5),
+            tags=_parse_tags(row.get("tags")),
+            evidence_handle=row.get("evidence_handle"),
+            risk_category=row.get("risk_category"),
+            context_cost_tokens=row.get("context_cost_tokens"),
+            metadata=dict(row),
+        )
+
+    def _compress_atom_to_budget(self, atom: ContextAtom, budget: int) -> ContextAtom:
+        max_chars = max(1, budget * 4)
+        content = atom.content[:max_chars]
+        return ContextAtom(
+            atom_type=atom.atom_type,
+            content=content,
+            importance_level=atom.importance_level,
+            tags=atom.tags,
+            evidence_handle=atom.evidence_handle,
+            risk_category=atom.risk_category,
+            context_cost_tokens=estimate_context_tokens(content),
+            metadata=atom.metadata,
+        )
+
+    def score_atom(self, atom: ContextAtom) -> ScoringResult:
+        utility = float(atom.importance_level)
+        reason_parts = [f"importance={atom.importance_level}"]
+        if atom.atom_type in self.CRITICAL_TYPES:
+            utility += 8.0
+            reason_parts.append("critical_type")
+        if self.topic and self.topic.lower() in atom.content.lower():
+            utility += 2.0
+            reason_parts.append("topic_match")
+        if self.tags_include and set(self.tags_include).intersection(atom.tags):
+            utility += 2.0
+            reason_parts.append("tag_match")
+        access_count = int(atom.metadata.get("access_count") or 0)
+        utility += min(access_count, 10) * 0.1
+        useful_feedback_count = int(atom.metadata.get("useful_feedback_count") or 0)
+        not_useful_feedback_count = int(atom.metadata.get("not_useful_feedback_count") or 0)
+        if useful_feedback_count:
+            utility += min(useful_feedback_count, 5) * 0.5
+            reason_parts.append("useful_feedback")
+        if not_useful_feedback_count:
+            utility -= min(not_useful_feedback_count, 5) * 0.3
+            reason_parts.append("negative_feedback")
+
+        risk = 0.0
+        if atom.atom_type == "correction":
+            risk += 0.1
+        if atom.risk_category in {"high", "critical"}:
+            risk += 0.5
+        if atom.context_cost_tokens and atom.context_cost_tokens > 256:
+            risk += 0.2
+        return ScoringResult(utility=utility, risk=risk, reason=", ".join(reason_parts))
+
+    def add_evidence(self, source_type: str, source_id: str, original_content: str,
+                     compact_claim: Optional[str] = None, expires_at: Optional[str] = None) -> EvidenceHandle:
+        digest = hashlib.sha256(f"{source_type}:{source_id}:{original_content}".encode("utf-8")).hexdigest()[:16]
+        handle_id = f"ev_{digest}"
+        handle = EvidenceHandle(
+            handle=handle_id,
+            compact_claim=compact_claim or original_content[:160],
+            original_content=original_content,
+            expires_at=expires_at,
+        )
+        self._evidence_store[handle_id] = handle
+        self.evidence_handles.append(handle)
+        return handle
+
+    def expand_evidence(self, handle: str) -> Dict[str, Any]:
+        if handle not in self._evidence_store:
+            return {"handle": handle, "found": False, "error": "missing evidence handle"}
+        evidence = self._evidence_store[handle]
+        evidence.retrieval_count += 1
+        payload = evidence.to_dict()
+        payload["found"] = True
+        return payload
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "task": self.task,
+            "topic": self.topic,
+            "token_budget": self.token_budget,
+            "estimated_tokens": self.estimated_tokens,
+            "raw_candidate_tokens": self.raw_candidate_tokens,
+            "token_savings_percent": round(self.token_savings_percent, 2),
+            "atoms": [atom.to_dict() for atom in self.atoms],
+            "scoring": [score.to_dict() for score in self.scoring],
+            "evidence_handles": [handle.to_dict() for handle in self.evidence_handles],
+            "omitted_evidence_handles": self.omitted_evidence_handles,
+        }
+
+
+def register_portfolio_tools() -> List[str]:
+    return [
+        "build_context_portfolio",
+        "expand_context_evidence",
+        "record_context_feedback",
+        "get_context_portfolio_stats",
+        "compare_context_strategies",
+        "refresh_context_portfolio",
+        "compress_context_artifact",
+    ]
+
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import hashlib
@@ -761,90 +1095,6 @@ class AIMemoryDatabase(DatabaseManager):
         self.initialize_tables()
 
     def initialize_tables(self):
-        """Create tables if they don't exist, and migrate schema if columns are missing"""
-        with self.get_connection() as conn:
-            expected_columns = [
-                'memory_id', 'timestamp_created', 'timestamp_updated', 'source_conversation_id',
-                'source_message_ids', 'memory_type', 'content', 'importance_level', 'tags',
-                'embedding', 'created_at', 'access_count', 'last_accessed_at',
-                'stability', 'difficulty'
-            ]
-            cur = conn.execute("PRAGMA table_info(curated_memories)")
-            current_columns = [row[1] for row in cur.fetchall()]
-            needs_migration = False
-            if current_columns:
-                for col in expected_columns:
-                    if col not in current_columns:
-                        needs_migration = True
-                        break
-            if needs_migration:
-                print("Migrating curated_memories table to new schema!")
-                old_rows = conn.execute("SELECT * FROM curated_memories").fetchall()
-                conn.execute("DROP TABLE IF EXISTS curated_memories")
-                conn.execute("""
-                    CREATE TABLE curated_memories (
-                        memory_id TEXT PRIMARY KEY,
-                        timestamp_created TEXT NOT NULL,
-                        timestamp_updated TEXT NOT NULL,
-                        source_conversation_id TEXT,
-                        source_message_ids TEXT,
-                        memory_type TEXT,
-                        content TEXT NOT NULL,
-                        importance_level INTEGER DEFAULT 5,
-                        tags TEXT,
-                        embedding BLOB,
-                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                        access_count INTEGER DEFAULT 0,
-                        last_accessed_at TEXT,
-                        stability REAL DEFAULT 1.0,
-                        difficulty REAL DEFAULT 0.3
-                    )
-                """)
-                for row in old_rows:
-                    row_dict = dict(row)
-                    for col in expected_columns:
-                        if col not in row_dict:
-                            row_dict[col] = None
-                    conn.execute(
-                        f"INSERT INTO curated_memories ({', '.join(expected_columns)}) VALUES ({', '.join(['?' for _ in expected_columns])})",
-                        tuple(row_dict[col] for col in expected_columns)
-                    )
-                print(f"Restored {len(old_rows)} curated memories after migration.")
-            else:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS curated_memories (
-                        memory_id TEXT PRIMARY KEY,
-                        timestamp_created TEXT NOT NULL,
-                        timestamp_updated TEXT NOT NULL,
-                        source_conversation_id TEXT,
-                        source_message_ids TEXT,
-                        memory_type TEXT,
-                        content TEXT NOT NULL,
-                        importance_level INTEGER DEFAULT 5,
-                        tags TEXT,
-                        embedding BLOB,
-                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                        access_count INTEGER DEFAULT 0,
-                        last_accessed_at TEXT,
-                        stability REAL DEFAULT 1.0,
-                        difficulty REAL DEFAULT 0.3
-                    )
-                """)
-                # Sprint 9 — add access_count / last_accessed_at if missing (live migration)
-                cur2 = conn.execute("PRAGMA table_info(curated_memories)")
-                live_cols = [r[1] for r in cur2.fetchall()]
-                if 'access_count' not in live_cols:
-                    conn.execute("ALTER TABLE curated_memories ADD COLUMN access_count INTEGER DEFAULT 0")
-                if 'last_accessed_at' not in live_cols:
-                    conn.execute("ALTER TABLE curated_memories ADD COLUMN last_accessed_at TEXT")
-                # FSRS-6 — stability and difficulty fields
-                if 'stability' not in live_cols:
-                    conn.execute("ALTER TABLE curated_memories ADD COLUMN stability REAL DEFAULT 1.0")
-                if 'difficulty' not in live_cols:
-                    conn.execute("ALTER TABLE curated_memories ADD COLUMN difficulty REAL DEFAULT 0.3")
-            conn.commit()
-
-    def initialize_tables(self):
         """Create tables if they don't exist, and add new columns via live migration."""
         with self.get_connection() as conn:
             conn.execute("""
@@ -878,6 +1128,65 @@ class AIMemoryDatabase(DatabaseManager):
                 conn.execute("ALTER TABLE curated_memories ADD COLUMN stability REAL DEFAULT 1.0")
             if 'difficulty' not in existing_cols:
                 conn.execute("ALTER TABLE curated_memories ADD COLUMN difficulty REAL DEFAULT 0.3")
+            for col, coltype in [
+                ('context_cost_tokens', 'INTEGER'),
+                ('evidence_handle', 'TEXT'),
+                ('risk_category', 'TEXT'),
+                ('compression_ratio', 'REAL'),
+                ('last_retrieved_in_portfolio', 'TEXT'),
+            ]:
+                if col not in existing_cols:
+                    conn.execute(f"ALTER TABLE curated_memories ADD COLUMN {col} {coltype}")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS evidence (
+                    handle TEXT PRIMARY KEY,
+                    source_type TEXT,
+                    source_id TEXT,
+                    content_hash TEXT,
+                    original_content TEXT,
+                    compact_claim TEXT,
+                    created_at TEXT,
+                    expires_at TEXT,
+                    retrieval_count INTEGER DEFAULT 0
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio (
+                    portfolio_id TEXT PRIMARY KEY,
+                    created_at TEXT,
+                    topic TEXT,
+                    task TEXT,
+                    token_budget INTEGER,
+                    estimated_tokens INTEGER,
+                    raw_candidate_tokens INTEGER,
+                    token_savings_percent REAL,
+                    build_latency_ms REAL,
+                    utility_score REAL,
+                    risk_score REAL,
+                    payload_json TEXT,
+                    version INTEGER
+                )
+            """)
+            cur = conn.execute("PRAGMA table_info(portfolio)")
+            portfolio_cols = [r[1] for r in cur.fetchall()]
+            for col, coltype in [
+                ('raw_candidate_tokens', 'INTEGER'),
+                ('token_savings_percent', 'REAL'),
+                ('build_latency_ms', 'REAL'),
+            ]:
+                if col not in portfolio_cols:
+                    conn.execute(f"ALTER TABLE portfolio ADD COLUMN {col} {coltype}")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS feedback (
+                    event_id TEXT PRIMARY KEY,
+                    portfolio_id TEXT,
+                    evidence_handle TEXT,
+                    event_type TEXT,
+                    was_useful BOOLEAN,
+                    token_delta INTEGER,
+                    created_at TEXT
+                )
+            """)
             # Sprint 11 — FTS5 virtual table for sparse BM25 retrieval (hybrid dense+sparse)
             conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS curated_memories_fts
@@ -1010,6 +1319,139 @@ class AIMemoryDatabase(DatabaseManager):
         )
         
         return memory_id
+
+    async def create_evidence_handle(self, source_type: str, source_id: str,
+                                     original_content: str, compact_claim: str,
+                                     expires_at: str = None) -> str:
+        """Persist a reversible evidence handle for on-demand expansion."""
+        content_hash = hashlib.sha256((original_content or "").encode("utf-8")).hexdigest()
+        handle = f"ev_{content_hash[:16]}"
+        await self.execute_update(
+            """INSERT OR REPLACE INTO evidence
+               (handle, source_type, source_id, content_hash, original_content,
+                compact_claim, created_at, expires_at, retrieval_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT retrieval_count FROM evidence WHERE handle = ?), 0))""",
+            (
+                handle,
+                source_type,
+                source_id,
+                content_hash,
+                original_content,
+                compact_claim,
+                get_current_timestamp(),
+                expires_at,
+                handle,
+            ),
+        )
+        return handle
+
+    async def expand_context_evidence(self, handle: str, query: str = None) -> Dict[str, Any]:
+        """Expand a stored evidence handle, optionally returning query-scoped content."""
+        rows = await self.execute_query("SELECT * FROM evidence WHERE handle = ?", (handle,))
+        if not rows:
+            await self.record_context_feedback(
+                portfolio_id=None,
+                evidence_handle=handle,
+                event_type="missing_evidence_handle",
+                was_useful=False,
+            )
+            return {"handle": handle, "found": False, "error": "missing evidence handle"}
+
+        row = dict(rows[0])
+        expires_at = row.get("expires_at")
+        if expires_at:
+            try:
+                if datetime.fromisoformat(expires_at) < datetime.now(get_local_timezone()):
+                    await self.record_context_feedback(
+                        portfolio_id=None,
+                        evidence_handle=handle,
+                        event_type="expired_evidence_handle",
+                        was_useful=False,
+                    )
+                    return {"handle": handle, "found": False, "error": "expired evidence handle"}
+            except Exception:
+                pass
+
+        content = row.get("original_content") or ""
+        if query:
+            lowered_query = query.lower()
+            lines = [line for line in content.splitlines() if lowered_query in line.lower()]
+            if lines:
+                content = "\n".join(lines)
+
+        await self.execute_update(
+            "UPDATE evidence SET retrieval_count = COALESCE(retrieval_count, 0) + 1 WHERE handle = ?",
+            (handle,),
+        )
+        row["original_content"] = content
+        row["retrieval_count"] = int(row.get("retrieval_count") or 0) + 1
+        row["found"] = True
+        return row
+
+    async def record_context_feedback(self, portfolio_id: str, evidence_handle: str = None,
+                                      event_type: str = "feedback", was_useful: Optional[bool] = None,
+                                      token_delta: int = 0) -> str:
+        """Record portfolio feedback for adaptive scoring."""
+        event_id = str(uuid.uuid4())
+        await self.execute_update(
+            """INSERT INTO feedback
+               (event_id, portfolio_id, evidence_handle, event_type, was_useful, token_delta, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event_id,
+                portfolio_id,
+                evidence_handle,
+                event_type,
+                None if was_useful is None else int(bool(was_useful)),
+                token_delta,
+                get_current_timestamp(),
+            ),
+        )
+        return event_id
+
+    async def get_context_portfolio_stats(self) -> Dict[str, Any]:
+        """Return lightweight Context Economy observability stats."""
+        evidence_count = await self.execute_query("SELECT COUNT(*) AS count FROM evidence")
+        portfolio_stats = await self.execute_query(
+            """SELECT COUNT(*) AS count,
+                      COALESCE(AVG(token_savings_percent), 0) AS avg_token_savings_percent,
+                      COALESCE(AVG(build_latency_ms), 0) AS avg_build_latency_ms,
+                      COALESCE(AVG(raw_candidate_tokens), 0) AS avg_raw_candidate_tokens,
+                      COALESCE(AVG(estimated_tokens), 0) AS avg_estimated_tokens
+               FROM portfolio"""
+        )
+        feedback_count = await self.execute_query("SELECT COUNT(*) AS count FROM feedback")
+        retrievals = await self.execute_query("SELECT COALESCE(SUM(retrieval_count), 0) AS count FROM evidence")
+        useful = await self.execute_query("SELECT COUNT(*) AS count FROM feedback WHERE was_useful = 1")
+        not_useful = await self.execute_query("SELECT COUNT(*) AS count FROM feedback WHERE was_useful = 0")
+        missing = await self.execute_query("SELECT COUNT(*) AS count FROM feedback WHERE event_type = 'missing_evidence_handle'")
+        expired = await self.execute_query("SELECT COUNT(*) AS count FROM feedback WHERE event_type = 'expired_evidence_handle'")
+        evidence_total = int(evidence_count[0]["count"])
+        retrieval_total = int(retrievals[0]["count"])
+        useful_total = int(useful[0]["count"])
+        not_useful_total = int(not_useful[0]["count"])
+        missing_total = int(missing[0]["count"])
+        expired_total = int(expired[0]["count"])
+        expansion_attempts = retrieval_total + missing_total + expired_total
+        rated_feedback_total = useful_total + not_useful_total
+        portfolio_row = dict(portfolio_stats[0])
+        return {
+            "evidence_handles": evidence_total,
+            "portfolios": int(portfolio_row["count"]),
+            "feedback_events": int(feedback_count[0]["count"]),
+            "evidence_retrievals": retrieval_total,
+            "useful_feedback_events": useful_total,
+            "not_useful_feedback_events": not_useful_total,
+            "missing_evidence_handle_events": missing_total,
+            "expired_evidence_handle_events": expired_total,
+            "avg_token_savings_percent": round(float(portfolio_row["avg_token_savings_percent"]), 2),
+            "avg_build_latency_ms": round(float(portfolio_row["avg_build_latency_ms"]), 2),
+            "avg_raw_candidate_tokens": round(float(portfolio_row["avg_raw_candidate_tokens"]), 2),
+            "avg_estimated_tokens": round(float(portfolio_row["avg_estimated_tokens"]), 2),
+            "evidence_expansion_rate": round(retrieval_total / evidence_total, 4) if evidence_total else 0.0,
+            "useful_feedback_rate": round(useful_total / rated_feedback_total, 4) if rated_feedback_total else 0.0,
+            "missing_evidence_handle_rate": round(missing_total / expansion_attempts, 4) if expansion_attempts else 0.0,
+        }
 
 
 class ScheduleDatabase(DatabaseManager):
@@ -4044,6 +4486,298 @@ class PersistentAIMemorySystem:
     # =============================================================================
     # AI MEMORY OPERATIONS
     # =============================================================================
+
+    async def _collect_context_portfolio_candidates(self, task: str, topic: str = None,
+                                                    tags_include: List[str] = None,
+                                                    limit: int = 40) -> List[Dict[str, Any]]:
+        tags_include = tags_include or []
+        critical_types = ["correction", "preference", "project_fact", "decision", "insight"]
+        params: List[Any] = []
+        where_parts = [
+            "memory_type IN ({})".format(",".join("?" for _ in critical_types))
+        ]
+        params.extend(critical_types)
+
+        if task:
+            where_parts.append("content LIKE ?")
+            params.append(f"%{task}%")
+        if topic:
+            where_parts.append("(content LIKE ? OR tags LIKE ?)")
+            params.extend([f"%{topic}%", f"%{topic}%"])
+        for tag in tags_include:
+            where_parts.append("tags LIKE ?")
+            params.append(f"%{tag}%")
+
+        rows = await self.ai_memory_db.execute_query(
+            f"""SELECT cm.memory_id, cm.memory_type, cm.content, cm.importance_level, cm.tags,
+                       cm.access_count, cm.last_accessed_at, cm.context_cost_tokens,
+                       cm.evidence_handle, cm.risk_category, cm.compression_ratio,
+                       cm.last_retrieved_in_portfolio,
+                       COALESCE(fb.useful_feedback_count, 0) AS useful_feedback_count,
+                       COALESCE(fb.not_useful_feedback_count, 0) AS not_useful_feedback_count
+                FROM curated_memories cm
+                LEFT JOIN (
+                    SELECT evidence_handle,
+                           SUM(CASE WHEN was_useful = 1 THEN 1 ELSE 0 END) AS useful_feedback_count,
+                           SUM(CASE WHEN was_useful = 0 THEN 1 ELSE 0 END) AS not_useful_feedback_count
+                    FROM feedback
+                    WHERE evidence_handle IS NOT NULL
+                    GROUP BY evidence_handle
+                ) fb ON fb.evidence_handle = cm.evidence_handle
+                WHERE {' OR '.join(where_parts)}
+                ORDER BY cm.importance_level DESC, cm.access_count DESC
+                LIMIT ?""",
+            tuple(params + [limit]),
+        )
+        return [dict(row) for row in rows]
+
+    async def build_context_portfolio(self, task: str, topic: str = None,
+                                      tags_include: List[str] = None, token_budget: int = None,
+                                      mode: str = "balanced", risk_tolerance: float = 0.5,
+                                      include_evidence_handles: bool = True,
+                                      limit: int = None) -> Dict:
+        """Build and persist a deterministic Context Economy portfolio."""
+        started = time.perf_counter()
+        tags_include = tags_include or []
+        token_budget = token_budget if token_budget is not None else getattr(self.settings, "context_portfolio_token_budget", 1200)
+        limit = limit if limit is not None else getattr(self.settings, "context_portfolio_candidate_limit", 40)
+        raw_memories = await self._collect_context_portfolio_candidates(task, topic, tags_include, limit)
+        portfolio = ContextPortfolio(
+            task=task,
+            topic=topic,
+            tags_include=tags_include,
+            token_budget=token_budget,
+            mode=mode,
+            risk_tolerance=risk_tolerance,
+            include_evidence_handles=include_evidence_handles,
+            raw_memories=raw_memories,
+        )
+        payload = portfolio.to_dict()
+        portfolio_id = str(uuid.uuid4())
+        utility_score = sum(score.utility for score in portfolio.scoring)
+        risk_score = sum(score.risk for score in portfolio.scoring)
+        build_latency_ms = (time.perf_counter() - started) * 1000
+        payload["build_latency_ms"] = round(build_latency_ms, 2)
+        payload.update({
+            "mode": mode,
+            "risk_tolerance": risk_tolerance,
+            "tags_include": tags_include,
+            "include_evidence_handles": include_evidence_handles,
+            "limit": limit,
+        })
+
+        await self.ai_memory_db.execute_update(
+            """INSERT INTO portfolio
+               (portfolio_id, created_at, topic, task, token_budget, estimated_tokens,
+                     raw_candidate_tokens, token_savings_percent, build_latency_ms,
+                     utility_score, risk_score, payload_json, version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                portfolio_id,
+                get_current_timestamp(),
+                topic,
+                task,
+                token_budget,
+                portfolio.estimated_tokens,
+                portfolio.raw_candidate_tokens,
+                portfolio.token_savings_percent,
+                build_latency_ms,
+                utility_score,
+                risk_score,
+                json.dumps(payload),
+                1,
+            ),
+        )
+        memory_ids = [atom.metadata.get("memory_id") for atom in portfolio.atoms if atom.metadata.get("memory_id")]
+        for memory_id in memory_ids:
+            await self.ai_memory_db.execute_update(
+                "UPDATE curated_memories SET last_retrieved_in_portfolio = ? WHERE memory_id = ?",
+                (portfolio_id, memory_id),
+            )
+
+        payload.update({
+            "status": "success",
+            "portfolio_id": portfolio_id,
+            "utility_score": utility_score,
+            "risk_score": risk_score,
+            "retrieval_metadata": {"candidate_count": len(raw_memories), "selected_count": len(portfolio.atoms)},
+        })
+        return payload
+
+    async def refresh_context_portfolio(self, portfolio_id: str,
+                                        token_budget: Optional[int] = None,
+                                        limit: Optional[int] = None) -> Dict[str, Any]:
+        """Rebuild a saved portfolio with fresh candidates and inherited configuration."""
+        rows = await self.ai_memory_db.execute_query(
+            "SELECT * FROM portfolio WHERE portfolio_id = ?",
+            (portfolio_id,),
+        )
+        if not rows:
+            return {"status": "error", "error": "portfolio not found", "portfolio_id": portfolio_id}
+
+        row = dict(rows[0])
+        try:
+            saved_payload = json.loads(row.get("payload_json") or "{}")
+        except Exception:
+            saved_payload = {}
+
+        refreshed = await self.build_context_portfolio(
+            task=row.get("task") or saved_payload.get("task"),
+            topic=row.get("topic") or saved_payload.get("topic"),
+            tags_include=saved_payload.get("tags_include") or [],
+            token_budget=token_budget if token_budget is not None else int(row.get("token_budget") or saved_payload.get("token_budget") or 1200),
+            mode=saved_payload.get("mode") or "balanced",
+            risk_tolerance=float(saved_payload.get("risk_tolerance") if saved_payload.get("risk_tolerance") is not None else 0.5),
+            include_evidence_handles=bool(saved_payload.get("include_evidence_handles", True)),
+            limit=limit if limit is not None else int(saved_payload.get("limit") or 40),
+        )
+        refreshed.update({
+            "refreshed_from_portfolio_id": portfolio_id,
+            "refresh_created_new_portfolio": True,
+        })
+        await self.ai_memory_db.execute_update(
+            "UPDATE portfolio SET payload_json = ? WHERE portfolio_id = ?",
+            (json.dumps(refreshed), refreshed["portfolio_id"]),
+        )
+        return refreshed
+
+    async def compress_context_artifact(self, content: str, artifact_type: str = "text",
+                                        title: str = None, token_budget: int = None,
+                                        source_id: str = None, persist_evidence: bool = True,
+                                        expires_at: str = None) -> Dict[str, Any]:
+        """Compact a large artifact and optionally store the original as evidence."""
+        token_budget = token_budget if token_budget is not None else getattr(self.settings, "context_artifact_token_budget", 400)
+        payload = compress_context_artifact_payload(
+            content=content,
+            artifact_type=artifact_type,
+            title=title,
+            token_budget=token_budget,
+        )
+        if payload.get("status") != "success":
+            return payload
+        if persist_evidence:
+            handle = await self.ai_memory_db.create_evidence_handle(
+                source_type=f"artifact:{artifact_type or 'text'}",
+                source_id=source_id or hashlib.sha256((content or "").encode("utf-8")).hexdigest()[:16],
+                original_content=content,
+                compact_claim=payload["compact_text"],
+                expires_at=expires_at,
+            )
+            payload["evidence_handle"] = handle
+            payload["recoverable"] = True
+        else:
+            payload["evidence_handle"] = None
+            payload["recoverable"] = False
+        return payload
+
+    async def expand_context_evidence(self, handle: str, query: str = None) -> Dict[str, Any]:
+        return await self.ai_memory_db.expand_context_evidence(handle, query=query)
+
+    async def record_context_feedback(self, portfolio_id: str, evidence_handle: str = None,
+                                      event_type: str = "feedback", was_useful: Optional[bool] = None,
+                                      token_delta: int = 0) -> Dict[str, Any]:
+        event_id = await self.ai_memory_db.record_context_feedback(
+            portfolio_id=portfolio_id,
+            evidence_handle=evidence_handle,
+            event_type=event_type,
+            was_useful=was_useful,
+            token_delta=token_delta,
+        )
+        return {"status": "success", "event_id": event_id}
+
+    async def get_context_portfolio_stats(self) -> Dict[str, Any]:
+        stats = await self.ai_memory_db.get_context_portfolio_stats()
+        stats["status"] = "success"
+        return stats
+
+    async def compare_context_strategies(self, task: str, topic: str = None,
+                                         tags_include: List[str] = None,
+                                         token_budget: int = 1200,
+                                         limit: int = 5) -> Dict[str, Any]:
+        """Dry-run compare prime_context, compact search, and Context Economy output."""
+        tags_include = tags_include or []
+        query = f"{topic} {task}" if topic else task
+
+        prime = await self.prime_context(topic=topic, tags_include=tags_include)
+        compact_search = await self.search_memories(
+            query=query,
+            limit=limit,
+            compact=True,
+            tags_include=tags_include,
+        )
+        started = time.perf_counter()
+        raw_memories = await self._collect_context_portfolio_candidates(
+            task=task,
+            topic=topic,
+            tags_include=tags_include,
+            limit=max(limit, 5),
+        )
+        portfolio_model = ContextPortfolio(
+            task=task,
+            topic=topic,
+            tags_include=tags_include,
+            token_budget=token_budget,
+            raw_memories=raw_memories,
+        )
+        portfolio = portfolio_model.to_dict()
+        portfolio.update({
+            "status": "success",
+            "dry_run": True,
+            "build_latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "utility_score": sum(score.utility for score in portfolio_model.scoring),
+            "risk_score": sum(score.risk for score in portfolio_model.scoring),
+            "retrieval_metadata": {"candidate_count": len(raw_memories), "selected_count": len(portfolio_model.atoms)},
+        })
+
+        strategies = [
+            self._summarize_context_strategy("prime_context", prime),
+            self._summarize_context_strategy("compact_search", compact_search),
+            self._summarize_context_strategy("context_portfolio", portfolio),
+        ]
+        baseline_tokens = max(
+            (entry["estimated_tokens"] for entry in strategies if entry["name"] != "context_portfolio"),
+            default=0,
+        )
+        for entry in strategies:
+            if baseline_tokens:
+                entry["relative_savings_percent"] = round(
+                    max(0.0, (1.0 - (entry["estimated_tokens"] / baseline_tokens)) * 100.0),
+                    2,
+                )
+            else:
+                entry["relative_savings_percent"] = 0.0
+        strategies.sort(key=lambda entry: (entry["estimated_tokens"], -entry.get("utility_score", 0)))
+        return {
+            "status": "success",
+            "task": task,
+            "topic": topic,
+            "token_budget": token_budget,
+            "strategies": strategies,
+            "recommended_strategy": strategies[0]["name"] if strategies else None,
+        }
+
+    def _summarize_context_strategy(self, name: str, payload: Any) -> Dict[str, Any]:
+        serialized = json.dumps(payload, ensure_ascii=False, default=str)
+        estimated_tokens = estimate_context_tokens(serialized)
+        if isinstance(payload, dict) and payload.get("estimated_tokens") is not None:
+            estimated_tokens = int(payload.get("estimated_tokens") or estimated_tokens)
+        summary = {
+            "name": name,
+            "estimated_tokens": estimated_tokens,
+            "item_count": 0,
+            "utility_score": 0.0,
+            "has_evidence": False,
+        }
+        if isinstance(payload, dict):
+            items = payload.get("atoms") or payload.get("results") or payload.get("memories") or []
+            summary["item_count"] = len(items) if isinstance(items, list) else 0
+            summary["utility_score"] = float(payload.get("utility_score") or 0.0)
+            summary["has_evidence"] = bool(payload.get("evidence_handles") or payload.get("omitted_evidence_handles"))
+            if payload.get("token_savings_percent") is not None:
+                summary["portfolio_token_savings_percent"] = float(payload.get("token_savings_percent") or 0.0)
+            if payload.get("build_latency_ms") is not None:
+                summary["build_latency_ms"] = float(payload.get("build_latency_ms") or 0.0)
+        return summary
     
     async def create_memory(self, content: str, memory_type: str = None,
                           importance_level: int = 5, tags: List[str] = None,

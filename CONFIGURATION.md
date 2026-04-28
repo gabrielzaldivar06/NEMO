@@ -61,6 +61,25 @@ export SHORT_TERM_PRUNING_STRATEGY="fifo"
 export SHORT_TERM_ENABLE_SUMMARIZATION="true"
 ```
 
+### Context Economy Configuration
+
+```bash
+# Default token budget for build_context_portfolio (default: 1200)
+export AI_MEMORY_CONTEXT_PORTFOLIO_TOKEN_BUDGET="1200"
+
+# Default candidate limit for Context Economy portfolio builds (default: 40)
+export AI_MEMORY_CONTEXT_PORTFOLIO_CANDIDATE_LIMIT="40"
+
+# Default token budget for compress_context_artifact (default: 400)
+export AI_MEMORY_CONTEXT_ARTIFACT_TOKEN_BUDGET="400"
+
+# Days to keep persisted portfolio snapshots (default: 30)
+export AI_MEMORY_CONTEXT_PORTFOLIO_RETENTION_DAYS="30"
+
+# Delete expired evidence handles during maintenance (default: true)
+export AI_MEMORY_CONTEXT_CLEANUP_EXPIRED_EVIDENCE="true"
+```
+
 ### Web Search Configuration (Required for Brave Tools)
 
 Get your free API key at https://api.search.brave.com/

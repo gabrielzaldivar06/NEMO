@@ -121,6 +121,37 @@ class MemorySettings(BaseSettings):
         env="AI_MEMORY_SIMILARITY_THRESHOLD",
         description="Minimum similarity score for semantic search"
     )
+
+    # --- Context Economy Configuration ---
+    context_portfolio_token_budget: int = Field(
+        default=1200,
+        env="AI_MEMORY_CONTEXT_PORTFOLIO_TOKEN_BUDGET",
+        description="Default token budget for Context Economy portfolios"
+    )
+
+    context_portfolio_candidate_limit: int = Field(
+        default=40,
+        env="AI_MEMORY_CONTEXT_PORTFOLIO_CANDIDATE_LIMIT",
+        description="Default candidate limit for Context Economy portfolio builds"
+    )
+
+    context_artifact_token_budget: int = Field(
+        default=400,
+        env="AI_MEMORY_CONTEXT_ARTIFACT_TOKEN_BUDGET",
+        description="Default token budget for Context Economy artifact compression"
+    )
+
+    context_portfolio_retention_days: int = Field(
+        default=30,
+        env="AI_MEMORY_CONTEXT_PORTFOLIO_RETENTION_DAYS",
+        description="Days to keep persisted Context Economy portfolio snapshots"
+    )
+
+    context_cleanup_expired_evidence: bool = Field(
+        default=True,
+        env="AI_MEMORY_CONTEXT_CLEANUP_EXPIRED_EVIDENCE",
+        description="Delete expired Context Economy evidence handles during maintenance"
+    )
     
     # --- Logging Configuration ---
     log_level: str = Field(

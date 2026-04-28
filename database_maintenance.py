@@ -87,6 +87,15 @@ class DatabaseMaintenance:
                 "max_age_days": None,  # No age limit - keep all images (memories reference them)
                 "max_count": None,     # No count limit - keep all images
                 "preserve_important": True  # Keep all images (linked to memories)
+            },
+            "context_economy": {
+                "portfolio_max_age_days": getattr(
+                    getattr(memory_system, "settings", None), "context_portfolio_retention_days", 30
+                ),
+                "cleanup_expired_evidence": getattr(
+                    getattr(memory_system, "settings", None), "context_cleanup_expired_evidence", True
+                ),
+                "cleanup_orphaned_feedback": True,
             }
         }
     
@@ -2101,8 +2110,63 @@ class DatabaseMaintenance:
         
         # Clean memory processing logs
         cleanup_results["memory_processing_log"] = await self._cleanup_processing_log()
+
+        # Clean Context Economy ephemeral artifacts
+        cleanup_results["context_economy"] = await self._cleanup_context_economy()
         
         return cleanup_results
+
+    async def _cleanup_context_economy(self) -> Dict:
+        """Clean expired evidence handles and old ephemeral portfolios."""
+        policy = self.retention_policies["context_economy"]
+        now = datetime.now(timezone.utc).isoformat()
+        cutoff_date = (
+            datetime.now(timezone.utc) - timedelta(days=policy["portfolio_max_age_days"])
+        ).isoformat()
+
+        try:
+            expired_before = await self.memory_system.ai_memory_db.execute_query(
+                "SELECT COUNT(*) AS count FROM evidence WHERE expires_at IS NOT NULL AND expires_at < ?",
+                (now,),
+            )
+            old_portfolios_before = await self.memory_system.ai_memory_db.execute_query(
+                "SELECT COUNT(*) AS count FROM portfolio WHERE created_at IS NOT NULL AND created_at < ?",
+                (cutoff_date,),
+            )
+            expired_deleted = 0
+            if policy.get("cleanup_expired_evidence", True):
+                expired_deleted = await self.memory_system.ai_memory_db.execute_update(
+                    "DELETE FROM evidence WHERE expires_at IS NOT NULL AND expires_at < ?",
+                    (now,),
+                )
+            portfolios_deleted = await self.memory_system.ai_memory_db.execute_update(
+                "DELETE FROM portfolio WHERE created_at IS NOT NULL AND created_at < ?",
+                (cutoff_date,),
+            )
+            orphan_feedback_before = await self.memory_system.ai_memory_db.execute_query(
+                """SELECT COUNT(*) AS count FROM feedback
+                   WHERE portfolio_id IS NOT NULL
+                   AND portfolio_id NOT IN (SELECT portfolio_id FROM portfolio)"""
+            )
+            orphan_feedback_deleted = 0
+            if policy.get("cleanup_orphaned_feedback", True):
+                orphan_feedback_deleted = await self.memory_system.ai_memory_db.execute_update(
+                    """DELETE FROM feedback
+                       WHERE portfolio_id IS NOT NULL
+                       AND portfolio_id NOT IN (SELECT portfolio_id FROM portfolio)"""
+                )
+            return {
+                "policy_applied": policy,
+                "expired_evidence_before": int(expired_before[0]["count"]),
+                "old_portfolios_before": int(old_portfolios_before[0]["count"]),
+                "orphan_feedback_before": int(orphan_feedback_before[0]["count"]),
+                "expired_evidence_deleted": expired_deleted,
+                "old_portfolios_deleted": portfolios_deleted,
+                "orphan_feedback_deleted": orphan_feedback_deleted,
+                "portfolio_cutoff_date": cutoff_date,
+            }
+        except Exception as e:
+            return {"policy_applied": policy, "error": str(e)}
     
     async def _cleanup_conversations(self) -> Dict:
         """Clean up old conversation data (disabled - keeping all conversations indefinitely)"""
