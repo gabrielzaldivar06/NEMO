@@ -64,7 +64,7 @@ Tres puertas en el mismo puerto `8765` listas para cualquier cliente:
 | `http://localhost:8765/api/...` | Gemini, LangChain, n8n, scripts (REST plano) |
 
 ```bash
-# 2️⃣  Forza a la IA de cualquier proyecto a usar NEMO como memoria
+# 2️⃣  Fuerza a la IA de cualquier proyecto a usar NEMO como memoria
 cd ~/cualquier-proyecto
 docker run --rm \
   --add-host=host.docker.internal:host-gateway \

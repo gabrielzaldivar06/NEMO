@@ -33,9 +33,22 @@ RUN pip install --prefix=/install -r requirements.txt \
 # Pre-download the default multilingual embedding model into /models so the
 # first container run is offline-capable and fast.
 ARG EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-ENV EMBEDDING_MODEL=${EMBEDDING_MODEL} \
-    PYTHONPATH=/install/lib/python3.11/site-packages
-RUN mkdir -p /models && python -c "import os; from fastembed import TextEmbedding; TextEmbedding(model_name=os.environ['EMBEDDING_MODEL'], cache_dir='/models'); print('fastembed weights cached for', os.environ['EMBEDDING_MODEL'])"
+ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
+# Resolve site-packages deterministically from the running interpreter.
+# Notes on why this is computed at runtime instead of using ${PYTHON_VERSION}:
+#   - The python:slim base image sets ENV PYTHON_VERSION to the *patch-level*
+#     version (e.g. 3.11.15). That ENV shadows the build ARG `PYTHON_VERSION`
+#     (which only carries `3.11`), so `${PYTHON_VERSION}` here would resolve
+#     to `3.11.15` and the resulting path `/install/lib/python3.11.15/...`
+#     does not exist (pip uses major.minor for the directory name).
+#   - Using a shell glob would also work but Copilot flagged it as fragile.
+#   - Asking the interpreter directly (`%d.%d` % sys.version_info) is
+#     unambiguous, escape-friendly (single quotes only), and survives any
+#     future bump of the base image patch level.
+RUN mkdir -p /models \
+    && PY_MM="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
+    && PYTHONPATH="/install/lib/python${PY_MM}/site-packages" \
+       python -c "import os; from fastembed import TextEmbedding; TextEmbedding(model_name=os.environ['EMBEDDING_MODEL'], cache_dir='/models'); print('fastembed weights cached for', os.environ['EMBEDDING_MODEL'])"
 
 
 # ── Stage 2 — minimal runtime ────────────────────────────────────────────────
