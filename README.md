@@ -50,14 +50,23 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 ### ⭐ El comando que activa NEMO en un proyecto
 
-Este es el comando que ejecutas **a diario** — uno por cada proyecto donde quieras que tu IA tenga memoria. Una sola línea, idempotente, cubre Claude, Cursor, Windsurf, Cline, VS Code Copilot y cualquier cliente que lea `AGENTS.md`:
+Este es el comando que ejecutas **a diario** — uno por cada proyecto donde quieras que tu IA tenga memoria. Una sola línea, idempotente, cubre Claude, Cursor, Windsurf, Cline, VS Code Copilot y cualquier cliente que lea `AGENTS.md`. Elige tu sistema:
+
+#### 🐧 Linux / macOS / WSL (bash, zsh)
 
 ```bash
 cd ~/tu-proyecto-favorito        # el proyecto donde quieres avanzar a velocidades cercanas a la luz 🚀
 docker run --rm --add-host=host.docker.internal:host-gateway -v "$PWD":/workdir nemo:local nemo-attach
 ```
 
-> 📋 **Para pegar:** una sola línea para que copy-paste funcione sin tropiezos en bash, zsh, PowerShell y cmd. En Windows PowerShell, `$PWD` ya resuelve a la ruta actual; en cmd, sustituye `"$PWD"` por `"%cd%"`.
+#### 🪟 Windows (PowerShell — viene de fábrica con Windows 10/11)
+
+```powershell
+cd $HOME\tu-proyecto-favorito    # el proyecto donde quieres avanzar a velocidades cercanas a la luz 🚀
+docker run --rm --add-host=host.docker.internal:host-gateway -v "${PWD}:/workdir" nemo:local nemo-attach
+```
+
+> 💡 ¿Usas el viejo `cmd.exe` ("Símbolo del sistema") en lugar de PowerShell? Sustituye `"${PWD}:/workdir"` por `"%cd%:/workdir"` en el comando de arriba. PowerShell es más cómodo y ya lo tienes instalado.
 
 > 🤔 **¿Por qué este comando?** Porque sin él, tu IA *sabe* que NEMO existe (vía la URL configurada en su cliente) pero ~10 % de las veces "se le olvida" llamarla. Lo que este comando instala son los archivos de reglas (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`) que **fuerzan** al modelo a llamar `prime_context` antes de responderte y `create_correction` cuando lo corriges.
 
@@ -130,7 +139,9 @@ Tres comprobaciones de menos de 30 segundos para confirmar que cada pieza está 
 | <http://localhost:8765/openapi.json> | JSON grande con la spec OpenAPI de las ~34 tools | Si no responde, repite el setup único por máquina (`docker compose up -d`). Si responde pero la lista de tools está vacía, NEMO arrancó pero el core no inicializó — mira los logs. |
 | <http://localhost:8765/docs> | UI interactiva de Swagger donde puedes invocar tools desde el navegador (útil para probar `prime_context` o `search_memories` sin escribir código) | — |
 
-**② Desde la terminal** (si prefieres curl):
+**② Desde la terminal**:
+
+##### 🐧 Linux / macOS / WSL
 
 ```bash
 curl -s http://localhost:8765/health | grep -o '"status":"[^"]*"'
@@ -139,6 +150,18 @@ curl -s http://localhost:8765/health | grep -o '"status":"[^"]*"'
 curl -s http://localhost:8765/api/tools | python3 -c "import json,sys; print('tools:', len(json.load(sys.stdin)['tools']))"
 # Esperado: tools: 34
 ```
+
+##### 🪟 Windows (PowerShell)
+
+```powershell
+(Invoke-RestMethod http://localhost:8765/health).status
+# Esperado: ok
+
+(Invoke-RestMethod http://localhost:8765/api/tools).tools.Count
+# Esperado: 34
+```
+
+> 💡 `Invoke-RestMethod` parsea JSON automáticamente — más limpio que pipear a `python3` y no necesita Python instalado en el host.
 
 **③ Desde tu IA** (la prueba de fuego: que la IA *use* NEMO):
 
@@ -155,6 +178,8 @@ Tres resultados posibles:
 
 Para una prueba más completa que ejercita el ciclo entero (escribir → reiniciar → leer):
 
+##### 🐧 Linux / macOS / WSL
+
 ```bash
 # Crea una memoria
 curl -s -X POST http://localhost:8765/api/memory -H "Content-Type: application/json" -d '{"content":"smoke-test: NEMO está listo","memory_type":"fact","tags":["smoke"]}'
@@ -165,6 +190,23 @@ docker compose restart nemo && sleep 6
 # Búscala — debe aparecer
 curl -s -X POST http://localhost:8765/api/memory/search -H "Content-Type: application/json" -d '{"query":"smoke-test","limit":3}'
 ```
+
+##### 🪟 Windows (PowerShell)
+
+```powershell
+# Crea una memoria
+$body = '{"content":"smoke-test: NEMO está listo","memory_type":"fact","tags":["smoke"]}'
+Invoke-RestMethod -Method POST -Uri http://localhost:8765/api/memory -ContentType "application/json" -Body $body
+
+# Reinicia el contenedor (simula apagar el ordenador)
+docker compose restart nemo; Start-Sleep -Seconds 6
+
+# Búscala — debe aparecer
+$query = '{"query":"smoke-test","limit":3}'
+Invoke-RestMethod -Method POST -Uri http://localhost:8765/api/memory/search -ContentType "application/json" -Body $query
+```
+
+> 💡 En PowerShell el JSON va en una variable (`$body`, `$query`) para esquivar las trampas de comillas anidadas. `Invoke-RestMethod` reemplaza `curl … -d …` y devuelve un objeto ya parseado.
 
 Si la búsqueda recupera la memoria después del `restart`, **la persistencia funciona** y el sistema completo está operativo.
 
