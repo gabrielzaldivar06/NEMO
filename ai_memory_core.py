@@ -66,6 +66,7 @@ import subprocess
 import time
 import socket
 import difflib
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timezone, timedelta, tzinfo
 from pathlib import Path
@@ -843,90 +844,6 @@ class AIMemoryDatabase(DatabaseManager):
                     conn.execute("ALTER TABLE curated_memories ADD COLUMN difficulty REAL DEFAULT 0.3")
             conn.commit()
 
-    async def create_memory(self, content: str, memory_type: str = None, 
-                          importance_level: int = 5, tags: List[str] = None,
-                          source_conversation_id: str = None) -> str:
-        """Create a new curated memory with duplicate detection"""
-        memory_id = str(uuid.uuid4())
-        timestamp = get_current_timestamp()
-
-        # Advanced duplicate detection: check for existing memory with same content, type, and source
-        existing = await self.execute_query(
-            """SELECT memory_id FROM curated_memories 
-                   WHERE content = ? AND memory_type = ? AND source_conversation_id IS ?""",
-            (content, memory_type, source_conversation_id)
-        )
-        if existing:
-            print("Skipping duplicate curated memory entry.")
-            return existing[0]["memory_id"]
-
-        await self.execute_update(
-            """INSERT INTO curated_memories 
-               (memory_id, timestamp_created, timestamp_updated, source_conversation_id, 
-                memory_type, content, importance_level, tags) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (memory_id, timestamp, timestamp, source_conversation_id, 
-             memory_type, content, importance_level, 
-             json.dumps(tags) if tags else None)
-        )
-        return memory_id
-        """Run database maintenance tasks.
-        
-        Args:
-            force: Whether to force maintenance even if recent
-            
-        Returns:
-            Dict containing maintenance results
-        """
-        try:
-            # Check last maintenance
-            last_maintenance = await self.execute_query(
-                "SELECT value FROM metadata WHERE key = 'last_maintenance'"
-            )
-            
-            if not force and last_maintenance:
-                last_time = datetime.fromisoformat(last_maintenance[0]["value"])
-                if datetime.now(get_local_timezone()) - last_time < timedelta(days=7):
-                    return {
-                        "status": "skipped",
-                        "message": "Maintenance ran recently",
-                        "last_run": last_time.isoformat()
-                    }
-            
-            with self.get_connection() as conn:
-                # Optimize indexes
-                conn.execute("ANALYZE")
-                
-                # Clean up any orphaned records
-                conn.execute("""
-                    DELETE FROM curated_memories 
-                    WHERE source_conversation_id NOT IN (
-                        SELECT conversation_id FROM conversations
-                    ) AND source_conversation_id IS NOT NULL
-                """)
-                
-                # Update metadata
-                conn.execute(
-                    "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
-                    ("last_maintenance", get_current_timestamp())
-                )
-                
-                conn.commit()
-                
-            return {
-                "status": "success",
-                "message": "Maintenance completed successfully",
-                "timestamp": get_current_timestamp()
-            }
-            
-        except Exception as e:
-            logger.error(f"Maintenance error: {e}")
-            return {
-                "status": "error",
-                "message": str(e),
-                "timestamp": get_current_timestamp()
-            }
-    
     def initialize_tables(self):
         """Create tables if they don't exist, and add new columns via live migration."""
         with self.get_connection() as conn:
@@ -2752,8 +2669,10 @@ class EmbeddingService:
         self._embed_retry_after: Dict[str, float] = {}
         # Sprint B — B1: consecutive failure count per provider for exponential backoff.
         self._embed_failure_count: Dict[str, int] = {}
-        # Dimension guard: reject fallback embeddings whose dimension differs from primary
-        self._primary_embed_dim: int = 0
+        # Dimension guard: reject fallback embeddings whose dimension differs from primary.
+        # Seed from config so a fresh process can still reject a mismatched fallback
+        # before the first successful primary embedding call.
+        self._primary_embed_dim: int = self._resolve_expected_embedding_dim(self.primary_config)
 
         self.provider_availability = {
             "lm_studio": None,  # Will be tested on first use
@@ -2772,8 +2691,28 @@ class EmbeddingService:
         print("Intelligent Embedding Service Configuration", file=_sys.stderr)
         print(f"Primary: {primary_provider} ({primary_model})", file=_sys.stderr)
         print(f"Fallback: {fallback_provider} ({fallback_model})", file=_sys.stderr)
+        if self._primary_embed_dim > 0:
+            print(f"Expected primary dimension: {self._primary_embed_dim}D", file=_sys.stderr)
         print("Preserving existing 768D embeddings, using best available for new ones", file=_sys.stderr)
         print("To customize, edit embedding_config.json in the project directory", file=_sys.stderr)
+
+    def _resolve_expected_embedding_dim(self, config: Dict[str, Any]) -> int:
+        """Resolve the configured or inferred embedding dimension for a provider."""
+        expected_dim = config.get("expected_dimension")
+        if isinstance(expected_dim, int) and expected_dim > 0:
+            return expected_dim
+
+        model = str(config.get("model", "")).strip().lower()
+        known_dimensions = {
+            "qwen3-embedding-4b": 2560,
+            "qwen3-embed-4b": 2560,
+            "nomic-embed-text": 768,
+            "text-embedding-3-small": 1536,
+        }
+        for model_hint, dimension in known_dimensions.items():
+            if model_hint in model:
+                return dimension
+        return 0
 
     def _build_embeddings_endpoint(self, config: Dict[str, Any]) -> str:
         """Build the effective embeddings endpoint for health checks and diagnostics."""
@@ -3045,8 +2984,13 @@ class EmbeddingService:
                     result = await self._generate_lm_studio_embedding(text)
                     if result:
                         self._mark_embed_provider_ok(primary_provider)
-                        if self._primary_embed_dim == 0:
-                            self._primary_embed_dim = len(result)
+                        configured_dim = self._resolve_expected_embedding_dim(self.primary_config)
+                        if configured_dim > 0 and len(result) != configured_dim:
+                            logger.warning(
+                                f"[dim-guard] primary {primary_provider} produced {len(result)}D, "
+                                f"configured {configured_dim}D; updating runtime expectation"
+                            )
+                        self._primary_embed_dim = len(result)
                         return result
                     else:
                         self._mark_embed_provider_failed(primary_provider)
@@ -3056,8 +3000,13 @@ class EmbeddingService:
                     result = await self._generate_ollama_embedding(text)
                     if result:
                         self._mark_embed_provider_ok("ollama")
-                        if self._primary_embed_dim == 0:
-                            self._primary_embed_dim = len(result)
+                        configured_dim = self._resolve_expected_embedding_dim(self.primary_config)
+                        if configured_dim > 0 and len(result) != configured_dim:
+                            logger.warning(
+                                f"[dim-guard] primary ollama produced {len(result)}D, "
+                                f"configured {configured_dim}D; updating runtime expectation"
+                            )
+                        self._primary_embed_dim = len(result)
                         return result
                     else:
                         self._mark_embed_provider_failed("ollama")
@@ -3067,8 +3016,13 @@ class EmbeddingService:
                     result = await self._generate_openai_embedding(text)
                     if result:
                         self._mark_embed_provider_ok("openai")
-                        if self._primary_embed_dim == 0:
-                            self._primary_embed_dim = len(result)
+                        configured_dim = self._resolve_expected_embedding_dim(self.primary_config)
+                        if configured_dim > 0 and len(result) != configured_dim:
+                            logger.warning(
+                                f"[dim-guard] primary openai produced {len(result)}D, "
+                                f"configured {configured_dim}D; updating runtime expectation"
+                            )
+                        self._primary_embed_dim = len(result)
                         return result
                     else:
                         self._mark_embed_provider_failed("openai")
@@ -3088,12 +3042,13 @@ class EmbeddingService:
         if fallback_provider and fallback_provider != primary_provider:
             if not self._embed_provider_in_cooldown(fallback_provider):
                 try:
+                    expected_dim = self._primary_embed_dim or self._resolve_expected_embedding_dim(self.primary_config)
                     if fallback_provider in {"lm_studio", "llama_cpp", "custom"}:
                         self.embeddings_endpoint = self._build_embeddings_endpoint(self.fallback_config)
                         result = await self._generate_lm_studio_embedding(text, fallback=True)
                         if result:
-                            if self._primary_embed_dim > 0 and len(result) != self._primary_embed_dim:
-                                logger.warning(f"[dim-guard] fallback {fallback_provider} produced {len(result)}D, expected {self._primary_embed_dim}D — rejecting")
+                            if expected_dim > 0 and len(result) != expected_dim:
+                                logger.warning(f"[dim-guard] fallback {fallback_provider} produced {len(result)}D, expected {expected_dim}D — rejecting")
                             else:
                                 self._mark_embed_provider_ok(fallback_provider)
                                 logger.info(f"Using {fallback_provider} fallback for embedding")
@@ -3104,8 +3059,8 @@ class EmbeddingService:
                     elif fallback_provider == "ollama":
                         result = await self._generate_ollama_embedding(text, fallback=True)
                         if result:
-                            if self._primary_embed_dim > 0 and len(result) != self._primary_embed_dim:
-                                logger.warning(f"[dim-guard] fallback ollama produced {len(result)}D, expected {self._primary_embed_dim}D — rejecting")
+                            if expected_dim > 0 and len(result) != expected_dim:
+                                logger.warning(f"[dim-guard] fallback ollama produced {len(result)}D, expected {expected_dim}D — rejecting")
                             else:
                                 self._mark_embed_provider_ok("ollama")
                                 logger.info("Using Ollama fallback for embedding")
@@ -3116,8 +3071,8 @@ class EmbeddingService:
                     elif fallback_provider == "openai":
                         result = await self._generate_openai_embedding(text, fallback=True)
                         if result:
-                            if self._primary_embed_dim > 0 and len(result) != self._primary_embed_dim:
-                                logger.warning(f"[dim-guard] fallback openai produced {len(result)}D, expected {self._primary_embed_dim}D — rejecting")
+                            if expected_dim > 0 and len(result) != expected_dim:
+                                logger.warning(f"[dim-guard] fallback openai produced {len(result)}D, expected {expected_dim}D — rejecting")
                             else:
                                 self._mark_embed_provider_ok("openai")
                                 logger.info("Using OpenAI fallback for embedding")
@@ -3822,6 +3777,13 @@ class PersistentAIMemorySystem:
         # ---------------------------------------------------------------------------
         # Sprint 8: Memory Consolidation threshold (feature #6)
         # Memories with cosine > this at write-time are flagged as near-duplicates
+
+        # Runtime policy adjustments learned from prior reflections.
+        self._runtime_learning_state = {
+            "embed_cache_max": getattr(self.embedding_service, "_embed_cache_max", 256),
+            "bg_embed_max": self._BG_EMBED_MAX,
+            "embed_cooldown_max": getattr(self.embedding_service, "_EMBED_COOLDOWN_MAX", 45.0),
+        }
         # even if below the hard dedup threshold (0.92). Range: (dedup_thresh, 0.92)
         # ---------------------------------------------------------------------------
         self._consolidation_threshold: float = 0.82
@@ -4161,17 +4123,21 @@ class PersistentAIMemorySystem:
             best_sim = 0.0
             best_match = None
             if rows:
+                valid = self._collect_rows_with_matching_embedding_dim(
+                    rows, new_vec.size, "AI memory background dedup"
+                )
                 # CPU-bound numpy ops — run off the event loop to avoid freezing.
-                def _compute_best_match():
-                    blobs = [r["embedding"] for r in rows]
-                    matrix = np.vstack([np.frombuffer(b, dtype=np.float32) for b in blobs])
+                def _compute_best_match(valid_inner):
+                    if not valid_inner:
+                        return 0.0, None
+                    valid_rows, embeds = zip(*valid_inner)
+                    matrix = np.vstack(embeds)
                     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
                     norms = np.where(norms == 0, 1.0, norms)
                     sims = (matrix / norms) @ (new_vec / new_norm)
                     idx = int(np.argmax(sims))
-                    return float(sims[idx]), idx
-                best_sim, best_idx = await asyncio.to_thread(_compute_best_match)
-                best_match = rows[best_idx]
+                    return float(sims[idx]), valid_rows[idx]
+                best_sim, best_match = await asyncio.to_thread(_compute_best_match, valid)
 
             if best_sim >= 0.92 and best_match:
                 # Semantic duplicate found — remove the just-inserted memory
@@ -4427,6 +4393,280 @@ class PersistentAIMemorySystem:
         """Get comprehensive tool usage summary"""
         
         return await self.mcp_db.get_tool_usage_summary(days)
+
+    async def reflect_on_tool_usage(self, days: int = 7, client_id: str = None) -> Dict:
+        """Analyze recent MCP tool usage and persist a reflection.
+
+        This is the missing bridge between raw tool-call telemetry and actual
+        learning. It summarizes recent usage, identifies the busiest tools,
+        error-prone tools, and slow tools, then stores a reflection that later
+        sessions can retrieve.
+        """
+        try:
+            history_limit = max(100, days * 80)
+            history = await self.mcp_db.get_tool_call_history(limit=history_limit)
+            if client_id:
+                history = [row for row in history if row.get("client_id") == client_id]
+
+            if not history:
+                return {
+                    "status": "success",
+                    "message": "No tool-call history available for reflection",
+                    "period_days": days,
+                    "reflection_created": False,
+                }
+
+            total_calls = len(history)
+            tool_counts = Counter(row.get("tool_name", "unknown") for row in history)
+            status_counts = Counter(row.get("status", "unknown") for row in history)
+            error_rows = [row for row in history if row.get("status") == "error"]
+
+            exec_samples: Dict[str, List[float]] = {}
+            for row in history:
+                tool_name = row.get("tool_name", "unknown")
+                execution_ms = row.get("execution_time_ms")
+                if execution_ms is None:
+                    continue
+                exec_samples.setdefault(tool_name, []).append(float(execution_ms))
+
+            slow_tools = []
+            for tool_name, samples in exec_samples.items():
+                if not samples:
+                    continue
+                avg_ms = sum(samples) / len(samples)
+                if avg_ms >= 1000:
+                    slow_tools.append({
+                        "tool_name": tool_name,
+                        "avg_execution_time_ms": round(avg_ms, 2),
+                        "sample_count": len(samples),
+                    })
+            slow_tools.sort(key=lambda item: item["avg_execution_time_ms"], reverse=True)
+
+            error_counts = Counter(row.get("tool_name", "unknown") for row in error_rows)
+            top_tools = tool_counts.most_common(5)
+            top_errors = error_counts.most_common(3)
+            error_rate = round(len(error_rows) / total_calls, 4) if total_calls else 0.0
+
+            insights = []
+            recommendations = []
+
+            if top_tools:
+                insights.append(
+                    f"Most-used tool: {top_tools[0][0]} ({top_tools[0][1]} calls in the last {days} day(s))"
+                )
+            if error_rate > 0:
+                insights.append(f"Observed error rate: {error_rate:.2%} across {total_calls} tool calls")
+            if slow_tools:
+                slow_summary = ", ".join(
+                    f"{item['tool_name']} ({item['avg_execution_time_ms']:.0f}ms avg)"
+                    for item in slow_tools[:3]
+                )
+                insights.append(f"Slow tools detected: {slow_summary}")
+            if top_errors:
+                error_summary = ", ".join(f"{name} ({count})" for name, count in top_errors)
+                insights.append(f"Error concentration by tool: {error_summary}")
+
+            if error_rate >= 0.10:
+                recommendations.append("Prioritize reliability work on the tools generating repeated failures")
+            if slow_tools:
+                recommendations.append("Move heavy operations to background workers or cache hot paths")
+            if tool_counts.get("prime_context", 0) == 0:
+                recommendations.append("Enforce prime_context at session start to avoid blind responses")
+            if tool_counts.get("write_ai_insights", 0) == 0 and total_calls >= 10:
+                recommendations.append("Persist reflection summaries more often so improvements survive across sessions")
+
+            if not insights:
+                insights.append("Tool usage is stable but lacks enough signal for a stronger pattern")
+
+            content = (
+                f"Tool usage reflection for the last {days} day(s): {total_calls} total calls, "
+                f"{len(error_rows)} errors, most-used tools {top_tools[:3]}."
+            )
+
+            reflection_id = await self.mcp_db.store_ai_reflection(
+                "tool_usage_analysis",
+                content,
+                insights=insights,
+                recommendations=recommendations,
+                confidence_level=0.82 if total_calls >= 20 else 0.68,
+                source_period_days=days,
+            )
+
+            if top_tools:
+                await self.mcp_db.store_usage_pattern(
+                    pattern_type="tool_dominance",
+                    insight=f"{top_tools[0][0]} dominates recent workflows with {top_tools[0][1]} calls",
+                    analysis_period_days=days,
+                    confidence_score=0.78,
+                    supporting_data={
+                        "top_tools": [{"tool_name": name, "count": count} for name, count in top_tools],
+                        "total_calls": total_calls,
+                        "client_id": client_id,
+                    },
+                )
+
+            if top_errors:
+                await self.mcp_db.store_usage_pattern(
+                    pattern_type="error_hotspots",
+                    insight=f"Repeated failures cluster in: {', '.join(name for name, _ in top_errors)}",
+                    analysis_period_days=days,
+                    confidence_score=0.74,
+                    supporting_data={
+                        "top_errors": [{"tool_name": name, "count": count} for name, count in top_errors],
+                        "error_rate": error_rate,
+                        "client_id": client_id,
+                    },
+                )
+
+            return {
+                "status": "success",
+                "reflection_created": True,
+                "reflection_id": reflection_id,
+                "period_days": days,
+                "total_calls": total_calls,
+                "error_rate": error_rate,
+                "top_tools": [{"tool_name": name, "count": count} for name, count in top_tools],
+                "slow_tools": slow_tools[:5],
+                "insights": insights,
+                "recommendations": recommendations,
+            }
+        except Exception as e:
+            logger.error(f"Error reflecting on tool usage: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def run_incremental_learning_cycle(self, days: int = 7) -> Dict:
+        """Run a lightweight learning pass based on stored reflections and usage patterns.
+
+        The goal is not to retrain a model but to continuously consolidate
+        operational knowledge into reflections, patterns, and project insights.
+        """
+        try:
+            reflection_result = await self.reflect_on_tool_usage(days=days)
+            recent_reflections = await self.mcp_db.get_recent_reflections(limit=12)
+
+            repeated_keywords = Counter()
+            for item in recent_reflections:
+                reflection_type = (item.get("reflection_type") or "general").strip().lower()
+                repeated_keywords[reflection_type] += 1
+                recommendations_json = item.get("recommendations")
+                if recommendations_json:
+                    try:
+                        for rec in json.loads(recommendations_json):
+                            normalized = str(rec).strip().lower()
+                            if normalized:
+                                repeated_keywords[normalized] += 1
+                    except Exception:
+                        pass
+
+            learned_patterns = []
+            for label, count in repeated_keywords.most_common(3):
+                if count < 2:
+                    continue
+                learned_patterns.append({"signal": label, "frequency": count})
+
+            if learned_patterns:
+                summary = "; ".join(f"{item['signal']} x{item['frequency']}" for item in learned_patterns)
+                await self.mcp_db.store_ai_reflection(
+                    "incremental_learning",
+                    f"Incremental learning cycle detected repeated operational signals: {summary}",
+                    insights=[f"Repeated pattern: {item['signal']} ({item['frequency']}x)" for item in learned_patterns],
+                    recommendations=[
+                        "Promote repeated operational signals into stable defaults or background automation"
+                    ],
+                    confidence_level=0.72,
+                    source_period_days=days,
+                )
+
+            adjustments = await self.apply_reflection_learnings(days=days)
+
+            return {
+                "status": "success",
+                "reflection_result": reflection_result,
+                "learned_patterns": learned_patterns,
+                "recent_reflection_count": len(recent_reflections),
+                "runtime_adjustments": adjustments,
+            }
+        except Exception as e:
+            logger.error(f"Incremental learning cycle failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def apply_reflection_learnings(self, days: int = 7) -> Dict:
+        """Translate repeated reflections into runtime policy adjustments.
+
+        This keeps the adaptation lightweight and reversible: it tunes cache sizes,
+        background parallelism, and cooldown behavior for the current process.
+        """
+        try:
+            rows = await self.mcp_db.execute_query(
+                """SELECT reflection_type, content, insights, recommendations
+                   FROM ai_reflections
+                   WHERE timestamp >= datetime('now', ?)
+                   ORDER BY timestamp DESC
+                   LIMIT 50""",
+                (f"-{days} days",)
+            )
+
+            signals = Counter()
+            for raw_row in rows:
+                row = dict(raw_row)
+                reflection_type = (row.get("reflection_type") or "general").lower()
+                signals[reflection_type] += 1
+                for key in ("content",):
+                    text = (row.get(key) or "").lower()
+                    if "cache hot paths" in text:
+                        signals["cache_hot_paths"] += 1
+                    if "background workers" in text:
+                        signals["background_workers"] += 1
+                    if "reliability" in text or "failures" in text or "error" in text:
+                        signals["reliability"] += 1
+                for key in ("insights", "recommendations"):
+                    payload = row.get(key)
+                    if not payload:
+                        continue
+                    try:
+                        values = json.loads(payload)
+                    except Exception:
+                        continue
+                    for value in values:
+                        text = str(value).lower()
+                        if "cache" in text:
+                            signals["cache_hot_paths"] += 1
+                        if "background" in text:
+                            signals["background_workers"] += 1
+                        if "reliability" in text or "failure" in text or "error" in text:
+                            signals["reliability"] += 1
+
+            applied = {}
+
+            if signals["cache_hot_paths"] >= 2:
+                new_cache_max = max(getattr(self.embedding_service, "_embed_cache_max", 256), 512)
+                self.embedding_service._embed_cache_max = new_cache_max
+                self._runtime_learning_state["embed_cache_max"] = new_cache_max
+                applied["embed_cache_max"] = new_cache_max
+
+            if signals["background_workers"] >= 2:
+                new_bg_limit = max(self._BG_EMBED_MAX, 8)
+                if new_bg_limit != self._BG_EMBED_MAX:
+                    self._BG_EMBED_MAX = new_bg_limit
+                    self._bg_embed_semaphore = asyncio.Semaphore(self._BG_EMBED_MAX)
+                self._runtime_learning_state["bg_embed_max"] = self._BG_EMBED_MAX
+                applied["bg_embed_max"] = self._BG_EMBED_MAX
+
+            if signals["reliability"] >= 2:
+                new_cooldown = min(getattr(self.embedding_service, "_EMBED_COOLDOWN_MAX", 45.0), 20.0)
+                self.embedding_service._EMBED_COOLDOWN_MAX = new_cooldown
+                self._runtime_learning_state["embed_cooldown_max"] = new_cooldown
+                applied["embed_cooldown_max"] = new_cooldown
+
+            return {
+                "status": "success",
+                "signals": dict(signals),
+                "applied": applied,
+                "runtime_state": dict(self._runtime_learning_state),
+            }
+        except Exception as e:
+            logger.error(f"Failed to apply reflection learnings: {e}")
+            return {"status": "error", "message": str(e)}
 
     async def get_ai_insights(self, limit: int = 10, reflection_type: str = None, insight_type: str = None) -> Dict:
         """Unified method to retrieve AI insights and reflections from both MCP and VS Code project databases."""
@@ -5363,6 +5603,64 @@ class PersistentAIMemorySystem:
     # INTERNAL HELPER METHODS
     # =============================================================================
     
+    def _collect_rows_with_matching_embedding_dim(
+        self,
+        rows: List[Any],
+        expected_dim: int,
+        context: str,
+    ) -> List[tuple[Any, np.ndarray]]:
+        """Decode row embeddings and keep only vectors matching the expected dimension."""
+        valid: List[tuple[Any, np.ndarray]] = []
+        skipped = 0
+
+        for row in rows:
+            embedding_blob = row["embedding"] if row["embedding"] else None
+            if not embedding_blob:
+                continue
+            embedding_array = np.frombuffer(embedding_blob, dtype=np.float32)
+            if embedding_array.size != expected_dim:
+                skipped += 1
+                continue
+            valid.append((row, embedding_array))
+
+        if skipped:
+            logger.warning(
+                f"Skipped {skipped} embedding(s) with mismatched dimensions during {context} "
+                f"(expected {expected_dim}D)"
+            )
+
+        return valid
+
+    def _collect_rows_with_majority_embedding_dim(
+        self,
+        rows: List[Any],
+        context: str,
+    ) -> List[tuple[Any, np.ndarray]]:
+        """Decode row embeddings and keep only the majority dimension for batch comparisons."""
+        buckets: Dict[int, List[tuple[Any, np.ndarray]]] = {}
+        total = 0
+
+        for row in rows:
+            embedding_blob = row["embedding"] if row["embedding"] else None
+            if not embedding_blob:
+                continue
+            embedding_array = np.frombuffer(embedding_blob, dtype=np.float32)
+            total += 1
+            buckets.setdefault(int(embedding_array.size), []).append((row, embedding_array))
+
+        if not buckets:
+            return []
+
+        selected_dim, valid = max(buckets.items(), key=lambda item: len(item[1]))
+        skipped = total - len(valid)
+        if skipped:
+            logger.warning(
+                f"Skipped {skipped} embedding(s) with non-majority dimensions during {context} "
+                f"(using {selected_dim}D batch)"
+            )
+
+        return valid
+
     async def _search_ai_memories(self, query_embedding: List[float], limit: int,
                                 min_importance: int = None, max_importance: int = None,
                                 memory_type: str = None) -> List[Dict]:
@@ -5389,16 +5687,14 @@ class PersistentAIMemorySystem:
 
         if rows:
             q_arr = np.array(query_embedding, dtype=np.float32)
-            rows_list = list(rows)
+            valid = self._collect_rows_with_matching_embedding_dim(
+                list(rows), q_arr.size, "AI memory semantic search"
+            )
 
-            def _batch_cosine_ai(rows_inner, q_arr_inner):
-                valid = [
-                    (row, np.frombuffer(row["embedding"], dtype=np.float32))
-                    for row in rows_inner if row["embedding"]
-                ]
-                if not valid:
+            def _batch_cosine_ai(valid_inner, q_arr_inner):
+                if not valid_inner:
                     return []
-                valid_rows, embeds = zip(*valid)
+                valid_rows, embeds = zip(*valid_inner)
                 matrix = np.vstack(embeds)
                 q_norm = float(np.linalg.norm(q_arr_inner))
                 if q_norm < 1e-9:
@@ -5411,7 +5707,7 @@ class PersistentAIMemorySystem:
                     for j in range(len(valid_rows)) if sims[j] > 0.3
                 ]
 
-            for row, emb_arr, similarity in await asyncio.to_thread(_batch_cosine_ai, rows_list, q_arr):
+            for row, emb_arr, similarity in await asyncio.to_thread(_batch_cosine_ai, valid, q_arr):
                 # FSRS-6 retention factor: R(t,s) = 0.9^(t/s), modulates final score
                 _stability = float(row["stability"] if "stability" in row.keys() and row["stability"] else 1.0)
                 _last_str = row["last_accessed_at"] if "last_accessed_at" in row.keys() else None
@@ -5614,15 +5910,14 @@ class PersistentAIMemorySystem:
 
         if rows:
             q_arr = np.array(query_embedding, dtype=np.float32)
+            valid = self._collect_rows_with_matching_embedding_dim(
+                list(rows), q_arr.size, "conversation semantic search"
+            )
 
-            def _batch_cosine_conv(rows_inner, q_arr_inner):
-                valid = [
-                    (row, np.frombuffer(row["embedding"], dtype=np.float32))
-                    for row in rows_inner if row["embedding"]
-                ]
-                if not valid:
+            def _batch_cosine_conv(valid_inner, q_arr_inner):
+                if not valid_inner:
                     return []
-                valid_rows, embeds = zip(*valid)
+                valid_rows, embeds = zip(*valid_inner)
                 matrix = np.vstack(embeds)
                 q_norm = float(np.linalg.norm(q_arr_inner))
                 if q_norm < 1e-9:
@@ -5632,7 +5927,7 @@ class PersistentAIMemorySystem:
                 sims = (matrix @ q_arr_inner) / (norms * q_norm)
                 return [(valid_rows[j], float(sims[j])) for j in range(len(valid_rows)) if sims[j] > 0.3]
 
-            for row, similarity in await asyncio.to_thread(_batch_cosine_conv, list(rows), q_arr):
+            for row, similarity in await asyncio.to_thread(_batch_cosine_conv, valid, q_arr):
                 results.append({
                     "type": "conversation",
                     "similarity_score": similarity,
@@ -5664,14 +5959,10 @@ class PersistentAIMemorySystem:
         
         q_arr_sched = np.array(query_embedding, dtype=np.float32)
 
-        def _batch_cosine_sched(rows_inner, q_arr_inner):
-            valid = [
-                (row, np.frombuffer(row["embedding"], dtype=np.float32))
-                for row in rows_inner if row["embedding"]
-            ]
-            if not valid:
+        def _batch_cosine_sched(valid_inner, q_arr_inner):
+            if not valid_inner:
                 return []
-            valid_rows, embeds = zip(*valid)
+            valid_rows, embeds = zip(*valid_inner)
             matrix = np.vstack(embeds)
             q_norm = float(np.linalg.norm(q_arr_inner))
             if q_norm < 1e-9:
@@ -5682,7 +5973,10 @@ class PersistentAIMemorySystem:
             return [(valid_rows[j], float(sims[j])) for j in range(len(valid_rows)) if sims[j] > 0.3]
 
         appt_rows = await self.schedule_db.execute_query(appointment_query)
-        for row, similarity in await asyncio.to_thread(_batch_cosine_sched, list(appt_rows), q_arr_sched):
+        appt_valid = self._collect_rows_with_matching_embedding_dim(
+            list(appt_rows), q_arr_sched.size, "appointment semantic search"
+        )
+        for row, similarity in await asyncio.to_thread(_batch_cosine_sched, appt_valid, q_arr_sched):
             results.append({
                 "type": "appointment",
                 "similarity_score": similarity,
@@ -5704,7 +5998,10 @@ class PersistentAIMemorySystem:
         """
 
         rem_rows = await self.schedule_db.execute_query(reminder_query)
-        for row, similarity in await asyncio.to_thread(_batch_cosine_sched, list(rem_rows), q_arr_sched):
+        rem_valid = self._collect_rows_with_matching_embedding_dim(
+            list(rem_rows), q_arr_sched.size, "reminder semantic search"
+        )
+        for row, similarity in await asyncio.to_thread(_batch_cosine_sched, rem_valid, q_arr_sched):
             results.append({
                 "type": "reminder",
                 "similarity_score": similarity,
@@ -5735,15 +6032,14 @@ class PersistentAIMemorySystem:
 
         if rows:
             q_arr_pi = np.array(query_embedding, dtype=np.float32)
+            valid = self._collect_rows_with_matching_embedding_dim(
+                list(rows), q_arr_pi.size, "project insight semantic search"
+            )
 
-            def _batch_cosine_pi(rows_inner, q_arr_inner):
-                valid = [
-                    (row, np.frombuffer(row["embedding"], dtype=np.float32))
-                    for row in rows_inner if row["embedding"]
-                ]
-                if not valid:
+            def _batch_cosine_pi(valid_inner, q_arr_inner):
+                if not valid_inner:
                     return []
-                valid_rows, embeds = zip(*valid)
+                valid_rows, embeds = zip(*valid_inner)
                 matrix = np.vstack(embeds)
                 q_norm = float(np.linalg.norm(q_arr_inner))
                 if q_norm < 1e-9:
@@ -5753,7 +6049,7 @@ class PersistentAIMemorySystem:
                 sims = (matrix @ q_arr_inner) / (norms * q_norm)
                 return [(valid_rows[j], float(sims[j])) for j in range(len(valid_rows)) if sims[j] > 0.3]
 
-            for row, similarity in await asyncio.to_thread(_batch_cosine_pi, list(rows), q_arr_pi):
+            for row, similarity in await asyncio.to_thread(_batch_cosine_pi, valid, q_arr_pi):
                 results.append({
                     "type": "project_insight",
                     "similarity_score": similarity,
@@ -5896,6 +6192,11 @@ class PersistentAIMemorySystem:
             # Convert to numpy arrays
             vec1 = np.array(embedding1, dtype=np.float32)
             vec2 = np.array(embedding2, dtype=np.float32)
+            if vec1.size != vec2.size:
+                logger.warning(
+                    f"Skipping cosine similarity for mismatched embeddings: {vec1.size}D vs {vec2.size}D"
+                )
+                return 0.0
             
             # Calculate cosine similarity
             dot_product = np.dot(vec1, vec2)
@@ -6767,10 +7068,13 @@ class PersistentAIMemorySystem:
             if len(rows) < 2:
                 return {"status": "success", "clusters": [], "total_redundant": 0}
 
-            def _find_clusters(rows_inner, thresh):
-                valid = [(r, np.frombuffer(r["embedding"], dtype=np.float32)) for r in rows_inner]
-                n = len(valid)
-                matrix = np.vstack([e for _, e in valid])
+            valid = self._collect_rows_with_majority_embedding_dim(rows, "redundancy detection")
+
+            def _find_clusters(valid_inner, thresh):
+                if len(valid_inner) < 2:
+                    return []
+                n = len(valid_inner)
+                matrix = np.vstack([e for _, e in valid_inner])
                 norms = np.linalg.norm(matrix, axis=1)
                 norms = np.where(norms < 1e-9, 1.0, norms)
                 normed = matrix / norms[:, None]
@@ -6790,15 +7094,15 @@ class PersistentAIMemorySystem:
                         visited.add(i)
                         clusters.append([
                             {"index": idx,
-                             "memory_id": valid[idx][0]["memory_id"],
-                             "importance": valid[idx][0]["importance_level"],
-                             "content_preview": (valid[idx][0]["content"] or "")[:80],
+                             "memory_id": valid_inner[idx][0]["memory_id"],
+                             "importance": valid_inner[idx][0]["importance_level"],
+                             "content_preview": (valid_inner[idx][0]["content"] or "")[:80],
                              "sim_to_centroid": round(float(sim_matrix[cluster[0]][idx]), 3)}
                             for idx in cluster
                         ])
                 return clusters
 
-            clusters = await asyncio.to_thread(_find_clusters, rows, threshold)
+            clusters = await asyncio.to_thread(_find_clusters, valid, threshold)
 
             merged_count = 0
             if auto_merge:
@@ -6992,19 +7296,24 @@ class PersistentAIMemorySystem:
                 return {"status": "success", "memory_id": memory_id, "boosted": [], "message": "No candidates after tag filter"}
 
             # Compute cosine similarities
-            def _compute_sims():
-                blobs = [c["embedding"] for c in candidates]
-                matrix = np.vstack([np.frombuffer(b, dtype=np.float32) for b in blobs])
+            valid_candidates = self._collect_rows_with_matching_embedding_dim(
+                list(candidates), src_vec.size, "synaptic tagging"
+            )
+            if not valid_candidates:
+                return {"status": "success", "memory_id": memory_id, "boosted": [], "message": "No candidates with matching embedding dimensions"}
+
+            def _compute_sims(valid_inner):
+                matrix = np.vstack([emb for _, emb in valid_inner])
                 norms = np.linalg.norm(matrix, axis=1, keepdims=True)
                 norms = np.where(norms == 0, 1.0, norms)
                 return (matrix / norms) @ src_vec  # (N,)
 
-            sims = await asyncio.to_thread(_compute_sims)
+            sims = await asyncio.to_thread(_compute_sims, valid_candidates)
 
             # Pick top-K above threshold 0.65
             THRESHOLD = 0.65
             indexed = sorted(enumerate(sims), key=lambda x: x[1], reverse=True)
-            top = [(candidates[i], float(s)) for i, s in indexed if s >= THRESHOLD][:limit]
+            top = [(valid_candidates[i][0], float(s)) for i, s in indexed if s >= THRESHOLD][:limit]
 
             if not top:
                 return {"status": "success", "memory_id": memory_id, "boosted": [],

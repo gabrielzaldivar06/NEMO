@@ -22,6 +22,7 @@ setup(
         "ai_memory_core",
         "ai_memory_mcp_server",
         "database_maintenance",
+        "nemo_daemon",
         "settings",
         "tag_manager",
         "utils",
@@ -58,6 +59,7 @@ setup(
     entry_points={
         "console_scripts": [
             "pams-server=ai_memory_mcp_server:cli",
+            "nemo-daemon=nemo_daemon:cli",
         ],
     },
 )
