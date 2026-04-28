@@ -26,7 +26,7 @@ services:
       # --- Core ---
       NEMO_HOST: 0.0.0.0
       NEMO_PORT: 8765
-      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # --- Embeddings (default: in-process fastembed) ---
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-custom}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}

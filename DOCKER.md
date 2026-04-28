@@ -12,13 +12,16 @@ La imagen expone **un solo puerto (`8765`)** con tres interfaces en paralelo:
 
 | Ruta                     | Para qué sirve                                          | Lo consume               |
 |--------------------------|---------------------------------------------------------|--------------------------|
-| `GET /mcp/sse`           | MCP sobre Server-Sent Events                            | Claude Desktop / Code, Cursor, Windsurf, Cline, VS Code Copilot |
-| `POST /mcp/messages/`    | Canal de retorno MCP para los clientes SSE              | (lo usa el cliente MCP automáticamente) |
-| `GET /api/tools`         | Lista de todas las tools con su schema                  | Exploración, LangChain, n8n |
-| `POST /api/tools/{name}` | Ejecuta cualquier tool por nombre                       | ChatGPT custom GPTs, Gemini, scripts |
-| `POST /api/memory/*`     | Atajos REST (`/search`, `/conversation`, `/prime`, …)   | Integraciones simples    |
-| `GET /openapi.json`      | OpenAPI 3 auto-generado                                 | Importar como custom GPT |
-| `GET /health`            | Liveness + readiness probe                              | Docker healthcheck, monitoreo |
+| `GET /mcp/sse`                  | MCP sobre Server-Sent Events                       | Claude Desktop / Code, Cursor, Windsurf, Cline, VS Code Copilot |
+| `POST /mcp/messages/`           | Canal de retorno MCP para los clientes SSE         | (lo usa el cliente MCP automáticamente) |
+| `GET /api/tools`                | Lista de todas las tools con su schema             | Exploración, LangChain, n8n |
+| `POST /api/tools/{name}`        | Ejecuta cualquier tool por nombre                  | ChatGPT custom GPTs, Gemini, scripts |
+| `POST /api/memory`              | Atajo REST: crear memoria curada                   | Integraciones simples    |
+| `POST /api/memory/conversation` | Atajo REST: persistir un mensaje de conversación   | Integraciones simples    |
+| `POST /api/memory/search`       | Atajo REST: búsqueda semántica                     | Integraciones simples    |
+| `GET /api/memory/prime`         | Atajo REST: prime context inicial                  | Integraciones simples    |
+| `GET /openapi.json`             | OpenAPI 3 auto-generado                            | Importar como custom GPT |
+| `GET /health`                   | Liveness + readiness probe                         | Docker healthcheck, monitoreo |
 
 ---
 
@@ -64,7 +67,10 @@ Añade un MCP server remoto apuntando a `http://localhost:8765/mcp/sse`.
 
 ### ChatGPT custom GPT
 En el builder del GPT → **Configure → Actions → Import from URL** →
-`http://localhost:8765/openapi.json`. Las ~45 tools quedan disponibles.
+`http://localhost:8765/openapi.json`. El conjunto de tools expuestas por REST
+varía según el cliente que detecte NEMO vía `User-Agent` (por defecto verás el
+conjunto común — actualmente ~34 tools — y los clientes específicos como
+VS Code reciben extras adicionales).
 
 ### Gemini / LangChain / n8n / curl
 Llamada HTTP directa:

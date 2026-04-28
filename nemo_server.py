@@ -1,13 +1,12 @@
 """
 NEMO universal server — single process, single port.
 
-Serves three things on the same port:
+Serves on the same port:
   /mcp/sse            MCP over Server-Sent Events   (Claude, Cursor, Windsurf, Cline, VS Code …)
   /mcp/messages/      MCP POST sink for SSE clients
   /api/*              REST API + OpenAPI schema     (ChatGPT custom GPTs, Gemini, LangChain, curl …)
   /embed/v1/…         In-process fastembed sidecar  (only used when EMBEDDING_PROVIDER=custom)
   /health             Liveness + readiness probe
-  /events             Dashboard SSE bus (reused from existing ai_memory_mcp_server.py)
 
 Run:
   python nemo_server.py                  # defaults to 0.0.0.0:8765
@@ -22,9 +21,9 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ai_memory_mcp_server import AIMemoryMCPServer
@@ -33,7 +32,9 @@ from mcp.server.sse import SseServerTransport
 from mcp.server import NotificationOptions
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+# Normalise to upper-case so users can pass `info`/`INFO`/`Info` interchangeably
+# from .env or compose without tripping Python's case-sensitive level lookup.
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 
 
 # ─── SSE transport is safe to build at module load (no async required) ──────
@@ -225,11 +226,44 @@ async def prime_context(topic: str | None = None):
 
 
 # ─── MCP over SSE ───────────────────────────────────────────────────────────
-@app.get("/mcp/sse", tags=["mcp"])
-async def mcp_sse_endpoint(request: Request):
-    """MCP Server-Sent Events endpoint. Connect Claude/Cursor/etc here."""
+# We expose the SSE handshake as a raw ASGI app rather than a FastAPI route so
+# that the MCP SDK receives the genuine ASGI `send` callable. FastAPI's
+# `Request` only exposes `send` via the underscore-prefixed `_send` attribute,
+# which is private API that has changed between Starlette versions; mounting
+# a raw ASGI callable bypasses that brittleness entirely.
+async def _send_plain(send, status: int, body: bytes) -> None:
+    await send({
+        "type": "http.response.start",
+        "status": status,
+        "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+    })
+    await send({"type": "http.response.body", "body": body})
+
+
+async def _mcp_sse_app(scope, receive, send) -> None:
+    if scope["type"] != "http":  # pragma: no cover — FastAPI never routes lifespan/ws here
+        return
+    # Mount routes everything under the prefix; only accept the exact root.
+    if scope.get("path", "") not in ("", "/"):
+        await _send_plain(send, 404, b"Not Found")
+        return
+    if scope.get("method") != "GET":
+        await _send_plain(send, 405, b"Method Not Allowed")
+        return
     if nemo is None:
-        raise HTTPException(status_code=503, detail="MCP not ready")
+        await _send_plain(send, 503, b"MCP not ready")
+        return
+
+    # Propagate the connecting client's User-Agent into the env var that
+    # AIMemoryMCPServer._detect_client_type() inspects, so e.g. VS Code Copilot
+    # gets its enriched tool set instead of the default common-tools fallback.
+    user_agent = ""
+    for k, v in scope.get("headers", []):
+        if k == b"user-agent":
+            user_agent = v.decode("latin-1", errors="ignore")
+            break
+    previous_user_agent = os.environ.get("USER_AGENT")
+    os.environ["USER_AGENT"] = user_agent
 
     init_options = InitializationOptions(
         server_name="nemo",
@@ -245,11 +279,17 @@ async def mcp_sse_endpoint(request: Request):
         ),
     )
 
-    async with sse_transport.connect_sse(
-        request.scope, request.receive, request._send
-    ) as (read_stream, write_stream):
-        await nemo.server.run(read_stream, write_stream, init_options)
-    return Response()
+    try:
+        async with sse_transport.connect_sse(scope, receive, send) as (read_stream, write_stream):
+            await nemo.server.run(read_stream, write_stream, init_options)
+    finally:
+        if previous_user_agent is None:
+            os.environ.pop("USER_AGENT", None)
+        else:
+            os.environ["USER_AGENT"] = previous_user_agent
+
+
+app.mount("/mcp/sse", _mcp_sse_app)
 
 
 # POST sink for MCP SSE clients. Mounted as an ASGI sub-app because

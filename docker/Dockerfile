@@ -33,9 +33,12 @@ RUN pip install --prefix=/install -r requirements.txt \
 # Pre-download the default multilingual embedding model into /models so the
 # first container run is offline-capable and fast.
 ARG EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-ENV EMBEDDING_MODEL=${EMBEDDING_MODEL} \
-    PYTHONPATH=/install/lib/python3.11/site-packages
-RUN mkdir -p /models && python -c "import os; from fastembed import TextEmbedding; TextEmbedding(model_name=os.environ['EMBEDDING_MODEL'], cache_dir='/models'); print('fastembed weights cached for', os.environ['EMBEDDING_MODEL'])"
+ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
+# Resolve site-packages via shell glob — independent of PYTHON_VERSION, no
+# nested quoting that confuses the shell parser.
+RUN mkdir -p /models \
+    && PYTHONPATH=$(echo /install/lib/python*/site-packages) \
+       python -c "import os; from fastembed import TextEmbedding; TextEmbedding(model_name=os.environ['EMBEDDING_MODEL'], cache_dir='/models'); print('fastembed weights cached for', os.environ['EMBEDDING_MODEL'])"
 
 
 # ── Stage 2 — minimal runtime ────────────────────────────────────────────────

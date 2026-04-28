@@ -15,6 +15,7 @@ Env knobs:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import List, Union
@@ -38,18 +39,41 @@ class EmbeddingsRequest(BaseModel):
 
 
 class _FastembedSingleton:
-    """Lazy-loads the fastembed model on first call. One instance per process."""
+    """Lazy-loads the fastembed model on first call. One instance per process.
+
+    Initialisation is guarded by an asyncio.Lock so that a burst of concurrent
+    requests during the first hit doesn't trigger several parallel weight
+    loads (which is expensive and can OOM on small machines).
+    """
 
     _instance = None
+    _lock: asyncio.Lock | None = None
 
     @classmethod
-    def get(cls):
-        if cls._instance is None:
-            from fastembed import TextEmbedding
+    def _get_lock(cls) -> asyncio.Lock:
+        # The lock has to be created lazily on the running loop, not at import.
+        if cls._lock is None:
+            cls._lock = asyncio.Lock()
+        return cls._lock
 
-            logger.info("Loading fastembed model %s (cache=%s)", DEFAULT_MODEL, CACHE_DIR)
-            cls._instance = TextEmbedding(model_name=DEFAULT_MODEL, cache_dir=CACHE_DIR)
-            logger.info("Fastembed model loaded")
+    @classmethod
+    async def get(cls):
+        # Fast path — already loaded, no need to acquire the lock.
+        if cls._instance is not None:
+            return cls._instance
+
+        async with cls._get_lock():
+            # Re-check inside the lock: a previous waiter may have just loaded.
+            if cls._instance is None:
+                from fastembed import TextEmbedding
+
+                logger.info("Loading fastembed model %s (cache=%s)", DEFAULT_MODEL, CACHE_DIR)
+                # The fastembed constructor itself is synchronous and CPU/IO-heavy
+                # (it can download weights). Run it off the event loop.
+                cls._instance = await asyncio.to_thread(
+                    TextEmbedding, model_name=DEFAULT_MODEL, cache_dir=CACHE_DIR
+                )
+                logger.info("Fastembed model loaded")
         return cls._instance
 
 
@@ -59,10 +83,16 @@ app = FastAPI(title="NEMO fastembed sidecar", docs_url=None, redoc_url=None)
 @app.get("/health")
 async def health():
     try:
-        _FastembedSingleton.get()
+        await _FastembedSingleton.get()
         return {"status": "ok", "model": DEFAULT_MODEL}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+
+
+def _embed_sync(model, texts: List[str]) -> List[List[float]]:
+    """Synchronous embedding pass; called via asyncio.to_thread so it doesn't
+    block the event loop while the ONNX runtime crunches numbers."""
+    return [vec.tolist() for vec in model.embed(texts)]
 
 
 @app.post("/v1/embeddings")
@@ -77,8 +107,10 @@ async def embeddings(req: EmbeddingsRequest):
         raise HTTPException(status_code=400, detail="input must not be empty")
 
     try:
-        model = _FastembedSingleton.get()
-        vectors = [vec.tolist() for vec in model.embed(texts)]
+        model = await _FastembedSingleton.get()
+        # fastembed's .embed() is synchronous and CPU-heavy; offload it so the
+        # SSE / REST handlers on this same uvicorn don't stall.
+        vectors = await asyncio.to_thread(_embed_sync, model, texts)
     except Exception as exc:
         logger.exception("Embedding failure")
         raise HTTPException(status_code=500, detail=f"embedding failed: {exc}")
