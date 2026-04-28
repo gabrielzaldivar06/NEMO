@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Thin wrapper installed at /usr/local/bin/nemo-attach inside the image.
+# Lets users type `nemo-attach` instead of the full python path.
+exec python3 /app/bin/nemo_attach.py "$@"

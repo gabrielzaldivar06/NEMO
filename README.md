@@ -44,9 +44,56 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 ---
 
-## ⚡ Instalación
+## 🐳 Quickstart con Docker (recomendado, vendor-agnóstico)
 
-> Sin cuentas. Sin configuración. Sin nube. Solo Python.
+> Una sola dependencia (Docker), funciona en Linux/macOS/Windows, conecta a **cualquier IA** en segundos. Sin Python local, sin venvs, sin LM Studio/Ollama instalados a mano.
+
+```bash
+# 1️⃣  Levanta NEMO una sola vez por máquina
+git clone https://github.com/gabrielzaldivar06/NEMO.git
+cd NEMO
+docker compose up -d --build
+```
+
+Tres puertas en el mismo puerto `8765` listas para cualquier cliente:
+
+| Endpoint | Cliente |
+|---|---|
+| `http://localhost:8765/mcp/sse` | Claude Code/Desktop, Cursor, Windsurf, Cline, VS Code Copilot |
+| `http://localhost:8765/openapi.json` | ChatGPT custom GPTs (importar como Action) |
+| `http://localhost:8765/api/...` | Gemini, LangChain, n8n, scripts (REST plano) |
+
+```bash
+# 2️⃣  Forza a la IA de cualquier proyecto a usar NEMO como memoria
+cd ~/cualquier-proyecto
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  -v "$PWD":/workdir \
+  nemo:local nemo-attach
+```
+
+`nemo-attach` instala (de forma idempotente) los archivos de reglas que cada cliente AI lee automáticamente: `CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`. Si ya existían, hace merge sin duplicar; en futuras versiones, re-ejecutar trae el bloque actualizado en su sitio.
+
+Pasa `--with-hooks` y también añade *SessionStart* + *Stop* hooks a `~/.claude/settings.json` (con backup `.bak`) para que Claude Code llame a `prime_context` y `store_conversation` automáticamente sin depender de que el modelo "se acuerde".
+
+### Conectar el cliente AI (una vez por cliente, no por proyecto)
+
+| Cliente | Acción única |
+|---|---|
+| **Claude Code** | `claude mcp add nemo http://localhost:8765/mcp/sse --transport sse` |
+| **Claude Desktop** | Pegar URL en `claude_desktop_config.json` |
+| **Cursor / Windsurf / Cline** | Settings → MCP → URL `http://localhost:8765/mcp/sse` |
+| **VS Code Copilot** | URL en `~/.config/Code/User/mcp.json` |
+| **ChatGPT custom GPT** | Builder → Actions → Import URL `http://localhost:8765/openapi.json` |
+| **Gemini / LangChain / n8n** | URL REST en tu código |
+
+Detalles, perfiles GPU (Ollama orquestado por Docker Compose) y troubleshooting → [DOCKER.md](DOCKER.md).
+
+---
+
+## ⚡ Instalación clásica (Python local, sin Docker)
+
+> Si prefieres no usar Docker o quieres iterar sobre el código directamente. Sin cuentas. Sin nube. Solo Python.
 
 ### Paso 1 — Instalar NEMO
 
