@@ -76,18 +76,14 @@ modo MCP-stdio original** — el servidor universal HTTP no inspecciona el
 seguro bajo conexiones concurrentes.
 
 ### Gemini / LangChain / n8n / curl
-Llamada HTTP directa:
+Llamada HTTP directa (una sola línea para que copy-paste funcione en bash, zsh, PowerShell y cmd):
 ```bash
-curl -X POST http://localhost:8765/api/memory/search \
-     -H 'Content-Type: application/json' \
-     -d '{"query": "decisiones de arquitectura", "limit": 5}'
+curl -X POST http://localhost:8765/api/memory/search -H 'Content-Type: application/json' -d '{"query": "decisiones de arquitectura", "limit": 5}'
 ```
 
 Para llamar cualquier tool por nombre:
 ```bash
-curl -X POST http://localhost:8765/api/tools/prime_context \
-     -H 'Content-Type: application/json' \
-     -d '{"arguments": {"topic": "NEMO"}}'
+curl -X POST http://localhost:8765/api/tools/prime_context -H 'Content-Type: application/json' -d '{"arguments": {"topic": "NEMO"}}'
 ```
 
 ---

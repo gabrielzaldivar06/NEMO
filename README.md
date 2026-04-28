@@ -48,12 +48,46 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 > Una sola dependencia (Docker), funciona en Linux/macOS/Windows, conecta a **cualquier IA** en segundos. Sin Python local, sin venvs, sin LM Studio/Ollama instalados a mano.
 
+### ⭐ El comando que activa NEMO en un proyecto
+
+Este es el comando que ejecutas **a diario** — uno por cada proyecto donde quieras que tu IA tenga memoria. Una sola línea, idempotente, cubre Claude, Cursor, Windsurf, Cline, VS Code Copilot y cualquier cliente que lea `AGENTS.md`:
+
 ```bash
-# 1️⃣  Levanta NEMO una sola vez por máquina
+cd ~/tu-proyecto-favorito        # el proyecto donde quieres avanzar a velocidades cercanas a la luz 🚀
+docker run --rm --add-host=host.docker.internal:host-gateway -v "$PWD":/workdir nemo:local nemo-attach
+```
+
+> 📋 **Para pegar:** una sola línea para que copy-paste funcione sin tropiezos en bash, zsh, PowerShell y cmd. En Windows PowerShell, `$PWD` ya resuelve a la ruta actual; en cmd, sustituye `"$PWD"` por `"%cd%"`.
+
+> 🤔 **¿Por qué este comando?** Porque sin él, tu IA *sabe* que NEMO existe (vía la URL configurada en su cliente) pero ~10 % de las veces "se le olvida" llamarla. Lo que este comando instala son los archivos de reglas (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`) que **fuerzan** al modelo a llamar `prime_context` antes de responderte y `create_correction` cuando lo corriges.
+
+Detalles de lo que hace en una sola corrida idempotente:
+
+- Crea o actualiza los 6 archivos de reglas. Si ya existían, hace **merge** sin duplicar (delimita su bloque con marcadores `<!-- BEGIN NEMO RULES vN -->`).
+- Re-ejecutar trae la versión nueva del bloque sin tocar nada más.
+- Añade `--with-hooks` para escribir *SessionStart* + *Stop* hooks en `~/.claude/settings.json` (con backup `.bak`). Los hooks llaman a NEMO automáticamente vía shell — el modelo no puede "olvidarse".
+
+> ⚠️ **El comando funciona solo si ya hiciste el setup único.** Si ves alguno de estos errores la primera vez:
+>
+> - `Unable to find image 'nemo:local' locally` → te falta construir la imagen
+> - `[WARN] NEMO @ http://localhost:8765 — unreachable` → el servidor no está corriendo
+> - Tu IA dice *"no tengo acceso a esa tool"* → el cliente AI no está vinculado al servidor
+>
+> Resuelve cada uno con su sección abajo (cada una es de una sola corrida, una sola vez en la vida útil de tu máquina/cliente). Después vuelves arriba y este comando es el único que repites por proyecto.
+
+---
+
+### 🛠️ Setup único por máquina — levantar el servidor (1 vez en la vida)
+
+Construye la imagen `nemo:local` y deja al servidor corriendo en `http://localhost:8765` con `restart: unless-stopped`. Después no lo vuelves a tocar — se auto-arranca con tu sistema.
+
+```bash
 git clone https://github.com/gabrielzaldivar06/NEMO.git
 cd NEMO
 docker compose up -d --build
 ```
+
+Resuelve simultáneamente los dos primeros errores del comando recomendado: construye la imagen y deja al servidor escuchando.
 
 Tres puertas en el mismo puerto `8765` listas para cualquier cliente:
 
@@ -63,20 +97,13 @@ Tres puertas en el mismo puerto `8765` listas para cualquier cliente:
 | `http://localhost:8765/openapi.json` | ChatGPT custom GPTs (importar como Action) |
 | `http://localhost:8765/api/...` | Gemini, LangChain, n8n, scripts (REST plano) |
 
-```bash
-# 2️⃣  Fuerza a la IA de cualquier proyecto a usar NEMO como memoria
-cd ~/cualquier-proyecto
-docker run --rm \
-  --add-host=host.docker.internal:host-gateway \
-  -v "$PWD":/workdir \
-  nemo:local nemo-attach
-```
+> ⚠️ Esto pone a NEMO disponible en la red local, pero **todavía ninguna IA sabe que existe**. Eso lo resuelve la siguiente sección.
 
-`nemo-attach` instala (de forma idempotente) los archivos de reglas que cada cliente AI lee automáticamente: `CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`. Si ya existían, hace merge sin duplicar; en futuras versiones, re-ejecutar trae el bloque actualizado en su sitio.
+---
 
-Pasa `--with-hooks` y también añade *SessionStart* + *Stop* hooks a `~/.claude/settings.json` (con backup `.bak`) para que Claude Code llame a `prime_context` y `store_conversation` automáticamente sin depender de que el modelo "se acuerde".
+### 🔌 Vincular cada cliente AI con NEMO (1 vez por cliente, manual)
 
-### Conectar el cliente AI (una vez por cliente, no por proyecto)
+Cada cliente lee la URL de NEMO de un sitio distinto. Hazlo **una vez** por cliente, no por proyecto:
 
 | Cliente | Acción única |
 |---|---|
@@ -86,6 +113,62 @@ Pasa `--with-hooks` y también añade *SessionStart* + *Stop* hooks a `~/.claude
 | **VS Code Copilot** | URL en `~/.config/Code/User/mcp.json` |
 | **ChatGPT custom GPT** | Builder → Actions → Import URL `http://localhost:8765/openapi.json` |
 | **Gemini / LangChain / n8n** | URL REST en tu código |
+
+Resuelve el tercer error del comando recomendado (*"no tengo acceso a esa tool"*). Después tu cliente AI sabe permanentemente cómo hablar con NEMO — solo te queda volver al comando recomendado y correrlo en cada proyecto nuevo.
+
+---
+
+### ¿Cómo saber si NEMO ya está listo?
+
+Tres comprobaciones de menos de 30 segundos para confirmar que cada pieza está viva:
+
+**① Desde el navegador** (cualquier navegador, sin instalar nada):
+
+| Abre esta URL | Qué deberías ver | Si no se ve eso… |
+|---|---|---|
+| <http://localhost:8765/health> | JSON con `"status": "ok"` y un bloque por cada base SQLite (`conversations`, `ai_memories`, `schedule`, `vscode_project`, `mcp_tool_calls`) reportando `healthy` | El contenedor no arrancó. Revisa `docker compose logs nemo --tail 50`. |
+| <http://localhost:8765/openapi.json> | JSON grande con la spec OpenAPI de las ~34 tools | Si no responde, repite el setup único por máquina (`docker compose up -d`). Si responde pero la lista de tools está vacía, NEMO arrancó pero el core no inicializó — mira los logs. |
+| <http://localhost:8765/docs> | UI interactiva de Swagger donde puedes invocar tools desde el navegador (útil para probar `prime_context` o `search_memories` sin escribir código) | — |
+
+**② Desde la terminal** (si prefieres curl):
+
+```bash
+curl -s http://localhost:8765/health | grep -o '"status":"[^"]*"'
+# Esperado: "status":"ok"
+
+curl -s http://localhost:8765/api/tools | python3 -c "import json,sys; print('tools:', len(json.load(sys.stdin)['tools']))"
+# Esperado: tools: 34
+```
+
+**③ Desde tu IA** (la prueba de fuego: que la IA *use* NEMO):
+
+En tu cliente AI ya configurado, pídele literalmente esto:
+
+> *"Llama la tool `prime_context` y dime qué memorias y recordatorios tienes. Si no tienes acceso a NEMO o falla, dímelo."*
+
+Tres resultados posibles:
+
+- ✅ **Funciona y devuelve algo** (puede estar vacío si es tu primera vez — eso también es señal de éxito).
+- ❌ **"No tengo acceso a esa tool"** → el cliente no está vinculado. Vuelve a [*Vincular cada cliente AI con NEMO*](#-vincular-cada-cliente-ai-con-nemo-1-vez-por-cliente-manual).
+- ❌ **"NEMO no responde / connection refused"** → el servidor no está corriendo. Vuelve a [*Setup único por máquina*](#%EF%B8%8F-setup-único-por-máquina--levantar-el-servidor-1-vez-en-la-vida) y ejecuta `docker compose up -d`.
+- ❌ **`Unable to find image 'nemo:local'`** al correr el comando recomendado → la imagen no se ha construido todavía. Haz el [*Setup único por máquina*](#%EF%B8%8F-setup-único-por-máquina--levantar-el-servidor-1-vez-en-la-vida) primero (es el único momento donde se construye).
+
+Para una prueba más completa que ejercita el ciclo entero (escribir → reiniciar → leer):
+
+```bash
+# Crea una memoria
+curl -s -X POST http://localhost:8765/api/memory -H "Content-Type: application/json" -d '{"content":"smoke-test: NEMO está listo","memory_type":"fact","tags":["smoke"]}'
+
+# Reinicia el contenedor (simula apagar el ordenador)
+docker compose restart nemo && sleep 6
+
+# Búscala — debe aparecer
+curl -s -X POST http://localhost:8765/api/memory/search -H "Content-Type: application/json" -d '{"query":"smoke-test","limit":3}'
+```
+
+Si la búsqueda recupera la memoria después del `restart`, **la persistencia funciona** y el sistema completo está operativo.
+
+---
 
 Detalles, perfiles GPU (Ollama orquestado por Docker Compose) y troubleshooting → [DOCKER.md](DOCKER.md).
 
@@ -197,10 +280,7 @@ NEMO funciona sin embeddings (fallback a búsqueda de texto), pero para el pipel
    ```bash
    # Descarga el modelo GGUF de BGE-reranker-v2-m3
    # Inicia con llama-server (incluido con llama.cpp):
-   llama-server \
-     -m bge-reranker-v2-m3-Q4_K_M.gguf \
-     --reranking --embedding --pooling rank \
-     --port 8080 --ctx-size 2048 --parallel 4
+   llama-server -m bge-reranker-v2-m3-Q4_K_M.gguf --reranking --embedding --pooling rank --port 8080 --ctx-size 2048 --parallel 4
    ```
    Verifica: `curl http://localhost:8080/health` → `{"status":"ok"}`
 
