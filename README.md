@@ -52,7 +52,7 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 >
 > 1. **🛠️ Setup único por máquina** — levantar el servidor (1 vez en la vida).
 > 2. **🔌 Vincular tu cliente AI** — pegar la URL de NEMO en su config (1 vez por cliente).
-> 3. **⭐ Activar NEMO en un proyecto** — el comando que repites a diario por cada proyecto.
+> 3. **⭐ Activar NEMO en un proyecto** — una corrida por cada proyecto nuevo donde quieras IA con memoria.
 > 4. **¿Cómo saber si NEMO ya está listo?** — validación end-to-end.
 >
 > ---
@@ -96,7 +96,7 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 >
 > ---
 >
-> ### 3. ⭐ Activar NEMO en un proyecto (lo que repites a diario)
+> ### 3. ⭐ Activar NEMO en un proyecto (una vez por cada proyecto nuevo)
 >
 > Una sola línea, idempotente, cubre Claude, Cursor, Windsurf, Cline, VS Code Copilot y cualquier cliente que lea `AGENTS.md`. Elige tu sistema:
 >
@@ -123,6 +123,8 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 > - Crea o actualiza los 6 archivos de reglas. Si ya existían, hace **merge** sin duplicar (delimita su bloque con marcadores `<!-- BEGIN NEMO RULES vN -->`).
 > - Re-ejecutar trae la versión nueva del bloque sin tocar nada más.
 > - Añade `--with-hooks` para escribir *SessionStart* + *Stop* hooks en `~/.claude/settings.json` (con backup `.bak`). Los hooks llaman a NEMO automáticamente vía shell — el modelo no puede "olvidarse".
+>
+> > 🔁 **¿Cuándo lo vuelves a correr?** Solo cuando abras **otro proyecto nuevo** donde también quieras NEMO. NO necesitas re-correrlo por reboot del PC ni por sesión nueva de tu IA: los archivos de reglas viven en la carpeta del proyecto y persisten para siempre, y el servidor del paso 1 se auto-arranca con tu sistema (`restart: unless-stopped`). La excepción: re-correrlo en un proyecto existente cuando salga una versión nueva del template (el bloque pasa de `v1` a `v2` y se actualiza in-place sin tocar el resto del archivo).
 >
 > ---
 >
