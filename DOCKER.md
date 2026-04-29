@@ -27,11 +27,24 @@ La imagen expone **un solo puerto (`8765`)** con tres interfaces en paralelo:
 
 ## Arranque en 30 segundos
 
+Los scripts de arranque detectan automáticamente si tienes GPU NVIDIA disponible y eligen el perfil correcto. No necesitas saber qué compose usar.
+
+#### 🐧 Linux / macOS / WSL
+
 ```bash
 git clone https://github.com/gabrielzaldivar06/NEMO.git
 cd NEMO
 cp .env.example .env            # opcional; todos los defaults funcionan
-docker compose up -d
+./start.sh --build
+```
+
+#### 🪟 Windows (PowerShell)
+
+```powershell
+git clone https://github.com/gabrielzaldivar06/NEMO.git
+cd NEMO
+copy .env.example .env          # opcional; todos los defaults funcionan
+.\start.ps1 -Build
 ```
 
 Verifica:
@@ -40,6 +53,14 @@ curl http://localhost:8765/health
 ```
 
 Listo. Ahora conecta la AI que uses.
+
+### Opciones del script
+
+| Opción | Linux/macOS | Windows | Efecto |
+|--------|-------------|---------|--------|
+| Primera vez / rebuild | `./start.sh --build` | `.\start.ps1 -Build` | Construye la imagen antes de arrancar |
+| Arranque normal | `./start.sh` | `.\start.ps1` | Arranca sin reconstruir (más rápido) |
+| Detener | `./start.sh --down` | `.\start.ps1 -Down` | Para los contenedores |
 
 ---
 
@@ -138,20 +159,34 @@ están pensados para uso individual en un equipo de confianza.
 
 ## Perfil GPU (opcional)
 
-¿Tienes GPU NVIDIA y quieres máximo rendimiento en embeddings? Añade el override:
+Los scripts `start.sh` / `start.ps1` activan este perfil automáticamente si detectan una GPU NVIDIA con el Container Toolkit instalado. No necesitas hacer nada extra.
+
+### ¿Qué activa el perfil GPU?
+
+- Arranca un contenedor `nemo-ollama` con acceso directo a la GPU.
+- Un job one-shot `nemo-ollama-init` descarga `nomic-embed-text` la primera vez (~1-2 min).
+- NEMO espera a que Ollama esté sano antes de arrancar.
+- El provider de embeddings cambia a `ollama` automáticamente.
+
+### Requisitos para el perfil GPU
+
+1. GPU NVIDIA en el host.
+2. [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) instalado y configurado en Docker.
+
+Puedes verificar que el toolkit está activo con:
+
+```bash
+docker info | grep -i nvidia
+# Esperado: aparece "nvidia" en la lista de runtimes
+```
+
+### ¿No tienes GPU NVIDIA pero quieres usar Ollama en CPU?
+
+El script arrancará en modo CPU con fastembed (más ligero que Ollama en CPU para embeddings). Si igualmente prefieres Ollama en CPU, puedes forzarlo editando `docker-compose.gpu.yml` y eliminando el bloque `deploy:` del servicio `ollama`, luego corriendo el comando manual:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
-
-Esto:
-- Arranca un contenedor `ollama` con acceso a la GPU (requiere [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)).
-- Hace `ollama pull nomic-embed-text` la primera vez (job one-shot, 1-2 min).
-- Espera a que Ollama esté sano antes de arrancar NEMO.
-- Cambia el provider de NEMO a `ollama` automáticamente.
-
-Sin GPU NVIDIA, Ollama sigue funcionando en CPU — solo quita el bloque `deploy:`
-del servicio `ollama` en `docker-compose.gpu.yml`.
 
 ---
 

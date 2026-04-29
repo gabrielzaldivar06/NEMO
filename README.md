@@ -63,11 +63,23 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 >
 > Construye la imagen `nemo:local` y deja al servidor corriendo en `http://localhost:8765` con `restart: unless-stopped`. Después no lo vuelves a tocar — se auto-arranca con tu sistema.
 >
+> #### 🐧 Linux / macOS / WSL
+>
 > ```bash
 > git clone https://github.com/gabrielzaldivar06/NEMO.git
 > cd NEMO
-> docker compose up -d --build
+> ./start.sh --build
 > ```
+>
+> #### 🪟 Windows (PowerShell)
+>
+> ```powershell
+> git clone https://github.com/gabrielzaldivar06/NEMO.git
+> cd NEMO
+> .\start.ps1 -Build
+> ```
+>
+> > 🔍 **¿Qué hace el script?** Detecta automáticamente si tu máquina tiene una GPU NVIDIA con el [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) instalado. Si lo tiene, activa el perfil GPU que levanta Ollama para embeddings acelerados. Si no, arranca el perfil por defecto con embeddings en CPU (fastembed) — sin configuración manual.
 >
 > Esto deja tres puertas listas en el mismo puerto `8765`:
 >
