@@ -48,19 +48,22 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 > ## 🐳 Quickstart con Docker (recomendado, vendor-agnóstico)
 >
-> Una sola dependencia (Docker), funciona en Linux/macOS/Windows, conecta a **cualquier IA** en segundos. Sin Python local, sin venvs.
+> Docker contiene el **servidor NEMO**, no el motor de embeddings. Eso significa que para calidad de embeddings real, necesitarás instalar LM Studio u Ollama en tu máquina de todas formas — igual que en la instalación tradicional. La diferencia es que con Docker no gestionas Python ni venvs para NEMO, y el servidor se auto-arranca con el sistema.
 >
-> ### Elige tu nivel antes de arrancar
+> ### ¿Cuándo elegir Docker vs instalación tradicional?
 >
-> Docker contiene el **servidor NEMO**, no el motor de embeddings. La calidad de memoria depende de qué tan bueno sea ese motor. Elige según lo que quieras instalar:
+> - **Docker** — si prefieres no tocar Python/venvs y quieres que NEMO arranque solo con el sistema.
+> - **Instalación tradicional** — si ya tienes Python y prefieres todo en un solo lugar sin capas extra. [Ver instalación clásica](#-instalación-clásica-python-local-sin-docker).
+>
+> ### Niveles de calidad de embeddings (aplica igual para Docker y para instalación tradicional)
 >
 > | | Nivel | Qué instalar en tu máquina | Calidad |
 > |---|-------|---------------------------|---------|
-> | ⭐ | **Recomendado** | [LM Studio](https://lmstudio.ai/) + modelo `Qwen3-Embedding-4B` | Máxima — 91.67% Top-1 (los benchmarks del README) |
-> | 🆗 | **Sin instalar nada** + Ollama | Solo Docker | Buena — `nomic-embed-text` 768D dentro de un contenedor |
-> | ⚙️ | **Sin instalar nada** | Solo Docker | Base — `MiniLM` 384D, funciona pero no es lo óptimo |
+> | ⭐ | **Recomendado** | [LM Studio](https://lmstudio.ai/) + `Qwen3-Embedding-4B` | Máxima — 91.67% Top-1 (benchmarks del README) |
+> | 🆗 | **Ligero** | [Ollama](https://ollama.com) + `nomic-embed-text` | Buena — 768D, corre en cualquier máquina |
+> | ⚙️ | **Sin instalar nada** | Solo Docker (fastembed interno) | Base — funciona, no es lo óptimo |
 >
-> > ⭐ **El setup recomendado es más simple de lo que parece:** instala LM Studio, descarga `Qwen3-Embedding-4B` desde su interfaz, y corre el `docker compose up` normal. NEMO detecta LM Studio automáticamente en `host.docker.internal:1234` — no necesitas perfiles GPU ni comandos especiales. Docker solo levanta el servidor NEMO; los embeddings los genera LM Studio en tu máquina con aceleración nativa (Metal en Mac, CUDA en NVIDIA, CPU en cualquier otro).
+> > 💡 Con LM Studio corriendo en el host, `./start.sh --build` es todo lo que necesitas — NEMO lo detecta automáticamente en `host.docker.internal:1234`.
 >
 > ---
 >
