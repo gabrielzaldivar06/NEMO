@@ -25,9 +25,21 @@ La imagen expone **un solo puerto (`8765`)** con tres interfaces en paralelo:
 
 ---
 
-## Arranque en 30 segundos
+## Perfiles disponibles
 
-Los scripts de arranque detectan automáticamente si tienes GPU NVIDIA disponible y eligen el perfil correcto. No necesitas saber qué compose usar.
+NEMO ofrece tres perfiles según tu hardware. Elige el que mejor se ajuste:
+
+| Perfil | Embeddings | Calidad | Requiere | Cuándo usarlo |
+|--------|------------|---------|----------|---------------|
+| **Default** (fastembed) | `paraphrase-multilingual-MiniLM-L12-v2` en proceso | Base | Solo Docker | Quieres arrancar sin configurar nada |
+| **Ollama CPU** | `nomic-embed-text` vía contenedor Ollama | Mejor | Solo Docker | Quieres mejor calidad sin instalar nada extra |
+| **Ollama GPU** | `nomic-embed-text` vía Ollama + NVIDIA | Buena + rápida | Docker + NVIDIA Container Toolkit | Tienes GPU NVIDIA |
+
+> Para la máxima calidad (91.67% Top-1 de los benchmarks) se necesita LM Studio con Qwen3-Embedding-4B + reranker BGE, que corre fuera de Docker. Ver [instalación clásica](README.md#-instalación-clásica-python-local-sin-docker).
+
+---
+
+## Arranque en 30 segundos
 
 #### 🐧 Linux / macOS / WSL
 
@@ -35,7 +47,8 @@ Los scripts de arranque detectan automáticamente si tienes GPU NVIDIA disponibl
 git clone https://github.com/gabrielzaldivar06/NEMO.git
 cd NEMO
 cp .env.example .env            # opcional; todos los defaults funcionan
-./start.sh --build
+./start.sh --build              # fastembed por defecto
+# ./start.sh --ollama --build   # Ollama CPU (mejor calidad, ~2 min extra en primer arranque)
 ```
 
 #### 🪟 Windows (PowerShell)
@@ -44,7 +57,8 @@ cp .env.example .env            # opcional; todos los defaults funcionan
 git clone https://github.com/gabrielzaldivar06/NEMO.git
 cd NEMO
 copy .env.example .env          # opcional; todos los defaults funcionan
-.\start.ps1 -Build
+.\start.ps1 -Build              # fastembed por defecto
+# .\start.ps1 -Ollama -Build    # Ollama CPU (mejor calidad, ~2 min extra en primer arranque)
 ```
 
 Verifica:
@@ -54,13 +68,16 @@ curl http://localhost:8765/health
 
 Listo. Ahora conecta la AI que uses.
 
-### Opciones del script
+### Todas las opciones del script
 
-| Opción | Linux/macOS | Windows | Efecto |
-|--------|-------------|---------|--------|
-| Primera vez / rebuild | `./start.sh --build` | `.\start.ps1 -Build` | Construye la imagen antes de arrancar |
-| Arranque normal | `./start.sh` | `.\start.ps1` | Arranca sin reconstruir (más rápido) |
-| Detener | `./start.sh --down` | `.\start.ps1 -Down` | Para los contenedores |
+| Acción | Linux/macOS | Windows |
+|--------|-------------|---------|
+| Arranque default (fastembed) | `./start.sh` | `.\start.ps1` |
+| Arranque con Ollama CPU | `./start.sh --ollama` | `.\start.ps1 -Ollama` |
+| Rebuild de imagen | `./start.sh --build` | `.\start.ps1 -Build` |
+| Detener contenedores | `./start.sh --down` | `.\start.ps1 -Down` |
+
+> La detección de GPU NVIDIA es automática: si el NVIDIA Container Toolkit está instalado y no pasas `--ollama`, el script activa el perfil GPU en lugar del default.
 
 ---
 
