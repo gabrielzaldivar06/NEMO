@@ -88,10 +88,5 @@ RUN chmod +x /app/docker/entrypoint.sh /app/docker/nemo-attach \
 
 USER nemo
 
-EXPOSE 8765
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:${NEMO_PORT}/health || exit 1
-
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-CMD ["python", "-m", "nemo_server"]
+CMD ["python", "ai_memory_mcp_server.py"]

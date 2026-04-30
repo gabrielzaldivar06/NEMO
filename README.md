@@ -55,207 +55,67 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 ---
 
-> ## 🐳 Quickstart con Docker (opcional)
+> ## 🐳 Docker (opcional)
 >
-> Docker contiene el **servidor NEMO**, no el motor de embeddings. Eso significa que para calidad de embeddings real, necesitarás instalar LM Studio u Ollama en tu máquina de todas formas — igual que en la instalación tradicional. La diferencia es que con Docker no gestionas Python ni venvs para NEMO, y el servidor se auto-arranca con el sistema.
+> Útil si prefieres no gestionar Python/venvs en tu máquina. NEMO corre en un contenedor usando stdio MCP — el cliente AI lo invoca directamente, igual que haría con cualquier proceso local.
 >
-> ### ¿Cuándo elegir Docker vs instalación tradicional?
+> La calidad de embeddings sigue dependiendo de LM Studio u Ollama instalados en tu máquina, igual que en la instalación tradicional.
 >
-> - **Docker** — si prefieres no tocar Python/venvs y quieres que NEMO arranque solo con el sistema.
-> - **Instalación tradicional** — si ya tienes Python y prefieres todo en un solo lugar sin capas extra. [Ver instalación clásica](#-instalación-clásica-python-local-sin-docker).
->
-> ### Niveles de calidad de embeddings (aplica igual para Docker y para instalación tradicional)
->
-> | | Nivel | Qué instalar en tu máquina | Calidad |
-> |---|-------|---------------------------|---------|
-> | ⭐ | **Recomendado** | [LM Studio](https://lmstudio.ai/) + `Qwen3-Embedding-4B` | Máxima — 91.67% Top-1 (benchmarks del README) |
-> | 🆗 | **Ligero** | [Ollama](https://ollama.com) + `nomic-embed-text` | Buena — 768D, corre en cualquier máquina |
-> | ⚙️ | **Sin instalar nada** | Solo Docker (fastembed interno) | Base — funciona, no es lo óptimo |
->
-> > 💡 Con LM Studio corriendo en el host, `./start.sh --build` es todo lo que necesitas — NEMO lo detecta automáticamente en `host.docker.internal:1234`.
->
-> ---
->
-> El flujo completo son **tres pasos secuenciales**. Los dos primeros se hacen *una sola vez*; el tercero es el comando que repites por cada proyecto:
->
-> 1. **🛠️ Setup único por máquina** — levantar el servidor (1 vez en la vida).
-> 2. **🔌 Vincular tu cliente AI** — pegar la URL de NEMO en su config (1 vez por cliente).
-> 3. **⭐ Activar NEMO en un proyecto** — una corrida por cada proyecto nuevo donde quieras IA con memoria.
-> 4. **¿Cómo saber si NEMO ya está listo?** — validación end-to-end.
->
-> ---
->
-> ### 1. 🛠️ Setup único por máquina — levantar el servidor
->
-> Construye la imagen `nemo:local` y deja al servidor corriendo en `http://localhost:8765` con `restart: unless-stopped`. Después no lo vuelves a tocar — se auto-arranca con tu sistema.
->
-> #### 🐧 Linux / macOS / WSL
+> ### 1. Construir la imagen (una sola vez)
 >
 > ```bash
 > git clone https://github.com/gabrielzaldivar06/NEMO.git
 > cd NEMO
-> ./start.sh --build
+> docker build -f docker/Dockerfile -t nemo:local .
 > ```
 >
-> #### 🪟 Windows (PowerShell)
+> ### 2. Conectar tu cliente AI
 >
-> ```powershell
-> git clone https://github.com/gabrielzaldivar06/NEMO.git
-> cd NEMO
-> .\start.ps1 -Build
+> En lugar de apuntar a un servidor HTTP, el cliente ejecuta el contenedor directamente por stdio:
+>
+> **Claude Code:**
+> ```bash
+> claude mcp add nemo docker run -i --rm -v nemo-data:/app/.ai_memory -v nemo-models:/models nemo:local
 > ```
 >
-> > 💡 **Si ya tienes LM Studio corriendo** con `Qwen3-Embedding-4B`, este comando es todo lo que necesitas — NEMO lo detecta automáticamente. Si no tienes LM Studio, NEMO arranca igual con embeddings básicos (fastembed) y puedes mejorar el motor después sin tocar el servidor.
-> >
-> > 🔧 ¿Quieres Ollama dentro de Docker en lugar de instalarlo en tu máquina? Usa `./start.sh --ollama` (Linux/macOS) o `.\start.ps1 -Ollama` (Windows). Ver [DOCKER.md](DOCKER.md) para todos los perfiles disponibles.
+> **Claude Desktop** (`claude_desktop_config.json`):
+> ```json
+> {
+>   "mcpServers": {
+>     "nemo": {
+>       "command": "docker",
+>       "args": ["run", "-i", "--rm", "-v", "nemo-data:/app/.ai_memory", "-v", "nemo-models:/models", "nemo:local"]
+>     }
+>   }
+> }
+> ```
 >
-> Esto deja tres puertas listas en el mismo puerto `8765`:
+> **VS Code Copilot** (`~/.config/Code/User/mcp.json`):
+> ```json
+> {
+>   "servers": {
+>     "nemo": {
+>       "type": "stdio",
+>       "command": "docker",
+>       "args": ["run", "-i", "--rm", "-v", "nemo-data:/app/.ai_memory", "-v", "nemo-models:/models", "nemo:local"]
+>     }
+>   }
+> }
+> ```
 >
-> | Endpoint | Cliente |
-> |---|---|
-> | `http://localhost:8765/mcp/sse` | Claude Code/Desktop, Cursor, Windsurf, Cline, VS Code Copilot |
-> | `http://localhost:8765/openapi.json` | ChatGPT custom GPTs (importar como Action) |
-> | `http://localhost:8765/api/...` | Gemini, LangChain, n8n, scripts (REST plano) |
+> **Cursor / Windsurf / Cline:** apunta a `command: docker` con los mismos args en su config MCP.
 >
-> > ⚠️ **El servidor ya está disponible — pero ninguna IA sabe que existe todavía.** Eso lo resuelve el siguiente paso.
->
-> ---
->
-> ### 2. 🔌 Vincular cada cliente AI con NEMO (manual)
->
-> Cada cliente lee la URL de NEMO de un sitio distinto. Hazlo **una vez** por cliente, no por proyecto:
->
-> | Cliente | Acción única |
-> |---|---|
-> | **Claude Code** | `claude mcp add nemo http://localhost:8765/mcp/sse --transport sse` |
-> | **Claude Desktop** | Pegar URL en `claude_desktop_config.json` |
-> | **Cursor / Windsurf / Cline** | Settings → MCP → URL `http://localhost:8765/mcp/sse` |
-> | **VS Code Copilot** | URL en `~/.config/Code/User/mcp.json` |
-> | **ChatGPT custom GPT** | Builder → Actions → Import URL `http://localhost:8765/openapi.json` |
-> | **Gemini / LangChain / n8n** | URL REST en tu código |
->
-> Una vez vinculados, NEMO queda como un "fondo" para tus IAs — siempre presente, siempre disponible. Solo te falta forzarlo a usarse en cada proyecto.
->
-> ---
->
-> ### 3. ⭐ Activar NEMO en un proyecto (una vez por cada proyecto nuevo)
->
-> Una sola línea, idempotente, cubre Claude, Cursor, Windsurf, Cline, VS Code Copilot y cualquier cliente que lea `AGENTS.md`. Elige tu sistema:
->
-> #### 🐧 Linux / macOS / WSL (bash, zsh)
+> ### 3. Activar NEMO en cada proyecto
 >
 > ```bash
-> cd ~/tu-proyecto-favorito        # el proyecto donde quieres avanzar a velocidades cercanas a la luz 🚀
-> docker run --rm --add-host=host.docker.internal:host-gateway -v "$PWD":/workdir nemo:local nemo-attach
+> # 🐧 Linux / macOS / WSL
+> docker run --rm -v "$PWD":/workdir nemo:local nemo-attach
+>
+> # 🪟 Windows (PowerShell)
+> docker run --rm -v "${PWD}:/workdir" nemo:local nemo-attach
 > ```
 >
-> #### 🪟 Windows (PowerShell — viene de fábrica con Windows 10/11)
->
-> ```powershell
-> cd $HOME\tu-proyecto-favorito    # el proyecto donde quieres avanzar a velocidades cercanas a la luz 🚀
-> docker run --rm --add-host=host.docker.internal:host-gateway -v "${PWD}:/workdir" nemo:local nemo-attach
-> ```
->
-> > 💡 ¿Usas el viejo `cmd.exe` ("Símbolo del sistema") en lugar de PowerShell? Sustituye `"${PWD}:/workdir"` por `"%cd%:/workdir"` en el comando de arriba. PowerShell es más cómodo y ya lo tienes instalado.
->
-> > 🤔 **¿Por qué este comando?** Porque sin él, tu IA *sabe* que NEMO existe (vía la URL del paso 2) pero ~10 % de las veces "se le olvida" llamarla. Lo que este comando instala son los archivos de reglas (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`) que **fuerzan** al modelo a llamar `prime_context` antes de responderte y `create_correction` cuando lo corriges.
->
-> Detalles de lo que hace en una sola corrida idempotente:
->
-> - Crea o actualiza los 6 archivos de reglas. Si ya existían, hace **merge** sin duplicar (delimita su bloque con marcadores `<!-- BEGIN NEMO RULES vN -->`).
-> - Re-ejecutar trae la versión nueva del bloque sin tocar nada más.
-> - Añade `--with-hooks` para escribir *SessionStart* + *Stop* hooks en `~/.claude/settings.json` (con backup `.bak`). Los hooks llaman a NEMO automáticamente vía shell — el modelo no puede "olvidarse".
->
-> > 🔁 **¿Cuándo lo vuelves a correr?** Solo cuando abras **otro proyecto nuevo** donde también quieras NEMO. NO necesitas re-correrlo por reboot del PC ni por sesión nueva de tu IA: los archivos de reglas viven en la carpeta del proyecto y persisten para siempre, y el servidor del paso 1 se auto-arranca con tu sistema (`restart: unless-stopped`). La excepción: re-correrlo en un proyecto existente cuando salga una versión nueva del template (el bloque pasa de `v1` a `v2` y se actualiza in-place sin tocar el resto del archivo).
->
-> ---
->
-> ### 4. ¿Cómo saber si NEMO ya está listo?
->
-> Tres comprobaciones de menos de 30 segundos para confirmar que cada pieza está viva:
->
-> **① Desde el navegador** (cualquier navegador, sin instalar nada):
->
-> | Abre esta URL | Qué deberías ver | Si no se ve eso… |
-> |---|---|---|
-> | <http://localhost:8765/health> | JSON con `"status": "ok"` y un bloque por cada base SQLite (`conversations`, `ai_memories`, `schedule`, `vscode_project`, `mcp_tool_calls`) reportando `healthy` | El contenedor no arrancó. Revisa `docker compose logs nemo --tail 50`. |
-> | <http://localhost:8765/openapi.json> | JSON grande con la spec OpenAPI de las ~34 tools | Si no responde, repite el paso 1 (`docker compose up -d`). Si responde pero la lista de tools está vacía, NEMO arrancó pero el core no inicializó — mira los logs. |
-> | <http://localhost:8765/docs> | UI interactiva de Swagger donde puedes invocar tools desde el navegador (útil para probar `prime_context` o `search_memories` sin escribir código) | — |
->
-> **② Desde la terminal**:
->
-> ##### 🐧 Linux / macOS / WSL
->
-> ```bash
-> curl -s http://localhost:8765/health | grep -o '"status":"[^"]*"'
-> # Esperado: "status":"ok"
->
-> curl -s http://localhost:8765/api/tools | python3 -c "import json,sys; print('tools:', len(json.load(sys.stdin)['tools']))"
-> # Esperado: tools: 34
-> ```
->
-> ##### 🪟 Windows (PowerShell)
->
-> ```powershell
-> (Invoke-RestMethod http://localhost:8765/health).status
-> # Esperado: ok
->
-> (Invoke-RestMethod http://localhost:8765/api/tools).tools.Count
-> # Esperado: 34
-> ```
->
-> > 💡 `Invoke-RestMethod` parsea JSON automáticamente — más limpio que pipear a `python3` y no necesita Python instalado en el host.
->
-> **③ Desde tu IA** (la prueba de fuego: que la IA *use* NEMO):
->
-> En tu cliente AI ya configurado, pídele literalmente esto:
->
-> > *"Llama la tool `prime_context` y dime qué memorias y recordatorios tienes. Si no tienes acceso a NEMO o falla, dímelo."*
->
-> Tres resultados posibles:
->
-> - ✅ **Funciona y devuelve algo** (puede estar vacío si es tu primera vez — eso también es señal de éxito).
-> - ❌ **"No tengo acceso a esa tool"** → el cliente no está vinculado. Vuelve al **paso 2**.
-> - ❌ **"NEMO no responde / connection refused"** → el servidor no está corriendo. Vuelve al **paso 1** y ejecuta `docker compose up -d`.
-> - ❌ **`Unable to find image 'nemo:local'`** al correr el comando del paso 3 → la imagen no se ha construido todavía. Haz el **paso 1** primero (es el único momento donde se construye).
->
-> Para una prueba más completa que ejercita el ciclo entero (escribir → reiniciar → leer):
->
-> ##### 🐧 Linux / macOS / WSL
->
-> ```bash
-> # Crea una memoria
-> curl -s -X POST http://localhost:8765/api/memory -H "Content-Type: application/json" -d '{"content":"smoke-test: NEMO está listo","memory_type":"fact","tags":["smoke"]}'
->
-> # Reinicia el contenedor (simula apagar el ordenador)
-> docker compose restart nemo && sleep 6
->
-> # Búscala — debe aparecer
-> curl -s -X POST http://localhost:8765/api/memory/search -H "Content-Type: application/json" -d '{"query":"smoke-test","limit":3}'
-> ```
->
-> ##### 🪟 Windows (PowerShell)
->
-> ```powershell
-> # Crea una memoria
-> $body = '{"content":"smoke-test: NEMO está listo","memory_type":"fact","tags":["smoke"]}'
-> Invoke-RestMethod -Method POST -Uri http://localhost:8765/api/memory -ContentType "application/json" -Body $body
->
-> # Reinicia el contenedor (simula apagar el ordenador)
-> docker compose restart nemo; Start-Sleep -Seconds 6
->
-> # Búscala — debe aparecer
-> $query = '{"query":"smoke-test","limit":3}'
-> Invoke-RestMethod -Method POST -Uri http://localhost:8765/api/memory/search -ContentType "application/json" -Body $query
-> ```
->
-> > 💡 En PowerShell el JSON va en una variable (`$body`, `$query`) para esquivar las trampas de comillas anidadas. `Invoke-RestMethod` reemplaza `curl … -d …` y devuelve un objeto ya parseado.
->
-> Si la búsqueda recupera la memoria después del `restart`, **la persistencia funciona** y el sistema completo está operativo.
->
-> ---
->
-> Detalles, perfiles GPU (Ollama orquestado por Docker Compose) y troubleshooting → [DOCKER.md](DOCKER.md).
+> Esto escribe los archivos de reglas en el proyecto. Equivalente al `python bin/nemo_attach.py` de la instalación tradicional.
 
 ---
 
