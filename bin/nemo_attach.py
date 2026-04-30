@@ -36,8 +36,9 @@ from typing import Callable
 VERSION = "2"
 MARKER_BEGIN = f"<!-- BEGIN NEMO RULES v{VERSION} -->"
 MARKER_END = "<!-- END NEMO RULES -->"
+MARKER_PREFIX = "<!-- BEGIN NEMO RULES"  # version-agnostic, for detection
 MARKER_RE = re.compile(
-    rf"{re.escape(MARKER_BEGIN[:25])}.*?{re.escape(MARKER_END)}",
+    rf"{re.escape(MARKER_PREFIX)}.*?{re.escape(MARKER_END)}",
     re.DOTALL,
 )
 
@@ -135,7 +136,7 @@ def apply_target(target: Target, root: Path, body: str, dry_run: bool) -> str:
 
     existing = dest.read_text(encoding="utf-8")
 
-    if MARKER_BEGIN[:25] in existing and MARKER_END in existing:
+    if MARKER_PREFIX in existing and MARKER_END in existing:
         m = MARKER_RE.search(payload)
         block_only = m.group(0) if m else payload.strip()
         new = MARKER_RE.sub(block_only, existing, count=1)
