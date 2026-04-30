@@ -97,3 +97,65 @@ docker build -f docker/Dockerfile -t nemo:local .
 ```
 
 No hay contenedor corriendo que reiniciar — el cliente levanta el contenedor en cada sesión.
+
+---
+
+## Comandos útiles
+
+Con el enfoque stdio (`--rm`), el contenedor existe solo mientras el cliente AI está conectado. No hay un proceso persistente que arrancar o parar manualmente. Estos son los comandos relevantes:
+
+### Imagen
+
+```bash
+# Verificar que la imagen existe
+docker images nemo:local
+
+# Reconstruir tras un git pull
+docker build -f docker/Dockerfile -t nemo:local .
+
+# Eliminar la imagen (para reconstruir desde cero)
+docker rmi nemo:local
+```
+
+### Sesiones activas
+
+```bash
+# Ver si hay una sesión de NEMO activa ahora mismo (cliente AI conectado)
+docker ps --filter ancestor=nemo:local
+
+# Ver logs de la sesión activa
+docker logs $(docker ps -q --filter ancestor=nemo:local)
+```
+
+> `docker start` y `docker stop` no aplican aquí — el contenedor se crea y destruye automáticamente en cada sesión (`--rm`). Si ves el contenedor en `docker ps` significa que tu cliente AI está conectado en este momento.
+
+### Volúmenes y datos
+
+```bash
+# Ver que los volúmenes existen
+docker volume ls | grep nemo
+
+# Inspeccionar qué hay en las bases de datos
+docker run --rm -v nemo-data:/data alpine ls /data
+
+# Borrar todos los datos de NEMO (irreversible)
+docker volume rm nemo-data nemo-models
+```
+
+### Depuración
+
+```bash
+# Probar NEMO manualmente en modo interactivo (sin cliente AI)
+docker run -it --rm \
+  -v nemo-data:/app/.ai_memory \
+  -v nemo-models:/models \
+  nemo:local \
+  python -c "from ai_memory_core import PersistentAIMemorySystem; print('OK')"
+
+# Abrir shell dentro del contenedor
+docker run -it --rm \
+  -v nemo-data:/app/.ai_memory \
+  -v nemo-models:/models \
+  nemo:local \
+  bash
+```
