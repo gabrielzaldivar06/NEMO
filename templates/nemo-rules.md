@@ -39,12 +39,17 @@ Corrections get a permanent +0.35 retrieval boost so the same error never repeat
 create_correction(wrong_assumption: string, correct_answer: string, context?: string, tags?: string[])
 ```
 
-### 4. When the user shares a durable fact — `create_memory`
+### 4. When the user shares a durable fact — `create_memory` / `update_memory`
 Preferences, decisions, project facts, working style.
 Do not wait until the end of the conversation — write it as soon as you hear it.
 
+- If the fact is **new** → call `detect_redundancy` first, then `create_memory` if no duplicate found.
+- If the fact **updates something already stored** (e.g. user changed stack, revised a decision) → call `update_memory` on the existing memory instead of creating a new one.
+
 ```
+detect_redundancy(content: string, tags?: string[])
 create_memory(content: string, memory_type: string, importance_level?: 1-10, tags?: string[])
+update_memory(memory_id: string, content?: string, importance_level?: 1-10, tags?: string[])
 ```
 
 ### 5. End of meaningful session — `store_conversation`
