@@ -48,23 +48,19 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 > ## 🐳 Quickstart con Docker (recomendado, vendor-agnóstico)
 >
-> Una sola dependencia (Docker), funciona en Linux/macOS/Windows, conecta a **cualquier IA** en segundos. Sin Python local, sin venvs, sin LM Studio/Ollama instalados a mano.
+> Una sola dependencia (Docker), funciona en Linux/macOS/Windows, conecta a **cualquier IA** en segundos. Sin Python local, sin venvs.
 >
-> ### ¿Qué calidad de embeddings obtendrás?
+> ### Elige tu nivel antes de arrancar
 >
-> La calidad de NEMO depende del modelo de embeddings que uses. Docker te da tres niveles:
+> Docker contiene el **servidor NEMO**, no el motor de embeddings. La calidad de memoria depende de qué tan bueno sea ese motor. Elige según lo que quieras instalar:
 >
-> | Nivel | Cómo arrancarlo | Embeddings | Para quién |
-> |-------|----------------|------------|------------|
-> | **Básico** | `./start.sh` | fastembed in-process (MiniLM 384D) | Solo quieres que funcione sin instalar nada |
-> | **Mejor** | `./start.sh --ollama` | Ollama + `nomic-embed-text` (768D) | Quieres mejor calidad, todo dentro de Docker |
-> | **Máximo** | `./start.sh` + LM Studio en el host | Qwen3-Embedding-4B (2560D) + reranker BGE | Quieres los benchmarks del README (91.67% Top-1) |
+> | | Nivel | Qué instalar en tu máquina | Calidad |
+> |---|-------|---------------------------|---------|
+> | ⭐ | **Recomendado** | [LM Studio](https://lmstudio.ai/) + modelo `Qwen3-Embedding-4B` | Máxima — 91.67% Top-1 (los benchmarks del README) |
+> | 🆗 | **Sin instalar nada** + Ollama | Solo Docker | Buena — `nomic-embed-text` 768D dentro de un contenedor |
+> | ⚙️ | **Sin instalar nada** | Solo Docker | Base — `MiniLM` 384D, funciona pero no es lo óptimo |
 >
-> > 💡 **El nivel máximo no requiere nada especial en Docker.** Si tienes LM Studio corriendo en tu máquina con Qwen3-4B, NEMO lo detecta automáticamente vía `host.docker.internal:1234` — sin cambiar el compose ni el script. Docker solo sirve como contenedor del servidor NEMO; los embeddings los genera LM Studio en el host.
-> >
-> > 🎯 **¿Y el toolkit NVIDIA?** Solo aporta velocidad, no calidad. Con él, Ollama dentro de Docker usa el GPU y genera embeddings 5-10x más rápido. Sin él, Ollama corre en CPU con la misma calidad — para un uso normal la diferencia no es perceptible.
-> >
-> > **En resumen:** si solo quieres que funcione sin instalar nada extra, Docker solo es perfecto. Si quieres el máximo rendimiento, instala LM Studio — sigue usando el mismo Docker, solo agregas el motor de embeddings en el host.
+> > ⭐ **El setup recomendado es más simple de lo que parece:** instala LM Studio, descarga `Qwen3-Embedding-4B` desde su interfaz, y corre el `docker compose up` normal. NEMO detecta LM Studio automáticamente en `host.docker.internal:1234` — no necesitas perfiles GPU ni comandos especiales. Docker solo levanta el servidor NEMO; los embeddings los genera LM Studio en tu máquina con aceleración nativa (Metal en Mac, CUDA en NVIDIA, CPU en cualquier otro).
 >
 > ---
 >
@@ -97,7 +93,9 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 > .\start.ps1 -Build
 > ```
 >
-> > 🔍 **¿Qué hace el script?** Detecta automáticamente si tu máquina tiene una GPU NVIDIA con el [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) instalado. Si lo tiene, activa el perfil GPU que levanta Ollama para embeddings acelerados. Si no, arranca el perfil por defecto con embeddings en CPU (fastembed) — sin configuración manual.
+> > 💡 **Si ya tienes LM Studio corriendo** con `Qwen3-Embedding-4B`, este comando es todo lo que necesitas — NEMO lo detecta automáticamente. Si no tienes LM Studio, NEMO arranca igual con embeddings básicos (fastembed) y puedes mejorar el motor después sin tocar el servidor.
+> >
+> > 🔧 ¿Quieres Ollama dentro de Docker en lugar de instalarlo en tu máquina? Usa `./start.sh --ollama` (Linux/macOS) o `.\start.ps1 -Ollama` (Windows). Ver [DOCKER.md](DOCKER.md) para todos los perfiles disponibles.
 >
 > Esto deja tres puertas listas en el mismo puerto `8765`:
 >
