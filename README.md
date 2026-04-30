@@ -211,19 +211,26 @@ Abre `%APPDATA%\Claude\claude_desktop_config.json` (Windows) o `~/Library/Applic
 ```
 </details>
 
-### Paso 3 — Activar NEMO en cada proyecto
+### Paso 3 — Activar memoria automática en tu proyecto (`nemo-attach`)
 
-Una sola línea por proyecto. Escribe los archivos de reglas (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`) que fuerzan al modelo a llamar `prime_context` antes de responderte y `create_correction` cuando lo corriges. Es idempotente — puedes volver a correrlo para actualizar sin duplicar contenido.
+Sin este paso, el Paso 2 te da acceso a las tools pero la IA no las usa sola. Puedes pedirle explícitamente "guarda esto en memoria" y lo hará — pero no llamará `prime_context` al inicio de la sesión ni guardará correcciones automáticamente.
+
+`nemo-attach` escribe archivos de reglas en tu proyecto (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`) que instruyen al modelo para que:
+
+- **Al inicio de cada sesión** → llame `prime_context` automáticamente (carga memorias relevantes, recordatorios y resumen de la última sesión)
+- **Cuando aprendes algo nuevo** → llame `create_memory` sin que lo pidas
+- **Cuando lo corriges** → llame `create_correction` en ese momento, no al final
+- **Al cerrar la sesión** → llame `store_conversation` para que la próxima sesión tenga contexto
 
 ```bash
 # Desde la carpeta raíz de NEMO, apuntando a tu proyecto
 python bin/nemo_attach.py --target /ruta/a/tu-proyecto
 
-# Con hooks de Claude Code (SessionStart + Stop automáticos)
+# Con hooks de Claude Code (SessionStart + Stop automáticos vía settings.json)
 python bin/nemo_attach.py --target /ruta/a/tu-proyecto --with-hooks
 ```
 
-> 💡 ¿Usas Docker para el servidor NEMO pero instalación tradicional para el resto? El comando es el mismo — `nemo_attach.py` no depende de Docker.
+> 💡 Es idempotente — puedes volver a correrlo para actualizar las reglas sin duplicar contenido ni romper lo que ya tenías en esos archivos.
 
 ### Paso 4 — Configurar proveedores de embeddings (opcional pero recomendado)
 
