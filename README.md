@@ -151,7 +151,7 @@ Abre `%APPDATA%\Claude\claude_desktop_config.json` (Windows) o `~/Library/Applic
 
 Sin este paso, el Paso 2 te da acceso a las tools pero la IA no las usa sola. Puedes pedirle explícitamente "guarda esto en memoria" y lo hará — pero no llamará `prime_context` al inicio de la sesión ni guardará correcciones automáticamente.
 
-`nemo-attach` escribe archivos de reglas en tu proyecto (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`) que instruyen al modelo para que:
+`nemo-attach` escribe archivos de reglas en tu proyecto (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.github/copilot-instructions.md`, `AGENTS.md`, `.gemini/styleguide.md`) que instruyen al modelo para que:
 
 - **Al inicio de cada sesión** → llame `prime_context` automáticamente (carga memorias relevantes, recordatorios y resumen de la última sesión)
 - **Cuando aprendes algo nuevo** → llame `create_memory` sin que lo pidas
@@ -159,11 +159,14 @@ Sin este paso, el Paso 2 te da acceso a las tools pero la IA no las usa sola. Pu
 - **Al cerrar la sesión** → llame `store_conversation` para que la próxima sesión tenga contexto
 
 ```bash
-# Desde la carpeta raíz de NEMO, apuntando a tu proyecto
-python bin/nemo_attach.py --target /ruta/a/tu-proyecto
+# Desde la raíz de tu proyecto — muestra menú interactivo
+python /ruta/a/NEMO/bin/nemo_attach.py
+
+# Configurar clientes específicos sin menú
+python /ruta/a/NEMO/bin/nemo_attach.py --clients claude,cursor
 
 # Con hooks de Claude Code (SessionStart + Stop automáticos vía settings.json)
-python bin/nemo_attach.py --target /ruta/a/tu-proyecto --with-hooks
+python /ruta/a/NEMO/bin/nemo_attach.py --with-hooks
 ```
 
 > 💡 Es idempotente — puedes volver a correrlo para actualizar las reglas sin duplicar contenido ni romper lo que ya tenías en esos archivos.
@@ -301,19 +304,21 @@ claude mcp add nemo docker run -i --rm -v nemo-data:/app/.ai_memory -v nemo-mode
 }
 ```
 
-**Cursor / Windsurf / Cline:** apunta a `command: docker` con los mismos args en su config MCP.
+**Cursor / Windsurf:** apunta a `command: docker` con los mismos args en su config MCP.
 
-### 3. Activar NEMO en cada proyecto
+### 3. Activar NEMO en cada proyecto (una vez por proyecto)
+
+Conectar el cliente no es suficiente — la IA también necesita instrucciones explícitas para usar NEMO. `nemo-attach` las escribe en tu proyecto:
 
 ```bash
 # 🐧 Linux / macOS / WSL
-docker run --rm -v "$PWD":/workdir nemo:local nemo-attach
+docker run --rm -it -v "$PWD":/workdir nemo:local nemo-attach
 
 # 🪟 Windows (PowerShell)
-docker run --rm -v "${PWD}:/workdir" nemo:local nemo-attach
+docker run --rm -it -v "${PWD}:/workdir" nemo:local nemo-attach
 ```
 
-Esto escribe los archivos de reglas en el proyecto. Equivalente al `python bin/nemo_attach.py` de la instalación tradicional.
+El script pregunta qué clientes usas y escribe los archivos correspondientes (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `AGENTS.md`, etc.). Sin este paso el cliente tiene acceso a NEMO pero no sabe que debe usarlo.
 
 Ver [DOCKER.md](DOCKER.md) para comandos útiles, gestión de volúmenes y actualización de la imagen.
 

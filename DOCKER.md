@@ -54,22 +54,36 @@ claude mcp add nemo docker run -i --rm -v nemo-data:/app/.ai_memory -v nemo-mode
 }
 ```
 
-### Cursor / Windsurf / Cline
+### Cursor / Windsurf
 Usa `command: docker` con los mismos args en su config MCP stdio.
 
 ---
 
 ## Activar NEMO en cada proyecto
 
+Conectar el cliente AI a NEMO es solo la mitad del trabajo. La IA también necesita **instrucciones explícitas** para que llame a NEMO en cada sesión — de lo contrario simplemente no lo usa.
+
+`nemo-attach` escribe esas instrucciones en los archivos de reglas de cada cliente (CLAUDE.md, .cursor/rules/nemo.mdc, AGENTS.md, etc.). Corre una vez por proyecto; después el cliente las lee automáticamente en cada sesión.
+
 ```bash
-# 🐧 Linux / macOS / WSL
-docker run --rm -v "$PWD":/workdir nemo:local nemo-attach
+# 🐧 Linux / macOS / WSL  (corre en la raíz del proyecto)
+docker run --rm -it -v "$PWD":/workdir nemo:local nemo-attach
 
 # 🪟 Windows (PowerShell)
-docker run --rm -v "${PWD}:/workdir" nemo:local nemo-attach
+docker run --rm -it -v "${PWD}:/workdir" nemo:local nemo-attach
 ```
 
-Equivalente al `python bin/nemo_attach.py --target .` de la instalación tradicional.
+El script muestra un menú interactivo y pregunta qué clientes usas. Si prefieres saltarte el menú:
+
+```bash
+# Configurar solo Claude Code
+docker run --rm -v "$PWD":/workdir nemo:local nemo-attach --clients claude
+
+# Configurar todos los clientes de una vez
+docker run --rm -v "$PWD":/workdir nemo:local nemo-attach --clients all
+```
+
+> Sin este paso la IA tiene acceso a las herramientas NEMO pero no sabe que debe usarlas — opera sin memoria persistente.
 
 ---
 
