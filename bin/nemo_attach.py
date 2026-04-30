@@ -3,23 +3,20 @@
 nemo-attach — drop NEMO memory rules into any project so the AI working
 there is forced to use NEMO as persistent memory.
 
-Designed to be run via the official NEMO Docker image:
-
-    docker run --rm -v "$PWD":/workdir nemo:local nemo-attach
-
-…but also works as a plain Python script if you prefer a host-local install:
-
+Usage:
+    python bin/nemo_attach.py                        # interactive menu
     python bin/nemo_attach.py --target /path/to/project
+    python bin/nemo_attach.py --clients claude,copilot
+    python bin/nemo_attach.py --clients all
+    python bin/nemo_attach.py --with-hooks           # also installs Claude Code hooks
 
-What it does:
-  * Validates NEMO is reachable at http://localhost:8765/health (non-blocking).
-  * Writes per-client rules files (CLAUDE.md, .cursor/rules/nemo.mdc,
-    .windsurfrules, .clinerules, .github/copilot-instructions.md, AGENTS.md)
-    each derived from the canonical templates/nemo-rules.md.
-  * Idempotent: BEGIN/END markers let you re-run to upgrade in place without
-    duplicating content or stomping on user-authored sections.
-  * Optional --with-hooks edits ~/.claude/settings.json (with .bak backup) to
-    install SessionStart + Stop hooks that auto-call NEMO every session.
+Supported clients:
+    claude    → CLAUDE.md                            (Claude Code / Claude Desktop)
+    copilot   → .github/copilot-instructions.md      (GitHub Copilot — multi-IDE)
+    cursor    → .cursor/rules/nemo.mdc               (Cursor)
+    windsurf  → .windsurfrules                       (Windsurf)
+    aider     → AGENTS.md                            (Aider / Codex)
+    gemini    → .gemini/styleguide.md                (Gemini Code Assist)
 """
 
 from __future__ import annotations
@@ -36,48 +33,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-VERSION = "1"
+VERSION = "2"
 MARKER_BEGIN = f"<!-- BEGIN NEMO RULES v{VERSION} -->"
 MARKER_END = "<!-- END NEMO RULES -->"
+MARKER_PREFIX = "<!-- BEGIN NEMO RULES"  # version-agnostic, for detection
 MARKER_RE = re.compile(
-    rf"{re.escape(MARKER_BEGIN[:25])}.*?{re.escape(MARKER_END)}",
+    rf"{re.escape(MARKER_PREFIX)}.*?{re.escape(MARKER_END)}",
     re.DOTALL,
 )
 
 DEFAULT_NEMO_URL = os.environ.get("NEMO_URL", "http://localhost:8765")
 
 
-def health_check_url(display_url: str) -> str:
-    """Translate a host-relative URL into one reachable from inside a container.
-
-    ``display_url`` is what the *user* sees in printed instructions — they're
-    on the host, so `localhost` is right for them. But this script may itself
-    be running inside a sibling container where `localhost` doesn't resolve
-    to NEMO. In that case rewrite to `host.docker.internal`, which Docker
-    Desktop maps automatically on Mac/Windows, and on Linux resolves once the
-    user passes `--add-host=host.docker.internal:host-gateway`.
-    """
-    if Path("/.dockerenv").exists():
-        return display_url.replace("//localhost", "//host.docker.internal", 1)
-    return display_url
-
-
 # ── Per-client target descriptors ────────────────────────────────────────────
 @dataclass
 class Target:
-    key: str                       # CLI selector
-    path: str                      # relative to project root
-    formatter: Callable[[str], str]  # canonical → file payload
-    description: str               # for the summary table
+    key: str
+    path: str
+    formatter: Callable[[str], str]
+    label: str
 
 
 def _plain(body: str) -> str:
-    """Return the canonical block wrapped in NEMO markers, unmodified."""
     return f"{MARKER_BEGIN}\n{body.rstrip()}\n{MARKER_END}\n"
 
 
 def _cursor_mdc(body: str) -> str:
-    """Cursor expects YAML frontmatter so the rules attach to every request."""
     front = (
         "---\n"
         "description: NEMO persistent memory rules — required reading every turn.\n"
@@ -87,27 +68,36 @@ def _cursor_mdc(body: str) -> str:
     return front + _plain(body)
 
 
-def _copilot_md(body: str) -> str:
-    """GitHub Copilot picks up .github/copilot-instructions.md verbatim."""
-    return _plain(body)
+def _gemini(body: str) -> str:
+    header = "# NEMO Memory Rules\n\n"
+    return header + _plain(body)
 
 
 TARGETS: list[Target] = [
-    Target("claude", "CLAUDE.md", _plain, "Claude Code / Claude Desktop project rules"),
-    Target("cursor", ".cursor/rules/nemo.mdc", _cursor_mdc, "Cursor always-on rule"),
-    Target("windsurf", ".windsurfrules", _plain, "Windsurf project rules"),
-    Target("cline", ".clinerules", _plain, "Cline project rules"),
-    Target("copilot", ".github/copilot-instructions.md", _copilot_md, "VS Code Copilot instructions"),
-    Target("agents", "AGENTS.md", _plain, "Generic AGENTS.md (Codex, Aider, generic agents)"),
+    Target("claude",   "CLAUDE.md",                        _plain,      "Claude Code / Claude Desktop"),
+    Target("copilot",  ".github/copilot-instructions.md",  _plain,      "GitHub Copilot (multi-IDE)"),
+    Target("cursor",   ".cursor/rules/nemo.mdc",           _cursor_mdc, "Cursor"),
+    Target("windsurf", ".windsurfrules",                   _plain,      "Windsurf"),
+    Target("aider",    "AGENTS.md",                        _plain,      "Aider / Codex"),
+    Target("gemini",   ".gemini/styleguide.md",            _gemini,     "Gemini Code Assist"),
+]
+
+# Menu display order with friendly labels
+MENU: list[tuple[str, str, str]] = [
+    ("claude",   "Claude Code / Claude Desktop",  "CLAUDE.md"),
+    ("copilot",  "GitHub Copilot",                ".github/copilot-instructions.md"),
+    ("cursor",   "Cursor",                        ".cursor/rules/nemo.mdc"),
+    ("windsurf", "Windsurf",                      ".windsurfrules"),
+    ("aider",    "Aider / Codex",                 "AGENTS.md"),
+    ("gemini",   "Gemini Code Assist",            ".gemini/styleguide.md"),
 ]
 
 
 # ── Template loading ─────────────────────────────────────────────────────────
 def find_template() -> Path:
-    """Locate templates/nemo-rules.md relative to this script."""
     candidates = [
         Path(__file__).resolve().parent.parent / "templates" / "nemo-rules.md",
-        Path("/app/templates/nemo-rules.md"),  # Docker default
+        Path("/app/templates/nemo-rules.md"),
     ]
     for c in candidates:
         if c.is_file():
@@ -121,7 +111,9 @@ def find_template() -> Path:
 # ── Health check ─────────────────────────────────────────────────────────────
 def health_check(url: str, timeout: float = 2.0) -> tuple[bool, str]:
     try:
-        with urllib.request.urlopen(f"{url}/health", timeout=timeout) as resp:
+        probe = url.replace("//localhost", "//host.docker.internal", 1) \
+            if Path("/.dockerenv").exists() else url
+        with urllib.request.urlopen(f"{probe}/health", timeout=timeout) as resp:
             data = json.loads(resp.read())
             return data.get("status") == "ok", data.get("status", "unknown")
     except urllib.error.URLError as exc:
@@ -130,9 +122,8 @@ def health_check(url: str, timeout: float = 2.0) -> tuple[bool, str]:
         return False, f"error ({type(exc).__name__}: {exc})"
 
 
-# ── Per-target write logic ───────────────────────────────────────────────────
+# ── Per-target write logic ────────────────────────────────────────────────────
 def apply_target(target: Target, root: Path, body: str, dry_run: bool) -> str:
-    """Return one of: 'created' | 'updated' | 'appended' | 'unchanged' | 'skipped' | 'dry-run'."""
     payload = target.formatter(body)
     dest = root / target.path
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -145,9 +136,7 @@ def apply_target(target: Target, root: Path, body: str, dry_run: bool) -> str:
 
     existing = dest.read_text(encoding="utf-8")
 
-    # Already managed — replace just our BEGIN/END block; leave any per-client
-    # header (e.g. Cursor's YAML frontmatter) untouched so we don't duplicate it.
-    if MARKER_BEGIN[:25] in existing and MARKER_END in existing:
+    if MARKER_PREFIX in existing and MARKER_END in existing:
         m = MARKER_RE.search(payload)
         block_only = m.group(0) if m else payload.strip()
         new = MARKER_RE.sub(block_only, existing, count=1)
@@ -158,7 +147,6 @@ def apply_target(target: Target, root: Path, body: str, dry_run: bool) -> str:
         dest.write_text(new, encoding="utf-8")
         return "updated"
 
-    # User-authored file with no NEMO block — append ours at the end.
     appended = existing.rstrip() + "\n\n" + payload
     if dry_run:
         return "dry-run (would append)"
@@ -166,9 +154,8 @@ def apply_target(target: Target, root: Path, body: str, dry_run: bool) -> str:
     return "appended"
 
 
-# ── Optional Claude Code hooks installer ─────────────────────────────────────
+# ── Claude Code hooks installer ───────────────────────────────────────────────
 def install_hooks(nemo_url: str, dry_run: bool) -> str:
-    """Add SessionStart + Stop hooks to ~/.claude/settings.json with a .bak backup."""
     settings_path = Path.home() / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -198,7 +185,7 @@ def install_hooks(nemo_url: str, dry_run: bool) -> str:
         for entry in existing:
             for h in entry.get("hooks", []):
                 if h.get("command") == hook["command"]:
-                    return  # already present
+                    return
         existing.append({"matcher": "*", "hooks": [hook]})
 
     _ensure("SessionStart", nemo_session_start)
@@ -210,53 +197,92 @@ def install_hooks(nemo_url: str, dry_run: bool) -> str:
     return f"updated {settings_path} (backup at {settings_path.with_suffix('.json.bak')})"
 
 
-# ── CLI ──────────────────────────────────────────────────────────────────────
+# ── Interactive client selector ───────────────────────────────────────────────
+def prompt_clients() -> list[str]:
+    print()
+    print("¿Qué clientes AI usas en este proyecto?")
+    print()
+    for i, (key, label, path) in enumerate(MENU, 1):
+        print(f"  {i}. {label:<35} ({path})")
+    print(f"  {len(MENU) + 1}. Todos")
+    print()
+
+    while True:
+        try:
+            raw = input(f"Selecciona (ej: 1,3 o {len(MENU) + 1} para todos): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+
+        if not raw:
+            continue
+
+        # "all" shortcut
+        if raw == str(len(MENU) + 1) or raw.lower() in {"all", "todos"}:
+            return [key for key, _, _ in MENU]
+
+        keys: list[str] = []
+        valid = True
+        for part in raw.split(","):
+            part = part.strip()
+            if part.isdigit():
+                idx = int(part) - 1
+                if 0 <= idx < len(MENU):
+                    keys.append(MENU[idx][0])
+                else:
+                    print(f"  Opción inválida: {part}")
+                    valid = False
+                    break
+            elif part.lower() in {k for k, _, _ in MENU}:
+                keys.append(part.lower())
+            else:
+                print(f"  Opción no reconocida: {part!r}")
+                valid = False
+                break
+
+        if valid and keys:
+            return list(dict.fromkeys(keys))  # deduplicate preserving order
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="nemo-attach",
-        description="Drop NEMO memory rules into any project so AI clients are forced to use it.",
+        description="Drop NEMO memory rules into any project so AI clients use it automatically.",
     )
     parser.add_argument(
         "--target",
         default=None,
-        help="Project directory. Defaults to /workdir inside the Docker image, $PWD otherwise.",
+        help="Project directory. Defaults to /workdir (Docker) or $PWD.",
     )
     parser.add_argument(
         "--clients",
-        default="all",
-        help="Comma-separated subset of clients to set up. Default: all. "
-             f"Available: {','.join(t.key for t in TARGETS)}.",
+        default=None,
+        help=(
+            "Comma-separated clients to configure, or 'all'. "
+            f"Available: {', '.join(t.key for t in TARGETS)}. "
+            "Omit to get an interactive menu."
+        ),
     )
     parser.add_argument(
         "--with-hooks",
         action="store_true",
-        help="Also install SessionStart + Stop hooks in ~/.claude/settings.json (Claude Code only).",
+        help="Install SessionStart + Stop hooks in ~/.claude/settings.json (Claude Code only).",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show what would change without touching anything.",
+        help="Show what would change without writing anything.",
     )
     parser.add_argument(
         "--nemo-url",
         default=DEFAULT_NEMO_URL,
-        help=f"NEMO base URL for the health check + hook commands. Default: {DEFAULT_NEMO_URL}",
+        help=f"NEMO base URL for health check + hook commands. Default: {DEFAULT_NEMO_URL}",
     )
     return parser.parse_args(argv)
 
 
 def resolve_target_dir(arg: str | None) -> Path:
-    """Pick the project directory we should write into.
-
-    Preference order:
-      1. --target if explicitly passed.
-      2. /workdir if it exists (Docker bind-mount convention).
-      3. The current working directory.
-
-    We deliberately do NOT pre-check writability for /workdir: if it exists we
-    trust the user's bind-mount intent and let any later permission error
-    surface naturally (with a clear hint about --user).
-    """
     if arg:
         return Path(arg).expanduser().resolve()
     workdir = Path("/workdir")
@@ -265,49 +291,60 @@ def resolve_target_dir(arg: str | None) -> Path:
     return Path.cwd().resolve()
 
 
-def filter_targets(spec: str) -> list[Target]:
-    if spec.strip().lower() == "all":
-        return TARGETS
-    keys = {k.strip() for k in spec.split(",") if k.strip()}
-    bad = keys - {t.key for t in TARGETS}
+def resolve_selected_targets(clients_arg: str | None) -> list[Target]:
+    target_map = {t.key: t for t in TARGETS}
+
+    # No --clients flag and stdin is a real terminal → show interactive menu
+    if clients_arg is None and sys.stdin.isatty():
+        keys = prompt_clients()
+        return [target_map[k] for k in keys if k in target_map]
+
+    # Non-interactive fallback (piped input, Docker, CI) → all clients
+    if clients_arg is None:
+        return list(TARGETS)
+
+    if clients_arg.strip().lower() == "all":
+        return list(TARGETS)
+
+    keys = {k.strip() for k in clients_arg.split(",") if k.strip()}
+    bad = keys - target_map.keys()
     if bad:
-        raise SystemExit(f"Unknown client(s): {', '.join(sorted(bad))}. "
-                         f"Available: {', '.join(t.key for t in TARGETS)}.")
+        raise SystemExit(
+            f"Unknown client(s): {', '.join(sorted(bad))}. "
+            f"Available: {', '.join(target_map)}"
+        )
     return [t for t in TARGETS if t.key in keys]
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
     project = resolve_target_dir(args.target)
-    selected = filter_targets(args.clients)
+    selected = resolve_selected_targets(args.clients)
     template = find_template()
     body = template.read_text(encoding="utf-8")
 
-    print(f"nemo-attach v{VERSION}")
-    print(f"  project   : {project}")
-    print(f"  template  : {template}")
-    print(f"  clients   : {', '.join(t.key for t in selected)}")
-    print(f"  dry-run   : {args.dry_run}")
+    print(f"\nnemo-attach v{VERSION}")
+    print(f"  project  : {project}")
+    print(f"  clients  : {', '.join(t.key for t in selected)}")
+    print(f"  dry-run  : {args.dry_run}")
     print()
 
-    probe_url = health_check_url(args.nemo_url)
-    ok, status = health_check(probe_url)
+    ok, status = health_check(args.nemo_url)
     badge = "[OK]  " if ok else "[WARN]"
     print(f"{badge} NEMO @ {args.nemo_url} — {status}")
     if not ok:
-        print("        Rules will be installed anyway. Start NEMO with:")
-        print("          docker compose up -d   (from the NEMO repo root)")
+        print("       Rules will be written anyway.")
     print()
 
     counts: dict[str, int] = {}
     for t in selected:
         outcome = apply_target(t, project, body, args.dry_run)
-        counts[outcome.split(" ", 1)[0]] = counts.get(outcome.split(" ", 1)[0], 0) + 1
-        print(f"  {outcome:<24}  {t.path:<40}  {t.description}")
+        bucket = outcome.split(" ", 1)[0]
+        counts[bucket] = counts.get(bucket, 0) + 1
+        print(f"  {outcome:<24}  {t.path:<45}  {t.label}")
 
     print()
-    summary = " · ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
-    print(f"Summary  →  {summary}")
+    print(f"Summary → {' · '.join(f'{k}: {v}' for k, v in sorted(counts.items()))}")
 
     if args.with_hooks:
         print()
@@ -315,17 +352,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {install_hooks(args.nemo_url, args.dry_run)}")
     else:
         print()
-        print("Tip: pass --with-hooks to also wire SessionStart + Stop into ~/.claude/settings.json")
+        print("Tip: pass --with-hooks to wire SessionStart + Stop into ~/.claude/settings.json")
 
     print()
-    print("─ Connect your AI client (one-time per client) ─────────────────────")
-    print(f"  Claude Code     →  claude mcp add nemo {args.nemo_url}/mcp/sse --transport sse")
-    print(f"  Claude Desktop  →  paste {args.nemo_url}/mcp/sse into claude_desktop_config.json")
-    print(f"  Cursor / Cline  →  Settings → MCP → Add → {args.nemo_url}/mcp/sse")
-    print(f"  Windsurf        →  Settings → MCP → {args.nemo_url}/mcp/sse")
-    print(f"  VS Code Copilot →  ~/.config/Code/User/mcp.json (URL: {args.nemo_url}/mcp/sse)")
-    print(f"  ChatGPT GPT     →  Builder → Actions → Import {args.nemo_url}/openapi.json")
-    print(f"  Anything else   →  REST: {args.nemo_url}/api/...")
+    print("─ Connect your AI client (one-time per client) ─────────────────────────────")
+    print(f"  Claude Code     → claude mcp add nemo {args.nemo_url}/mcp/sse --transport sse")
+    print(f"  GitHub Copilot  → Settings → MCP → Add → stdio: python ai_memory_mcp_server.py")
+    print(f"  Cursor          → Settings → MCP → Add → {args.nemo_url}/mcp/sse")
+    print(f"  Windsurf        → Settings → MCP → {args.nemo_url}/mcp/sse")
+    print(f"  Gemini          → Settings → Extensions → NEMO MCP")
     return 0
 
 
