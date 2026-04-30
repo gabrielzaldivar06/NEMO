@@ -46,7 +46,16 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 ---
 
-> ## 🐳 Quickstart con Docker (recomendado, vendor-agnóstico)
+## ¿Cómo instalar NEMO?
+
+| | Método | Cuándo usarlo |
+|---|---|---|
+| ⭐ | [**Instalación tradicional**](#-instalación-clásica-python-local-sin-docker-recomendado) | Recomendado. Python + LM Studio u Ollama en tu máquina. Menos capas, máxima calidad. |
+| 🐳 | [**Docker**](#-quickstart-con-docker-opcional) | Opcional. Si prefieres no gestionar Python/venvs y quieres que el servidor NEMO arranque solo con el sistema. La calidad de embeddings sigue dependiendo de LM Studio u Ollama en el host. |
+
+---
+
+> ## 🐳 Quickstart con Docker (opcional)
 >
 > Docker contiene el **servidor NEMO**, no el motor de embeddings. Eso significa que para calidad de embeddings real, necesitarás instalar LM Studio u Ollama en tu máquina de todas formas — igual que en la instalación tradicional. La diferencia es que con Docker no gestionas Python ni venvs para NEMO, y el servidor se auto-arranca con el sistema.
 >
@@ -250,9 +259,9 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 ---
 
-## ⚡ Instalación clásica (Python local, sin Docker)
+## ⭐ Instalación clásica (Python local, sin Docker) — Recomendado
 
-> Si prefieres no usar Docker o quieres iterar sobre el código directamente. Sin cuentas. Sin nube. Solo Python.
+> Sin Docker, sin capas extra. Instalas NEMO, conectas LM Studio u Ollama, y listo. Es el camino más directo y el que produce la máxima calidad de embeddings.
 
 ### Paso 1 — Instalar NEMO
 
@@ -342,7 +351,21 @@ Abre `%APPDATA%\Claude\claude_desktop_config.json` (Windows) o `~/Library/Applic
 ```
 </details>
 
-### Paso 3 — Configurar proveedores de embeddings (opcional pero recomendado)
+### Paso 3 — Activar NEMO en cada proyecto
+
+Una sola línea por proyecto. Escribe los archivos de reglas (`CLAUDE.md`, `.cursor/rules/nemo.mdc`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `AGENTS.md`) que fuerzan al modelo a llamar `prime_context` antes de responderte y `create_correction` cuando lo corriges. Es idempotente — puedes volver a correrlo para actualizar sin duplicar contenido.
+
+```bash
+# Desde la carpeta raíz de NEMO, apuntando a tu proyecto
+python bin/nemo_attach.py --target /ruta/a/tu-proyecto
+
+# Con hooks de Claude Code (SessionStart + Stop automáticos)
+python bin/nemo_attach.py --target /ruta/a/tu-proyecto --with-hooks
+```
+
+> 💡 ¿Usas Docker para el servidor NEMO pero instalación tradicional para el resto? El comando es el mismo — `nemo_attach.py` no depende de Docker.
+
+### Paso 4 — Configurar proveedores de embeddings (opcional pero recomendado)
 
 NEMO funciona sin embeddings (fallback a búsqueda de texto), pero para el pipeline completo necesitas al menos un proveedor de embeddings.
 
@@ -403,7 +426,7 @@ Edita `embedding_config.json`:
 ```
 </details>
 
-### Paso 4 — Verificar que funciona
+### Paso 5 — Verificar que funciona
 
 Reinicia tu editor. En Agent mode, pídele a la IA:
 
@@ -415,7 +438,7 @@ Luego abre una sesión nueva y pregunta:
 
 **Si lo sabe — NEMO está funcionando ✓**
 
-### Paso 5 — Ejecutar benchmark (opcional)
+### Paso 6 — Ejecutar benchmark (opcional)
 
 Verifica que tu instalación alcanza el rendimiento esperado:
 

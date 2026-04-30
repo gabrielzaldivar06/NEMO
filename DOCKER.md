@@ -1,4 +1,8 @@
-# NEMO en Docker — despliegue universal
+# NEMO en Docker — instalación opcional
+
+> Para la instalación recomendada (Python + LM Studio u Ollama directamente en tu máquina) ver [README.md](README.md#-instalación-clásica-python-local-sin-docker--recomendado).
+>
+> Docker es una alternativa válida si prefieres no gestionar Python/venvs y quieres que el servidor NEMO se auto-arranque con el sistema. La calidad de embeddings es idéntica — depende de LM Studio u Ollama en el host, no de Docker.
 
 Un solo `docker compose up` y NEMO queda conectable desde **cualquier AI** — Claude,
 ChatGPT, Gemini, Copilot, Cursor, LangChain, n8n, scripts propios… Sin Python local,
