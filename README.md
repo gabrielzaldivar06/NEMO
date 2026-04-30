@@ -50,6 +50,24 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 >
 > Una sola dependencia (Docker), funciona en Linux/macOS/Windows, conecta a **cualquier IA** en segundos. Sin Python local, sin venvs, sin LM Studio/Ollama instalados a mano.
 >
+> ### ¿Qué calidad de embeddings obtendrás?
+>
+> La calidad de NEMO depende del modelo de embeddings que uses. Docker te da tres niveles:
+>
+> | Nivel | Cómo arrancarlo | Embeddings | Para quién |
+> |-------|----------------|------------|------------|
+> | **Básico** | `./start.sh` | fastembed in-process (MiniLM 384D) | Solo quieres que funcione sin instalar nada |
+> | **Mejor** | `./start.sh --ollama` | Ollama + `nomic-embed-text` (768D) | Quieres mejor calidad, todo dentro de Docker |
+> | **Máximo** | `./start.sh` + LM Studio en el host | Qwen3-Embedding-4B (2560D) + reranker BGE | Quieres los benchmarks del README (91.67% Top-1) |
+>
+> > 💡 **El nivel máximo no requiere nada especial en Docker.** Si tienes LM Studio corriendo en tu máquina con Qwen3-4B, NEMO lo detecta automáticamente vía `host.docker.internal:1234` — sin cambiar el compose ni el script. Docker solo sirve como contenedor del servidor NEMO; los embeddings los genera LM Studio en el host.
+> >
+> > 🎯 **¿Y el toolkit NVIDIA?** Solo aporta velocidad, no calidad. Con él, Ollama dentro de Docker usa el GPU y genera embeddings 5-10x más rápido. Sin él, Ollama corre en CPU con la misma calidad — para un uso normal la diferencia no es perceptible.
+> >
+> > **En resumen:** si solo quieres que funcione sin instalar nada extra, Docker solo es perfecto. Si quieres el máximo rendimiento, instala LM Studio — sigue usando el mismo Docker, solo agregas el motor de embeddings en el host.
+>
+> ---
+>
 > El flujo completo son **tres pasos secuenciales**. Los dos primeros se hacen *una sola vez*; el tercero es el comando que repites por cada proyecto:
 >
 > 1. **🛠️ Setup único por máquina** — levantar el servidor (1 vez en la vida).
