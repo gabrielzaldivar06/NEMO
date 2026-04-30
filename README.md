@@ -50,72 +50,8 @@ NEMO construye una **capa de memoria persistente y buscable semánticamente** qu
 
 | | Método | Cuándo usarlo |
 |---|---|---|
-| ⭐ | [**Instalación tradicional**](#-instalación-clásica-python-local-sin-docker-recomendado) | Recomendado. Python + LM Studio u Ollama en tu máquina. Menos capas, máxima calidad. |
-| 🐳 | [**Docker**](#-quickstart-con-docker-opcional) | Opcional. Si prefieres no gestionar Python/venvs y quieres que el servidor NEMO arranque solo con el sistema. La calidad de embeddings sigue dependiendo de LM Studio u Ollama en el host. |
-
----
-
-> ## 🐳 Docker (opcional)
->
-> Útil si prefieres no gestionar Python/venvs en tu máquina. NEMO corre en un contenedor usando stdio MCP — el cliente AI lo invoca directamente, igual que haría con cualquier proceso local.
->
-> La calidad de embeddings sigue dependiendo de LM Studio u Ollama instalados en tu máquina, igual que en la instalación tradicional.
->
-> ### 1. Construir la imagen (una sola vez)
->
-> ```bash
-> git clone https://github.com/gabrielzaldivar06/NEMO.git
-> cd NEMO
-> docker build -f docker/Dockerfile -t nemo:local .
-> ```
->
-> ### 2. Conectar tu cliente AI
->
-> En lugar de apuntar a un servidor HTTP, el cliente ejecuta el contenedor directamente por stdio:
->
-> **Claude Code:**
-> ```bash
-> claude mcp add nemo docker run -i --rm -v nemo-data:/app/.ai_memory -v nemo-models:/models nemo:local
-> ```
->
-> **Claude Desktop** (`claude_desktop_config.json`):
-> ```json
-> {
->   "mcpServers": {
->     "nemo": {
->       "command": "docker",
->       "args": ["run", "-i", "--rm", "-v", "nemo-data:/app/.ai_memory", "-v", "nemo-models:/models", "nemo:local"]
->     }
->   }
-> }
-> ```
->
-> **VS Code Copilot** (`~/.config/Code/User/mcp.json`):
-> ```json
-> {
->   "servers": {
->     "nemo": {
->       "type": "stdio",
->       "command": "docker",
->       "args": ["run", "-i", "--rm", "-v", "nemo-data:/app/.ai_memory", "-v", "nemo-models:/models", "nemo:local"]
->     }
->   }
-> }
-> ```
->
-> **Cursor / Windsurf / Cline:** apunta a `command: docker` con los mismos args en su config MCP.
->
-> ### 3. Activar NEMO en cada proyecto
->
-> ```bash
-> # 🐧 Linux / macOS / WSL
-> docker run --rm -v "$PWD":/workdir nemo:local nemo-attach
->
-> # 🪟 Windows (PowerShell)
-> docker run --rm -v "${PWD}:/workdir" nemo:local nemo-attach
-> ```
->
-> Esto escribe los archivos de reglas en el proyecto. Equivalente al `python bin/nemo_attach.py` de la instalación tradicional.
+| ⭐ | [**Instalación tradicional**](#-instalación-clásica-python-local-sin-docker--recomendado) | Recomendado. Python + LM Studio u Ollama en tu máquina. Menos capas, máxima calidad. |
+| 🐳 | [**Docker**](#-docker-opcional) | Opcional. Si prefieres no gestionar Python/venvs. La calidad de embeddings sigue dependiendo de LM Studio u Ollama en el host. |
 
 ---
 
@@ -314,6 +250,72 @@ python examples/benchmark_nemo_suite.py --preset quick
 ```
 
 Resultados esperados con LM Studio + Reranker: Top-1 ≥ 91%, MRR ≥ 0.95, Confusory = 100%.
+
+---
+
+## 🐳 Docker (opcional)
+
+> Útil si prefieres no gestionar Python/venvs en tu máquina. NEMO corre en un contenedor usando stdio MCP — el cliente AI lo invoca directamente, igual que haría con cualquier proceso local.
+>
+> La calidad de embeddings sigue dependiendo de LM Studio u Ollama instalados en tu máquina, igual que en la instalación tradicional.
+
+### 1. Construir la imagen (una sola vez)
+
+```bash
+git clone https://github.com/gabrielzaldivar06/NEMO.git
+cd NEMO
+docker build -f docker/Dockerfile -t nemo:local .
+```
+
+### 2. Conectar tu cliente AI
+
+En lugar de apuntar a un servidor HTTP, el cliente ejecuta el contenedor directamente por stdio:
+
+**Claude Code:**
+```bash
+claude mcp add nemo docker run -i --rm -v nemo-data:/app/.ai_memory -v nemo-models:/models nemo:local
+```
+
+**Claude Desktop** (`claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "nemo": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "nemo-data:/app/.ai_memory", "-v", "nemo-models:/models", "nemo:local"]
+    }
+  }
+}
+```
+
+**VS Code Copilot** (`~/.config/Code/User/mcp.json`):
+```json
+{
+  "servers": {
+    "nemo": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "nemo-data:/app/.ai_memory", "-v", "nemo-models:/models", "nemo:local"]
+    }
+  }
+}
+```
+
+**Cursor / Windsurf / Cline:** apunta a `command: docker` con los mismos args en su config MCP.
+
+### 3. Activar NEMO en cada proyecto
+
+```bash
+# 🐧 Linux / macOS / WSL
+docker run --rm -v "$PWD":/workdir nemo:local nemo-attach
+
+# 🪟 Windows (PowerShell)
+docker run --rm -v "${PWD}:/workdir" nemo:local nemo-attach
+```
+
+Esto escribe los archivos de reglas en el proyecto. Equivalente al `python bin/nemo_attach.py` de la instalación tradicional.
+
+Ver [DOCKER.md](DOCKER.md) para comandos útiles, gestión de volúmenes y actualización de la imagen.
 
 ---
 
