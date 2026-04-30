@@ -6,11 +6,8 @@ decisions in this project, and hallucinate facts the user already taught you.
 
 ## Connection
 
-- **MCP (preferred):** `http://localhost:8765/mcp/sse`
-- **REST fallback:** `http://localhost:8765/api/...` — see `http://localhost:8765/openapi.json`
-
-If your client speaks MCP, the tools below appear automatically.
-If you can only call HTTP, use `POST /api/tools/{tool_name}` with `{"arguments": {...}}`.
+NEMO connects via **MCP stdio** — the tools below appear automatically in your client.
+No HTTP server, no URL to configure.
 
 ## Required call sequence
 
@@ -98,7 +95,7 @@ to scope retrieval to the current work.
 
 ## When NEMO is unreachable
 
-If you cannot reach `http://localhost:8765/health` (timeout, connection refused, etc.):
+If the MCP tools are unavailable or calls fail:
 1. Tell the user once: "NEMO is not reachable — running without persistent memory for this session."
 2. Continue normally without trying to call NEMO tools.
 3. Do not silently swallow the error.
