@@ -1,184 +1,91 @@
-# NEMO en Docker — despliegue universal
+# NEMO en Docker — instalación opcional
 
-Un solo `docker compose up` y NEMO queda conectable desde **cualquier AI** — Claude,
-ChatGPT, Gemini, Copilot, Cursor, LangChain, n8n, scripts propios… Sin Python local,
-sin rutas absolutas, sin `pip install` en cada máquina.
+> Para la instalación recomendada ver [README.md](README.md#-instalación-clásica-python-local-sin-docker--recomendado).
 
----
+Docker es una alternativa para quien prefiere no gestionar Python/venvs. El contenedor corre el servidor MCP por stdio — sin HTTP, sin FastAPI, sin docker compose. El cliente AI lo invoca directamente como si fuera un proceso local.
 
-## Qué se levanta
-
-La imagen expone **un solo puerto (`8765`)** con tres interfaces en paralelo:
-
-| Ruta                     | Para qué sirve                                          | Lo consume               |
-|--------------------------|---------------------------------------------------------|--------------------------|
-| `GET /mcp/sse`                  | MCP sobre Server-Sent Events                       | Claude Desktop / Code, Cursor, Windsurf, Cline, VS Code Copilot |
-| `POST /mcp/messages/`           | Canal de retorno MCP para los clientes SSE         | (lo usa el cliente MCP automáticamente) |
-| `GET /api/tools`                | Lista de todas las tools con su schema             | Exploración, LangChain, n8n |
-| `POST /api/tools/{name}`        | Ejecuta cualquier tool por nombre                  | ChatGPT custom GPTs, Gemini, scripts |
-| `POST /api/memory`              | Atajo REST: crear memoria curada                   | Integraciones simples    |
-| `POST /api/memory/conversation` | Atajo REST: persistir un mensaje de conversación   | Integraciones simples    |
-| `POST /api/memory/search`       | Atajo REST: búsqueda semántica                     | Integraciones simples    |
-| `GET /api/memory/prime`         | Atajo REST: prime context inicial                  | Integraciones simples    |
-| `GET /openapi.json`             | OpenAPI 3 auto-generado                            | Importar como custom GPT |
-| `GET /health`                   | Liveness + readiness probe                         | Docker healthcheck, monitoreo |
+La calidad de embeddings depende de LM Studio u Ollama instalados en tu máquina, igual que en la instalación tradicional.
 
 ---
 
-## Arranque en 30 segundos
+## Construir la imagen
 
 ```bash
 git clone https://github.com/gabrielzaldivar06/NEMO.git
 cd NEMO
-cp .env.example .env            # opcional; todos los defaults funcionan
-docker compose up -d
+docker build -f docker/Dockerfile -t nemo:local .
 ```
 
-Verifica:
-```bash
-curl http://localhost:8765/health
-```
-
-Listo. Ahora conecta la AI que uses.
+La imagen incluye fastembed como fallback. Si tienes LM Studio u Ollama corriendo en el host, NEMO los detecta automáticamente.
 
 ---
 
-## Conectar cada cliente
+## Conectar cada cliente AI
 
-### Claude Desktop / Claude Code
+El cliente ejecuta el contenedor por stdio. No hay servidor persistente ni puerto HTTP.
+
+### Claude Code
+```bash
+claude mcp add nemo docker run -i --rm -v nemo-data:/app/.ai_memory -v nemo-models:/models nemo:local
+```
+
+### Claude Desktop — `claude_desktop_config.json`
 ```json
 {
   "mcpServers": {
-    "nemo": { "url": "http://localhost:8765/mcp/sse" }
+    "nemo": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "nemo-data:/app/.ai_memory", "-v", "nemo-models:/models", "nemo:local"]
+    }
   }
 }
 ```
-Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o `%APPDATA%\Claude\claude_desktop_config.json` (Windows).
-Claude Code: `claude mcp add nemo http://localhost:8765/mcp/sse --transport sse`.
 
-### VS Code (Copilot + MCP)
-`~/.config/Code/User/mcp.json`:
+### VS Code Copilot — `~/.config/Code/User/mcp.json`
 ```json
-{ "servers": { "nemo": { "type": "sse", "url": "http://localhost:8765/mcp/sse" } } }
+{
+  "servers": {
+    "nemo": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "nemo-data:/app/.ai_memory", "-v", "nemo-models:/models", "nemo:local"]
+    }
+  }
+}
 ```
 
 ### Cursor / Windsurf / Cline
-Añade un MCP server remoto apuntando a `http://localhost:8765/mcp/sse`.
-
-### ChatGPT custom GPT
-En el builder del GPT → **Configure → Actions → Import from URL** →
-`http://localhost:8765/openapi.json`. La especificación OpenAPI y las rutas
-REST exponen el **conjunto común** de tools (actualmente ~34). Los extras
-específicos por cliente que existen en `AIMemoryMCPServer._detect_client_type()`
-(por ejemplo, tools adicionales para VS Code o SillyTavern) **solo aplican al
-modo MCP-stdio original** — el servidor universal HTTP no inspecciona el
-`User-Agent` por petición, porque hacerlo de forma proceso-global no sería
-seguro bajo conexiones concurrentes.
-
-### Gemini / LangChain / n8n / curl
-
-Llamada HTTP directa para búsqueda semántica:
-
-#### 🐧 Linux / macOS / WSL
-
-```bash
-curl -X POST http://localhost:8765/api/memory/search -H 'Content-Type: application/json' -d '{"query": "decisiones de arquitectura", "limit": 5}'
-```
-
-#### 🪟 Windows (PowerShell)
-
-```powershell
-$body = '{"query": "decisiones de arquitectura", "limit": 5}'
-Invoke-RestMethod -Method POST -Uri http://localhost:8765/api/memory/search -ContentType "application/json" -Body $body
-```
-
-Para llamar cualquier tool por nombre:
-
-#### 🐧 Linux / macOS / WSL
-
-```bash
-curl -X POST http://localhost:8765/api/tools/prime_context -H 'Content-Type: application/json' -d '{"arguments": {"topic": "NEMO"}}'
-```
-
-#### 🪟 Windows (PowerShell)
-
-```powershell
-$body = '{"arguments": {"topic": "NEMO"}}'
-Invoke-RestMethod -Method POST -Uri http://localhost:8765/api/tools/prime_context -ContentType "application/json" -Body $body
-```
+Usa `command: docker` con los mismos args en su config MCP stdio.
 
 ---
 
-## Consideraciones de seguridad
-
-NEMO guarda **todo** lo que decides recordar — preferencias, decisiones, fragmentos de
-conversaciones, recordatorios. Trátalo como datos personales sensibles. Los defaults
-están pensados para uso individual en un equipo de confianza.
-
-### Defaults seguros
-
-- **Bind a `127.0.0.1`** (loopback). El contenedor solo es alcanzable desde el equipo donde corre Docker. Tus dispositivos en la misma red WiFi **no** pueden hablarle.
-- **CORS restringido a `localhost`** en sus puertos típicos. Una webpage maliciosa abierta en tu navegador no puede hacer fetch de tus memorias vía cross-origin.
-- **Volúmenes nombrados** propiedad del usuario `nemo` (UID 1000) — no exposición a otros usuarios del equipo si bloqueas tu sesión.
-- **Sin telemetría externa**: NEMO no llama a la nube para nada (los embeddings los procesa el sidecar fastembed dentro del propio contenedor).
-
-### Lo que SÍ deberías hacer si planeas exponer NEMO
-
-- **Para acceso desde otros equipos en tu LAN**: pon `NEMO_BIND_ADDRESS=0.0.0.0` en `.env` y entiende que cualquier persona en esa red puede leer tus memorias sin autenticación. Solo úsalo en redes que controlas (tu casa, una VPN privada).
-- **Para una dashboard en otro puerto** (e.g. desarrollo local en `:3000`): añade `http://localhost:3000` a `NEMO_CORS_ORIGINS=` (lista separada por comas). No uses `*` salvo en redes aisladas.
-- **Si vas a exponer NEMO públicamente** (no recomendado sin las dos cosas siguientes): pon un proxy delante (Caddy, nginx) con autenticación HTTP básica o un OAuth2 proxy, **y** un firewall que limite IPs.
-
-### Limitaciones conocidas (no implementadas todavía)
-
-- **Sin autenticación en `/api/*`** — quien alcance el puerto puede llamar a cualquier tool, incluidas las destructivas (`delete_reminder`, `cancel_appointment`). El bind por loopback mitiga el riesgo en ~95 % de los casos. Una capa de bearer-token opcional vía `NEMO_AUTH_TOKEN` está pendiente.
-- **Sin rate-limiting** — un cliente malicioso local puede saturar el servidor. Mitigado en la práctica por el bind a loopback.
-- **Sin cifrado at-rest** de las bases SQLite. Si tu disco es accesible por terceros (laptop robada, backups en cloud sin cifrar), las memorias son texto plano. Cifra el filesystem si te preocupa.
-
----
-
-## Perfil GPU (opcional)
-
-¿Tienes GPU NVIDIA y quieres máximo rendimiento en embeddings? Añade el override:
+## Activar NEMO en cada proyecto
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# 🐧 Linux / macOS / WSL
+docker run --rm -v "$PWD":/workdir nemo:local nemo-attach
+
+# 🪟 Windows (PowerShell)
+docker run --rm -v "${PWD}:/workdir" nemo:local nemo-attach
 ```
 
-Esto:
-- Arranca un contenedor `ollama` con acceso a la GPU (requiere [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)).
-- Hace `ollama pull nomic-embed-text` la primera vez (job one-shot, 1-2 min).
-- Espera a que Ollama esté sano antes de arrancar NEMO.
-- Cambia el provider de NEMO a `ollama` automáticamente.
-
-Sin GPU NVIDIA, Ollama sigue funcionando en CPU — solo quita el bloque `deploy:`
-del servicio `ollama` en `docker-compose.gpu.yml`.
+Equivalente al `python bin/nemo_attach.py --target .` de la instalación tradicional.
 
 ---
 
 ## Persistencia
 
-Dos volúmenes nombrados:
-- `nemo-data` → `/app/.ai_memory` en el contenedor → todas las bases SQLite (`conversations.db`, `ai_memories.db`, `schedule.db`, etc.)
-- `nemo-models` → `/models` → pesos pre-descargados de fastembed
+Los datos viven en volúmenes Docker nombrados:
 
-Ambos sobreviven a `docker compose down`. Para borrar todo:
+| Volumen | Contenido |
+|---|---|
+| `nemo-data` | Bases SQLite (`ai_memories.db`, `conversations.db`, etc.) |
+| `nemo-models` | Pesos de fastembed cacheados |
+
+Sobreviven a reinicios y actualizaciones de imagen. Para borrar todo:
 ```bash
-docker compose down -v
+docker volume rm nemo-data nemo-models
 ```
-
----
-
-## Personalizar
-
-Copia `.env.example` → `.env` y ajusta. Las variables más relevantes:
-
-| Variable                | Default                                                 | Qué cambia |
-|-------------------------|---------------------------------------------------------|------------|
-| `NEMO_HOST_PORT`        | `8765`                                                  | Puerto expuesto en el host |
-| `EMBEDDING_MODEL`       | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Modelo fastembed ([catálogo](https://qdrant.github.io/fastembed/examples/Supported_Models/)) |
-| `EMBEDDING_PROVIDER`    | `custom`                                                | `custom` / `ollama` / `lm_studio` / `openai` |
-| `EMBEDDING_BASE_URL`    | (auto → sidecar interno)                                | URL del servicio de embeddings externo |
-| `RERANK_ENABLED`        | `false`                                                 | Activa reranking (requiere `RERANK_BASE_URL`) |
 
 ---
 
@@ -186,27 +93,69 @@ Copia `.env.example` → `.env` y ajusta. Las variables más relevantes:
 
 ```bash
 git pull
-docker compose build --pull
-docker compose up -d
+docker build -f docker/Dockerfile -t nemo:local .
 ```
+
+No hay contenedor corriendo que reiniciar — el cliente levanta el contenedor en cada sesión.
 
 ---
 
-## Troubleshooting
+## Comandos útiles
 
-**El contenedor arranca pero `/health` tarda mucho.**
-Primera carga del modelo fastembed (~30-45s). El healthcheck ya considera eso (`start_period: 45s`).
+Con el enfoque stdio (`--rm`), el contenedor existe solo mientras el cliente AI está conectado. No hay un proceso persistente que arrancar o parar manualmente. Estos son los comandos relevantes:
 
-**En Mac/Windows no puedo conectar a `http://localhost:1234` desde el contenedor (LM Studio).**
-Usa `http://host.docker.internal:1234` en `EMBEDDING_BASE_URL`.
+### Imagen
 
-**Linux no resuelve `host.docker.internal`.**
-Añade en `docker-compose.yml`:
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
+```bash
+# Verificar que la imagen existe
+docker images nemo:local
+
+# Reconstruir tras un git pull
+docker build -f docker/Dockerfile -t nemo:local .
+
+# Eliminar la imagen (para reconstruir desde cero)
+docker rmi nemo:local
 ```
 
-**Reranking roto / `503 degraded`.**
-Deja `RERANK_ENABLED=false` salvo que tengas un endpoint compatible. NEMO funciona
-sin reranking; es un boost de calidad opcional.
+### Sesiones activas
+
+```bash
+# Ver si hay una sesión de NEMO activa ahora mismo (cliente AI conectado)
+docker ps --filter ancestor=nemo:local
+
+# Ver logs de la sesión activa
+docker logs $(docker ps -q --filter ancestor=nemo:local)
+```
+
+> `docker start` y `docker stop` no aplican aquí — el contenedor se crea y destruye automáticamente en cada sesión (`--rm`). Si ves el contenedor en `docker ps` significa que tu cliente AI está conectado en este momento.
+
+### Volúmenes y datos
+
+```bash
+# Ver que los volúmenes existen
+docker volume ls | grep nemo
+
+# Inspeccionar qué hay en las bases de datos
+docker run --rm -v nemo-data:/data alpine ls /data
+
+# Borrar todos los datos de NEMO (irreversible)
+docker volume rm nemo-data nemo-models
+```
+
+### Depuración
+
+```bash
+# Probar NEMO manualmente en modo interactivo (sin cliente AI)
+docker run -it --rm \
+  -v nemo-data:/app/.ai_memory \
+  -v nemo-models:/models \
+  nemo:local \
+  python -c "from ai_memory_core import PersistentAIMemorySystem; print('OK')"
+
+# Abrir shell dentro del contenedor
+docker run -it --rm \
+  -v nemo-data:/app/.ai_memory \
+  -v nemo-models:/models \
+  nemo:local \
+  bash
+```

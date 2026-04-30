@@ -6,11 +6,8 @@ decisions in this project, and hallucinate facts the user already taught you.
 
 ## Connection
 
-- **MCP (preferred):** `http://localhost:8765/mcp/sse`
-- **REST fallback:** `http://localhost:8765/api/...` — see `http://localhost:8765/openapi.json`
-
-If your client speaks MCP, the tools below appear automatically.
-If you can only call HTTP, use `POST /api/tools/{tool_name}` with `{"arguments": {...}}`.
+NEMO connects via **MCP stdio** — the tools below appear automatically in your client.
+No HTTP server, no URL to configure.
 
 ## Required call sequence
 
@@ -42,12 +39,17 @@ Corrections get a permanent +0.35 retrieval boost so the same error never repeat
 create_correction(wrong_assumption: string, correct_answer: string, context?: string, tags?: string[])
 ```
 
-### 4. When the user shares a durable fact — `create_memory`
+### 4. When the user shares a durable fact — `create_memory` / `update_memory`
 Preferences, decisions, project facts, working style.
 Do not wait until the end of the conversation — write it as soon as you hear it.
 
+- If the fact is **new** → call `detect_redundancy` first, then `create_memory` if no duplicate found.
+- If the fact **updates something already stored** (e.g. user changed stack, revised a decision) → call `update_memory` on the existing memory instead of creating a new one.
+
 ```
+detect_redundancy(content: string, tags?: string[])
 create_memory(content: string, memory_type: string, importance_level?: 1-10, tags?: string[])
+update_memory(memory_id: string, content?: string, importance_level?: 1-10, tags?: string[])
 ```
 
 ### 5. End of meaningful session — `store_conversation`
@@ -98,7 +100,7 @@ to scope retrieval to the current work.
 
 ## When NEMO is unreachable
 
-If you cannot reach `http://localhost:8765/health` (timeout, connection refused, etc.):
+If the MCP tools are unavailable or calls fail:
 1. Tell the user once: "NEMO is not reachable — running without persistent memory for this session."
 2. Continue normally without trying to call NEMO tools.
 3. Do not silently swallow the error.
